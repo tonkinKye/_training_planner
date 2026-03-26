@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Training Schedule Planner</title>
+<script src="https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js"></script>
 <style>
 :root {
   --bg: #f0f2f5;
@@ -168,6 +169,17 @@ select option{background:var(--surface);}
 .modal textarea{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:var(--r);font-family:monospace;font-size:.68rem;resize:vertical;outline:none;min-height:90px;}
 .modal-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:12px;}
 
+/* ── M365 AUTH ── */
+.auth-btn{background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:5px 10px;border-radius:var(--r);font-size:.72rem;cursor:pointer;display:inline-flex;align-items:center;gap:5px;font-family:inherit;transition:all .15s;}
+.auth-btn:hover{background:var(--surface2);color:var(--text);}
+.auth-btn.connected{border-color:rgba(26,127,55,.4);color:var(--green);background:rgba(26,127,55,.07);}
+.auth-btn.connected:hover{background:rgba(26,127,55,.14);}
+.auth-avatar{width:16px;height:16px;border-radius:50%;background:var(--accent);color:#000;font-size:.55rem;font-weight:800;display:inline-flex;align-items:center;justify-content:center;}
+.lbtn-graph{color:var(--green);border-color:rgba(26,127,55,.3);}
+.lbtn-graph:hover{background:rgba(26,127,55,.09);}
+.lbtn-graph.actioned{background:rgba(26,127,55,.12);color:var(--green);border-color:rgba(26,127,55,.35);}
+.lbtn-graph.pushing{opacity:.6;pointer-events:none;}
+
 ::-webkit-scrollbar{width:4px;height:4px;}
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
@@ -274,6 +286,9 @@ select option{background:var(--surface);}
     <button class="btn-quick" onclick="applyAllTimes()">&#x1F552; Apply Time to All</button>
   </div>
   <div class="header-btns">
+    <button class="auth-btn" id="authBtn" onclick="toggleAuth()">
+      <span id="authIcon">☁️</span> <span id="authLabel">Connect M365</span>
+    </button>
     <button class="btn-ghost btn-sm" onclick="importSchedule()">&#x2B06; Import</button>
     <button class="btn-ghost btn-sm" onclick="exportSchedule()">&#x2B07; Export</button>
   </div>
@@ -1138,11 +1153,23 @@ function renderChips() {
 }
 
 function actionHTML(s, r) {
-  const has = r.date && r.time;
+  const has  = r.date && r.time;
   const done = r.actioned;
-  const cls  = 'lbtn lbtn-ol' + (done ? ' actioned' : '');
-  const lbl  = done ? '&#x2713; Sent' : '&#x1F4E7; Create Invite';
-  return `<button class="${cls}" onclick="openOutlook('${s.id}')" ${has?'':'disabled'} title="Open as new meeting invite in Outlook Web">${lbl}</button>`;
+
+  // Graph button — shown when signed into M365
+  let graphBtn = '';
+  if (graphAccount) {
+    const gcls = 'lbtn lbtn-graph' + (done ? ' actioned' : '');
+    const glbl = done ? '✓ In Calendar' : '📅 Push to Calendar';
+    graphBtn = `<button class="${gcls}" onclick="pushToCalendar('${s.id}')" ${has?'':'disabled'} title="Create event directly in your M365 calendar">${glbl}</button>`;
+  }
+
+  // Outlook Web fallback — always shown
+  const ocls = 'lbtn lbtn-ol' + (done && !graphAccount ? ' actioned' : '');
+  const olbl = (done && !graphAccount) ? '&#x2713; Sent' : '&#x1F4E7; Outlook Web';
+  const outlookBtn = `<button class="${ocls}" onclick="openOutlook('${s.id}')" ${has?'':'disabled'} title="Open as new meeting invite in Outlook Web">${olbl}</button>`;
+
+  return graphBtn + outlookBtn;
 }
 
 function renderTable() {
@@ -1395,8 +1422,185 @@ function toast(msg, dur=2700){ const el=document.getElementById('toast'); el.tex
 function closeModal(id){ document.getElementById(id).classList.remove('open'); }
 
 // ═══════════════════════════════════════════════════
-// MOBILE SIDEBAR DRAWER
+// M365 / GRAPH CALENDAR INTEGRATION
 // ═══════════════════════════════════════════════════
+
+// ── CONFIG — replace these two values after Azure app registration ──
+const GRAPH_CLIENT_ID = 'd1e57e3e-dccf-454b-9f85-68bed61fb0d4';   // Application (client) ID from Azure
+const GRAPH_TENANT_ID = '9456864c-263a-4b5b-92b3-5e830f75a8fe';   // Directory (tenant) ID from Azure
+// ────────────────────────────────────────────────────────────────────
+
+let msalInstance = null;
+let graphAccount = null;
+
+function initMsal() {
+  if (!GRAPH_CLIENT_ID || GRAPH_CLIENT_ID === 'YOUR_CLIENT_ID_HERE') return;
+  try {
+    msalInstance = new msal.PublicClientApplication({
+      auth: {
+        clientId:   GRAPH_CLIENT_ID,
+        authority:  'https://login.microsoftonline.com/' + GRAPH_TENANT_ID,
+        redirectUri: window.location.origin + window.location.pathname,
+      },
+      cache: { cacheLocation: 'sessionStorage' },
+    });
+    // Restore any existing session silently
+    const accounts = msalInstance.getAllAccounts();
+    if (accounts.length) {
+      graphAccount = accounts[0];
+      updateAuthUI();
+    }
+  } catch(e) {
+    console.warn('MSAL init failed:', e);
+  }
+}
+
+async function toggleAuth() {
+  if (!msalInstance) {
+    toast('Add your Azure Client ID and Tenant ID to enable M365 sync', 4000);
+    return;
+  }
+  if (graphAccount) {
+    // Sign out
+    msalInstance.logoutPopup({ account: graphAccount });
+    graphAccount = null;
+    updateAuthUI();
+    render();
+  } else {
+    await signIn();
+  }
+}
+
+async function signIn() {
+  if (!msalInstance) return;
+  try {
+    const result = await msalInstance.loginPopup({
+      scopes: ['Calendars.ReadWrite'],
+      prompt: 'select_account',
+    });
+    graphAccount = result.account;
+    updateAuthUI();
+    render();
+    toast('Connected as ' + graphAccount.name);
+  } catch(e) {
+    if (e.errorCode !== 'user_cancelled') toast('Sign-in failed: ' + (e.message||e));
+  }
+}
+
+function updateAuthUI() {
+  const btn = document.getElementById('authBtn');
+  const lbl = document.getElementById('authLabel');
+  const ico = document.getElementById('authIcon');
+  if (graphAccount) {
+    const initials = graphAccount.name ? graphAccount.name.split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase() : '?';
+    ico.outerHTML = `<span id="authIcon" class="auth-avatar">${initials}</span>`;
+    lbl.textContent = graphAccount.name || graphAccount.username;
+    btn.classList.add('connected');
+    btn.title = 'Signed in as ' + graphAccount.username + ' — click to sign out';
+  } else {
+    document.getElementById('authIcon').outerHTML = '<span id="authIcon">☁️</span>';
+    lbl.textContent = 'Connect M365';
+    btn.classList.remove('connected');
+    btn.title = '';
+  }
+}
+
+async function getGraphToken() {
+  if (!msalInstance || !graphAccount) return null;
+  try {
+    const result = await msalInstance.acquireTokenSilent({
+      scopes: ['Calendars.ReadWrite'],
+      account: graphAccount,
+    });
+    return result.accessToken;
+  } catch {
+    try {
+      const result = await msalInstance.acquireTokenPopup({ scopes: ['Calendars.ReadWrite'] });
+      return result.accessToken;
+    } catch(e) {
+      toast('Could not get calendar access: ' + (e.message||e));
+      return null;
+    }
+  }
+}
+
+async function pushToCalendar(id) {
+  const s = sessions.find(s => s.id === id);
+  const r = schedule.find(r => r.sessionId === id);
+  if (!r || !r.date || !r.time) { toast('Set a date and time first'); return; }
+
+  const btn = document.querySelector(`#ac-${id} .lbtn-graph`);
+  if (btn) { btn.classList.add('pushing'); btn.textContent = '⏳ Pushing…'; }
+
+  const token = await getGraphToken();
+  if (!token) {
+    if (btn) { btn.classList.remove('pushing'); btn.innerHTML = '📅 Push to Calendar'; }
+    return;
+  }
+
+  const loc      = document.getElementById('globalLocation').value.trim();
+  const invitees = parseInvitees();
+  const bodyHtml = buildBodyHTML(s, r);
+
+  // Build ISO start/end
+  const [sy, sm, sd] = r.date.split('-').map(Number);
+  const [sh, smin]   = r.time.split(':').map(Number);
+  const start = new Date(sy, sm-1, sd, sh, smin, 0);
+  const end   = new Date(start.getTime() + s.duration * 60000);
+  const tzOffset = -start.getTimezoneOffset();
+  const tzSign   = tzOffset >= 0 ? '+' : '-';
+  const tzH = pad(Math.floor(Math.abs(tzOffset)/60));
+  const tzM = pad(Math.abs(tzOffset)%60);
+  const toLocalISO = d => d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes())+':00';
+
+  const event = {
+    subject: buildSubject(s.name),
+    body: { contentType: 'html', content: bodyHtml },
+    start: { dateTime: toLocalISO(start), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+    end:   { dateTime: toLocalISO(end),   timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+    isOnlineMeeting: false,
+  };
+
+  if (loc) {
+    if (/^https?:\/\//i.test(loc)) {
+      event.onlineMeeting = null;
+      event.body.content = bodyHtml; // URL already in body
+      event.location = { displayName: loc };
+    } else {
+      event.location = { displayName: loc };
+    }
+  }
+
+  if (invitees.length) {
+    event.attendees = invitees.map(e => ({ emailAddress: { address: e }, type: 'required' }));
+  }
+
+  try {
+    const res = await fetch('https://graph.microsoft.com/v1.0/me/events', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(()=>({error:{message:res.statusText}}));
+      throw new Error(err.error?.message || res.statusText);
+    }
+    const created = await res.json();
+    r.graphEventId = created.id;
+    r.actioned = true;
+    save();
+    if (btn) { btn.classList.remove('pushing'); btn.classList.add('actioned'); btn.innerHTML = '✓ In Calendar'; }
+    toast(`"${s.name}" added to your calendar`);
+  } catch(e) {
+    if (btn) { btn.classList.remove('pushing'); btn.innerHTML = '📅 Push to Calendar'; }
+    toast('Graph error: ' + e.message, 5000);
+  }
+}
+
+// Initialise MSAL on load
+initMsal();
+
+
 function openSidebar() {
   document.querySelector('.sidebar').classList.add('open');
   document.getElementById('drawerOverlay').classList.add('open');
