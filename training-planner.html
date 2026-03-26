@@ -1,0 +1,1450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Training Schedule Planner</title>
+<style>
+:root {
+  --bg: #f0f2f5;
+  --surface: #ffffff;
+  --surface2: #f5f7fa;
+  --border: #dde1e7;
+  --accent: #c47f00;
+  --accent2: #e6a817;
+  --text: #1a1f2e;
+  --text-muted: #5a6478;
+  --text-dim: #9aa3b2;
+  --green: #1a7f37;
+  --red: #d1242f;
+  --blue: #0550ae;
+  --r: 8px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+
+/* ── HEADER ── */
+header{background:var(--surface);border-bottom:1px solid var(--border);padding:10px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0;z-index:100;}
+.logo{font-weight:800;font-size:1rem;letter-spacing:-.5px;margin-right:8px;}
+.logo span{color:var(--accent);}
+.header-btns{display:flex;gap:6px;align-items:center;margin-left:auto;}
+
+/* ── BUTTONS ── */
+button{font-family:inherit;font-size:.78rem;cursor:pointer;border-radius:var(--r);border:1px solid var(--border);padding:5px 11px;transition:all .15s;display:inline-flex;align-items:center;gap:4px;}
+.btn-ghost{background:transparent;color:var(--text-muted);}
+.btn-ghost:hover{background:var(--surface2);color:var(--text);}
+.btn-primary{background:var(--accent);color:#0d1117;border-color:var(--accent);font-weight:700;}
+.btn-primary:hover{background:var(--accent2);}
+.btn-outline{background:transparent;color:var(--accent);border-color:var(--accent);}
+.btn-outline:hover{background:rgba(230,168,23,.1);}
+.btn-danger{background:transparent;color:var(--red);border-color:transparent;padding:2px 5px;}
+.btn-danger:hover{background:rgba(248,81,73,.1);}
+.btn-sm{font-size:.7rem;padding:4px 8px;}
+.btn-quick{background:var(--surface2);color:var(--text-muted);border-color:var(--border);font-size:.7rem;padding:4px 9px;}
+.btn-quick:hover{background:rgba(230,168,23,.12);color:var(--accent);border-color:rgba(230,168,23,.4);}
+
+/* ── MAIN LAYOUT ── */
+.workspace{display:grid;grid-template-columns:230px 1fr 1fr;flex:1;overflow:hidden;}
+
+/* ── SIDEBAR ── */
+.sidebar{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;flex-shrink:0;}
+.sb-inner{padding:14px 12px;display:flex;flex-direction:column;gap:14px;}
+.sb-section h3{font-size:.58rem;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:var(--text-dim);padding-bottom:6px;border-bottom:1px solid var(--border);margin-bottom:8px;}
+.form-row{display:flex;flex-direction:column;gap:3px;margin-bottom:8px;}
+.form-row label{font-size:.7rem;color:var(--text-muted);}
+.form-row input,.form-row select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:var(--r);font-family:inherit;font-size:.78rem;width:100%;outline:none;}
+.form-row input:focus,.form-row select:focus{border-color:var(--accent);}
+select option{background:var(--surface);}
+.session-chips{display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto;}
+.s-chip{display:flex;align-items:center;gap:6px;padding:5px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;}
+.s-chip-num{font-size:.6rem;color:var(--text-dim);min-width:14px;text-align:right;}
+.s-chip-name{flex:1;font-size:.75rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.s-chip-dur{font-size:.62rem;color:var(--text-dim);white-space:nowrap;}
+.s-chip-del{color:var(--text-dim);font-size:.68rem;cursor:pointer;padding:1px 3px;border-radius:2px;background:none;border:none;}
+.s-chip-del:hover{color:var(--red);}
+.add-name{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:var(--r);font-family:inherit;font-size:.78rem;outline:none;margin-bottom:5px;}
+.add-name:focus{border-color:var(--accent);}
+.add-row{display:flex;gap:5px;}
+.add-row select{flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:var(--r);font-family:inherit;font-size:.75rem;outline:none;}
+.hint{font-size:.68rem;color:var(--text-muted);margin-bottom:4px;}
+.hint code{color:var(--accent);}
+.json-ta{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px;border-radius:var(--r);font-family:monospace;font-size:.68rem;resize:vertical;outline:none;min-height:58px;margin-bottom:4px;}
+.json-ta:focus{border-color:var(--accent);}
+
+/* ── TABLE PANEL ── */
+.panel{display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border);}
+.panel-header{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:7px;flex-shrink:0;background:var(--surface);}
+.panel-header h2{font-size:.85rem;font-weight:700;flex:1;}
+.panel-scroll{flex:1;overflow-y:auto;padding:0;}
+
+/* Smart panel */
+.smart-panel{background:#fff8ed;border-bottom:1px solid var(--border);padding:10px 14px;display:none;}
+.smart-panel.open{display:block;}
+.smart-panel h4{font-size:.65rem;font-weight:600;color:var(--text-muted);margin-bottom:9px;}
+.smart-controls{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;}
+.sg{display:flex;flex-direction:column;gap:4px;}
+.sg label{font-size:.67rem;color:var(--text-muted);}
+.sg input[type=date]{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 7px;border-radius:var(--r);font-family:inherit;font-size:.75rem;outline:none;color-scheme:light;}
+.sg input[type=date]:focus{border-color:var(--accent);}
+.day-toggles{display:flex;gap:3px;}
+.dt{width:26px;height:26px;border-radius:50%;border:1px solid var(--border);background:var(--surface);color:var(--text-muted);font-size:.6rem;font-weight:700;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;font-family:inherit;padding:0;}
+.dt.on{background:rgba(196,127,0,.12);color:var(--accent);border-color:var(--accent);}
+.day-presets{display:flex;gap:3px;flex-wrap:wrap;}
+
+/* Table */
+.schedule-table{width:100%;border-collapse:collapse;}
+.schedule-table th{text-align:left;font-size:.58rem;font-weight:700;letter-spacing:1.1px;text-transform:uppercase;color:var(--text-dim);padding:7px 8px;border-bottom:2px solid var(--border);position:sticky;top:0;background:var(--bg);z-index:5;}
+.schedule-table td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:middle;}
+.schedule-table tr:last-child td{border-bottom:none;}
+.schedule-table tbody tr:hover{background:rgba(28,35,48,.5);}
+.seq{font-size:.68rem;color:var(--text-dim);}
+.sname{font-weight:500;font-size:.82rem;}
+.sdur{font-size:.7rem;color:var(--text-muted);white-space:nowrap;}
+.date-cell{display:flex;align-items:center;gap:5px;}
+.date-cell input[type=date]{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:3px 6px;border-radius:6px;font-family:inherit;font-size:.73rem;outline:none;color-scheme:light;}
+.date-cell input[type=date]:focus{border-color:var(--accent);}
+.dbadge{font-size:.62rem;padding:2px 5px;border-radius:4px;background:var(--surface2);color:var(--text-muted);border:1px solid var(--border);white-space:nowrap;}
+.dbadge.set{background:rgba(63,185,80,.1);color:var(--green);border-color:rgba(63,185,80,.3);}
+.time-sel{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:3px 6px;border-radius:6px;font-family:inherit;font-size:.73rem;outline:none;}
+.dur-sel{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:3px 6px;border-radius:6px;font-family:inherit;font-size:.73rem;outline:none;min-width:72px;}
+.dur-sel:focus{border-color:var(--accent);}
+.time-sel:focus{border-color:var(--accent);}
+.act-cell{display:flex;gap:3px;flex-wrap:wrap;}
+.lbtn{font-size:.65rem;padding:3px 7px;border-radius:4px;display:inline-flex;align-items:center;gap:3px;font-family:inherit;font-weight:500;cursor:pointer;transition:all .15s;border:1px solid;background:transparent;white-space:nowrap;}
+.lbtn-ol{color:var(--blue);border-color:rgba(5,80,174,.25);}
+.lbtn-ol.actioned{background:rgba(26,127,55,.12);color:var(--green);border-color:rgba(26,127,55,.35);}
+.lbtn-ol:hover{background:rgba(5,80,174,.08);}
+.lbtn:disabled{opacity:.25;pointer-events:none;}
+
+.empty-state{text-align:center;padding:40px 16px;color:var(--text-dim);}
+.empty-state .icon{font-size:2rem;margin-bottom:8px;}
+.empty-state p{font-size:.8rem;line-height:1.6;}
+
+/* ── CALENDAR PANEL ── */
+.cal-panel{display:flex;flex-direction:column;overflow:hidden;}
+.pool-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:8px 12px;flex-shrink:0;}
+.pool-bar h4{font-size:.58rem;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-dim);margin-bottom:6px;}
+.pool-chips{display:flex;gap:5px;flex-wrap:wrap;min-height:28px;align-items:center;}
+.pool-chip{background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:3px 9px;font-size:.72rem;cursor:grab;user-select:none;display:flex;align-items:center;gap:5px;transition:all .15s;color:var(--text);}
+.pool-chip:hover{border-color:var(--accent2);background:rgba(196,127,0,.06);color:var(--accent);}
+.pool-chip.dragging{opacity:.35;}
+.pool-chip .pc-dur{font-size:.6rem;color:var(--text-dim);}
+.pool-empty{font-size:.72rem;color:var(--text-dim);}
+
+/* Cal nav */
+.cal-nav{display:flex;align-items:center;gap:7px;padding:7px 12px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;}
+.cal-nav h3{font-size:.8rem;font-weight:700;flex:1;}
+
+/* Cal grid */
+.cal-scroll{flex:1;overflow-y:auto;}
+.cal-grid{display:grid;grid-template-columns:36px repeat(7,1fr);}
+.cal-col-hdr{background:var(--surface);border-right:1px solid var(--border);border-bottom:2px solid var(--border);padding:5px 3px;text-align:center;font-size:.6rem;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);position:sticky;top:0;z-index:10;}
+.cal-col-hdr.wknd{color:var(--text-dim);}
+.cal-week-lbl{background:var(--surface2);border-right:1px solid var(--border);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:.55rem;font-weight:700;color:var(--text-dim);writing-mode:vertical-rl;transform:rotate(180deg);letter-spacing:.8px;}
+.cal-day{border-right:1px solid var(--border);border-bottom:1px solid var(--border);min-height:72px;padding:4px;position:relative;transition:background .1s;}
+.cal-day.today{background:rgba(196,127,0,.05);}
+.cal-day.drag-over{background:rgba(196,127,0,.1);border-color:var(--accent);}
+.cal-day.wknd{background:rgba(13,17,23,.35);}
+.day-num{font-size:.62rem;color:var(--text-dim);margin-bottom:3px;font-weight:600;}
+.cal-day.today .day-num{color:var(--accent);font-weight:800;}
+.cal-event{background:rgba(5,80,174,.08);border:1px solid rgba(5,80,174,.25);border-radius:4px;padding:2px 5px;margin-bottom:2px;font-size:.65rem;cursor:grab;user-select:none;display:flex;align-items:center;gap:3px;transition:all .15s;color:var(--blue);}
+.cal-event:hover{background:rgba(5,80,174,.15);}
+.cal-event.dragging{opacity:.4;}
+.cal-event-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--blue);}
+.cal-event-time{font-size:.58rem;color:var(--text-muted);white-space:nowrap;}
+.cal-event-x{background:none;border:none;color:var(--text-dim);font-size:.6rem;padding:0 1px;cursor:pointer;line-height:1;border-radius:2px;}
+.cal-event-x:hover{color:var(--red);}
+
+/* ── STATUS / TOAST / MODALS ── */
+.status-bar{background:var(--surface);border-top:1px solid var(--border);padding:5px 16px;display:flex;align-items:center;gap:12px;font-size:.68rem;color:var(--text-dim);flex-shrink:0;}
+.sdot{width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block;margin-right:4px;}
+.toast{position:fixed;bottom:36px;right:16px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 13px;border-radius:var(--r);font-size:.76rem;opacity:0;transform:translateY(7px);transition:all .2s;pointer-events:none;z-index:999;}
+.toast.show{opacity:1;transform:translateY(0);}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);display:none;align-items:center;justify-content:center;z-index:400;}
+.modal-overlay.open{display:flex;}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;width:520px;max-width:95vw;}
+.modal h3{font-size:.9rem;font-weight:700;margin-bottom:6px;}
+.modal p{font-size:.76rem;color:var(--text-muted);margin-bottom:10px;}
+.modal textarea{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:var(--r);font-family:monospace;font-size:.68rem;resize:vertical;outline:none;min-height:90px;}
+.modal-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:12px;}
+
+::-webkit-scrollbar{width:4px;height:4px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+
+/* ── MOBILE DRAWER ── */
+.drawer-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:300;}
+.drawer-overlay.open{display:block;}
+.hamburger{display:none;background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:5px 9px;font-size:1rem;line-height:1;}
+.hamburger:hover{background:var(--surface2);color:var(--text);}
+
+/* ── MOBILE TABS (schedule / calendar) ── */
+.mobile-tabs{display:none;background:var(--surface);border-bottom:1px solid var(--border);padding:0 12px;gap:0;flex-shrink:0;}
+.mobile-tab{background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-muted);padding:10px 16px;font-size:.82rem;font-weight:600;border-radius:0;flex:1;justify-content:center;}
+.mobile-tab.active{color:var(--accent);border-bottom-color:var(--accent2);}
+
+/* ── RESPONSIVE ── */
+@media(max-width:768px){
+  body{overflow:auto;}
+
+  /* Header: hide desktop quick-action buttons, show hamburger */
+  .header-quick{display:none !important;}
+  .hamburger{display:inline-flex;}
+  .header-btns .btn-ghost{font-size:.68rem;padding:4px 7px;}
+  .header-btns .btn-primary{font-size:.68rem;padding:4px 7px;}
+
+  /* Sidebar becomes a fixed drawer */
+  .sidebar{
+    position:fixed;left:0;top:0;bottom:0;z-index:400;
+    width:280px;transform:translateX(-100%);
+    transition:transform .25s ease;
+    border-right:1px solid var(--border);
+    box-shadow:4px 0 20px rgba(0,0,0,.5);
+  }
+  .sidebar.open{transform:translateX(0);}
+
+  /* Workspace: single column, no sidebar column */
+  .workspace{
+    display:flex;flex-direction:column;
+    height:auto;overflow:visible;
+  }
+
+  /* Mobile tabs visible */
+  .mobile-tabs{display:flex;}
+
+  /* Each panel takes full width, toggled by JS */
+  .panel{border-right:none;min-height:0;}
+  .panel.mob-hidden{display:none;}
+  .cal-panel.mob-hidden{display:none;}
+
+  /* Table: hide some columns on small screens */
+  .schedule-table th:nth-child(3),
+  .schedule-table td:nth-child(3){display:none;} /* Duration */
+  .schedule-table th:nth-child(5),
+  .schedule-table td:nth-child(5){display:none;} /* Time — set from defaults */
+
+  /* Date cell: stack vertically */
+  .date-cell{flex-direction:column;align-items:flex-start;gap:3px;}
+  .dbadge{font-size:.6rem;}
+
+  /* Action buttons: stack */
+  .act-cell{flex-direction:column;gap:3px;}
+  .lbtn{font-size:.62rem;padding:3px 6px;}
+
+  /* Calendar: 5-day grid */
+  .cal-grid{grid-template-columns:30px repeat(5,1fr);}
+  .cal-col-hdr.wknd-hide{display:none;}
+  .cal-day.wknd-hide{display:none;}
+
+  /* Pool bar: horizontal scroll */
+  .pool-chips{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;}
+  .pool-chip{flex-shrink:0;}
+
+  /* Cal nav: tighter */
+  .cal-nav h3{font-size:.72rem;}
+
+  /* Events: truncate more aggressively */
+  .cal-event-name{max-width:60px;}
+  .cal-event-time{display:none;}
+  .cal-event-x{display:none;}
+
+  /* Status bar: shorter */
+  .status-bar{font-size:.64rem;padding:5px 10px;gap:8px;}
+}
+
+@media(max-width:400px){
+  .cal-event-name{max-width:40px;}
+  .header-btns .btn-ghost{display:none;}
+}
+</style>
+</head>
+<body>
+
+<!-- Drawer overlay -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="closeSidebar()"></div>
+
+<!-- HEADER -->
+<header>
+  <button class="hamburger" onclick="openSidebar()" title="Menu">&#9776;</button>
+  <div class="logo">Training <span>Planner</span></div>
+  <div class="header-quick" style="display:flex;gap:6px;align-items:center;">
+    <button class="btn-quick" onclick="toggleSmart()">&#x1F5D3; Smart Fill</button>
+    <button class="btn-quick" onclick="clearDates()">&#x2715; Clear Dates</button>
+    <button class="btn-quick" onclick="sortByDate()">&#x2195; Sort by Date</button>
+    <button class="btn-quick" onclick="applyAllTimes()">&#x1F552; Apply Time to All</button>
+  </div>
+  <div class="header-btns">
+    <button class="btn-ghost btn-sm" onclick="importSchedule()">&#x2B06; Import</button>
+    <button class="btn-ghost btn-sm" onclick="exportSchedule()">&#x2B07; Export</button>
+  </div>
+</header>
+
+<!-- MOBILE TABS -->
+<div class="mobile-tabs" id="mobileTabs">
+  <button class="mobile-tab active" onclick="switchMobileTab('schedule')">&#x1F4CB; Schedule</button>
+  <button class="mobile-tab" onclick="switchMobileTab('calendar')">&#x1F5D3; Calendar</button>
+</div>
+
+<!-- WORKSPACE -->
+<div class="workspace">
+
+  <!-- ══ SIDEBAR ══ -->
+  <aside class="sidebar">
+    <div class="sb-inner">
+
+      <div class="sb-section">
+        <h3>Defaults</h3>
+        <div class="form-row">
+          <label>Default start time</label>
+          <select id="globalTime"></select>
+        </div>
+        <div class="form-row">
+          <label>Default duration</label>
+          <select id="globalDuration">
+            <option value="30">30 min</option>
+            <option value="60">60 min</option>
+            <option value="90" selected>90 min</option>
+            <option value="120">2 hours</option>
+            <option value="150">2.5 hours</option>
+            <option value="180">3 hours</option>
+            <option value="240">4 hours</option>
+            <option value="480">Full day (8 hr)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Location / Teams link</label>
+          <input type="text" id="globalLocation" placeholder="Room 1 or Teams URL">
+        </div>
+        <div class="form-row">
+          <label>Organiser name</label>
+          <input type="text" id="globalOrganiser" placeholder="e.g. Jane Smith">
+        </div>
+        <div class="form-row">
+          <label>Organiser email</label>
+          <input type="text" id="globalEmail" placeholder="jane@company.com">
+        </div>
+        <div class="form-row">
+          <label>Client name</label>
+          <input type="text" id="globalClient" placeholder="e.g. PVMRF">
+        </div>
+        <div class="form-row">
+          <label>Invitees</label>
+          <textarea id="globalInvitees" rows="3" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:var(--r);font-family:inherit;font-size:.75rem;width:100%;outline:none;resize:vertical;" placeholder="one@co.com, two@co.com&#10;or one per line"></textarea>
+          <span style="font-size:.63rem;color:var(--text-dim);">Comma, semicolon, space or one per line</span>
+        </div>
+      </div>
+
+      <div class="sb-section">
+        <h3>Sessions <span id="sessCount" style="color:var(--text-dim);font-weight:400;"></span></h3>
+        <div class="session-chips" id="sessionChips">
+          <div style="font-size:.72rem;color:var(--text-dim);">No sessions yet</div>
+        </div>
+      </div>
+
+      <div class="sb-section">
+        <h3>Add Session</h3>
+        <input class="add-name" type="text" id="newName" placeholder="Session name…">
+        <div class="add-row">
+          <select id="newDur">
+            <option value="30">30 min</option>
+            <option value="60">60 min</option>
+            <option value="90" selected>90 min</option>
+            <option value="120">2 hr</option>
+            <option value="150">2.5 hr</option>
+            <option value="180">3 hr</option>
+            <option value="240">4 hr</option>
+            <option value="480">8 hr</option>
+          </select>
+          <button class="btn-primary btn-sm" onclick="addSession()">+ Add</button>
+        </div>
+        <button class="btn-ghost btn-sm" style="margin-top:6px;width:100%;" onclick="loadExamples()">Load example sessions</button>
+      </div>
+
+      <div class="sb-section">
+        <h3>Load from JSON</h3>
+        <div class="hint">Array of <code>{name, duration}</code></div>
+        <textarea class="json-ta" id="jsonPaste" placeholder='[{"name":"Intro","duration":60}]'></textarea>
+        <button class="btn-outline btn-sm" style="width:100%;" onclick="loadFromJSON()">Load Sessions</button>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- ══ TABLE PANEL ══ -->
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Schedule</h2>
+      <span id="stSched" style="font-size:.68rem;color:var(--text-muted);"></span>
+    </div>
+
+    <!-- Smart Fill -->
+    <div class="smart-panel" id="smartPanel">
+      <h4>Smart Date Fill</h4>
+      <div class="smart-controls">
+        <div class="sg">
+          <label>Start from</label>
+          <input type="date" id="smartStart">
+        </div>
+        <div class="sg">
+          <label>Days</label>
+          <div class="day-toggles">
+            <button class="dt" data-day="1">M</button>
+            <button class="dt" data-day="2">T</button>
+            <button class="dt" data-day="3">W</button>
+            <button class="dt" data-day="4">T</button>
+            <button class="dt" data-day="5">F</button>
+            <button class="dt" data-day="6">S</button>
+            <button class="dt" data-day="0">S</button>
+          </div>
+        </div>
+        <div class="sg">
+          <label>Presets</label>
+          <div class="day-presets">
+            <button class="btn-quick btn-sm" onclick="setDayPreset([1,2,3,4,5])">Weekdays</button>
+            <button class="btn-quick btn-sm" onclick="setDayPreset([1,3,5])">M/W/F</button>
+            <button class="btn-quick btn-sm" onclick="setDayPreset([2,4])">T/Th</button>
+            <button class="btn-quick btn-sm" onclick="setDayPreset([2])">Tue</button>
+            <button class="btn-quick btn-sm" onclick="setDayPreset([4])">Thu</button>
+          </div>
+        </div>
+        <div class="sg" style="margin-left:auto;">
+          <label>&nbsp;</label>
+          <button class="btn-primary btn-sm" onclick="applySmartFill()">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-scroll">
+      <div id="emptyState" class="empty-state">
+        <div class="icon">📋</div>
+        <p>Add sessions in the sidebar,<br>or click <strong>Load example sessions</strong>.</p>
+      </div>
+      <table class="schedule-table" id="scheduleTable" style="display:none;">
+        <thead>
+          <tr>
+            <th style="width:24px;">#</th>
+            <th>Session</th>
+            <th style="width:54px;">Dur</th>
+            <th style="width:185px;">Date</th>
+            <th style="width:100px;">Time</th>
+            <th>Invite</th>
+            <th style="width:28px;"></th>
+          </tr>
+        </thead>
+        <tbody id="scheduleBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ══ CALENDAR PANEL ══ -->
+  <div class="cal-panel">
+
+    <!-- Unscheduled pool -->
+    <div class="pool-bar">
+      <h4>Unscheduled — drag to calendar</h4>
+      <div class="pool-chips" id="poolChips">
+        <span class="pool-empty">All sessions scheduled ✓</span>
+      </div>
+    </div>
+
+    <!-- Nav -->
+    <div class="cal-nav">
+      <button class="btn-ghost btn-sm" onclick="calShift(-1)">← Prev</button>
+      <h3 id="calTitle"></h3>
+      <button class="btn-ghost btn-sm" onclick="calToday()">Today</button>
+      <button class="btn-ghost btn-sm" onclick="calShift(1)">Next →</button>
+    </div>
+
+    <!-- Grid -->
+    <div class="cal-scroll">
+      <div class="cal-grid" id="calGrid"></div>
+    </div>
+
+  </div>
+</div><!-- /workspace -->
+
+<div class="status-bar">
+  <span><span class="sdot"></span>Ready</span>
+  <span id="stTotal">0 sessions</span>
+  <span id="stSaved">Not saved</span>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Modal: Import -->
+<div class="modal-overlay" id="importModal">
+  <div class="modal">
+    <h3>Import Schedule</h3>
+    <p>Paste a previously exported JSON schedule.</p>
+    <textarea id="importData" placeholder='{"sessions":[...],"schedule":[]}'></textarea>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="closeModal('importModal')">Cancel</button>
+      <button class="btn-primary" onclick="doImport()">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: ICS preview / download -->
+<script>
+// ═══════════════════════════════════════════════════
+// FISHBOWL SESSION TEMPLATES
+// ═══════════════════════════════════════════════════
+const FISHBOWL_SESSIONS = [
+  { name: 'Kick-Off Call',                    duration: 90  },
+  { name: 'Data Prep',                        duration: 90  },
+  { name: 'Data Import',                      duration: 90  },
+  { name: 'Materials & Inventory Management', duration: 90  },
+  { name: 'Purchasing & Receiving',           duration: 90  },
+  { name: 'Recap & Questions',               duration: 45  },
+  { name: 'Sales & Fulfilment',              duration: 90  },
+  { name: 'Bill of Materials',               duration: 90  },
+  { name: 'Recap & Questions',               duration: 45  },
+  { name: 'Production & Manufacturing',       duration: 90  },
+  { name: 'Fishbowl Advanced Mobile',        duration: 90  },
+  { name: 'Recap & Questions',               duration: 45  },
+  { name: 'Reports, Plugins & Dashboards',   duration: 90  },
+  { name: 'Workflow Creation',               duration: 90  },
+  { name: 'Go-Live Prep 1',                  duration: 90  },
+  { name: 'Go-Live Prep 2',                  duration: 90  },
+  { name: 'Go-Live',                         duration: 120 },
+  { name: 'Support Handover',               duration: 20  },
+];
+
+// Returns the email body template for a given session name.
+// {{Consultant Name}} is replaced at render time with globalOrganiser.
+function getSessionBody(sessName) {
+  const bodies = {
+    'Kick-Off Call': `Hi Team,
+
+Welcome to your Fishbowl Implementation Kick-Off session.
+
+In this meeting, we'll cover:
+• Welcome & Introductions
+• Customer Support Overview
+• About Your Business
+• Implementation Project Overview & Stages
+• Logging In to Fishbowl
+• Datasheets & Requirements
+• Next Steps
+
+Preparation:
+• Please ensure key stakeholders attend.
+• Have your current process notes and any existing data sheets ready if available.
+
+Outcome:
+• Confirm scope, approach, responsibilities, and next steps.`,
+
+    'Data Prep': `Hi team,
+
+This session is Data Prep - we'll review your data, confirm mapping, and ensure files are ready for import.
+
+In this meeting, we'll cover:
+• Data readiness check
+• File structure & mapping review
+• Setup assumptions (UOMs, locations, tax codes)
+• Next Steps before Data Import
+
+Preparation:
+• Have the latest data files ready (Parts, Customers, Suppliers)
+• Confirm Locations / UOM structure`,
+
+    'Data Import': `Hi team,
+
+This session is the Data Import - importing core records into Fishbowl so training can start on a clean foundation.
+
+In this meeting, we'll cover:
+• Import Parts/Products, Customers, Suppliers (+ BOMs if applicable)
+• Validation spot-check
+• Re-import plan if needed
+• Next Steps
+
+Preparation:
+• Final data files ready`,
+
+    'Materials & Inventory Management': `Hi team,
+
+This session covers Materials & Inventory Management in Fishbowl.
+
+In this meeting, we'll cover:
+• Inventory structure (Parts vs Products)
+• Locations & bins
+• Part setup essentials (lead times, reorder points, vendors)
+• Inventory movements (adjustments, transfers, cycle counts)
+• Workflow test
+
+Preparation:
+• Confirm locations/bins list
+• Bring 5-10 example SKUs`,
+
+    'Purchasing & Receiving': `Hi team,
+
+This session covers Purchasing & Receiving in Fishbowl.
+
+In this meeting, we'll cover:
+• Creating Purchase Orders
+• Receiving stock (full + partial)
+• Key purchasing reports
+• Workflow test: PO > receive > confirm stock
+
+Preparation:
+• Have 1-2 real supplier examples ready`,
+
+    'Recap & Questions': `Hi team,
+
+This is a Recap & Q&A checkpoint. Please come prepared with any questions from previous sessions.
+
+We'll review progress, address blockers, and confirm next steps.`,
+
+    'Sales & Fulfilment': `Hi team,
+
+This session covers Sales & Fulfilment in Fishbowl.
+
+In this meeting, we'll cover:
+• Creating Sales Orders
+• Picking & packing workflow
+• Shipping confirmation
+• Key sales reports
+• Workflow test: Sales Order > pick/pack > ship
+
+Preparation:
+• Have 1-2 real customer examples ready`,
+
+    'Bill of Materials': `Hi team,
+
+This session covers Bill of Materials (BOM) in Fishbowl.
+
+In this meeting, we'll cover:
+• BOM fundamentals (finished good, components)
+• BOM setup best practices
+• Creating and validating BOMs
+• Workflow test: build 1-2 BOMs
+
+Preparation:
+• Bring 1-2 real products as BOM examples`,
+
+    'Production & Manufacturing': `Hi team,
+
+This session covers Production & Manufacturing in Fishbowl.
+
+In this meeting, we'll cover:
+• Work Order setup
+• Creating a Work Order from BOM
+• Finishing production
+• Workflow test: WO > issue > finish > confirm inventory
+
+Preparation:
+• Ensure at least 1 BOM is validated`,
+
+    'Fishbowl Advanced Mobile': `Hi team,
+
+This session covers Fishbowl Advanced Mobile.
+
+In this meeting, we'll cover:
+• Mobile overview (mobile vs desktop tasks)
+• User setup & permissions
+• Core workflows: receiving, picking, transfers, cycle counts
+• Workflow test
+
+Preparation:
+• Identify mobile users and roles
+• Confirm devices are available`,
+
+    'Reports, Plugins & Dashboards': `Hi team,
+
+This session covers Plugins and Reporting in Fishbowl.
+
+In this meeting, we'll cover:
+• Plugins/integrations in scope
+• Core reporting (inventory, purchasing, sales, production)
+• Saving report favourites
+• Workflow test: run key reports
+
+Preparation:
+• Bring your must-have reports list`,
+
+    'Workflow Creation': `Hi team,
+
+This session covers Workflow Creation in Fishbowl based on the training sessions held.
+
+We'll identify, build and test key workflows together.`,
+
+    'Go-Live Prep 1': `Hi team,
+
+This session is Go-Live Prep. We'll review the readiness checklist, confirm opening data requirements, and lock the cutover plan.
+
+In this meeting, we'll cover:
+• Go Live readiness checklist review
+• Opening data plan (stocktake, open POs/SOs/WOs)
+• Cutover plan and responsibilities
+• Risks & escalation plan
+• Next Steps
+
+Preparation:
+• Confirm stocktake method and timing
+• Ensure decision-maker can attend`,
+
+    'Go-Live Prep 2': `Hi team,
+
+This is our second Go-Live Prep - final checks and confirming everything is in place.
+
+Please bring any outstanding questions or blockers.`,
+
+    'Go-Live': `Hi team,
+
+This is the Go-Live session!
+
+In this meeting, we'll cover:
+• Final readiness confirmation
+• Apply opening data and final stock counts
+• First live transactions walkthrough
+• Reporting verification
+• Confirm support pathway
+
+Preparation:
+• Opening stock counts ready
+• Key users available
+• Decision-maker available for sign-off`,
+
+    'Support Handover': `Hi team,
+
+This session is the Support Handover call - confirming you're comfortable post go-live and know how to get help.
+
+In this meeting, we'll cover:
+• Post go-live check-in
+• Support pathway overview
+• How to log tickets efficiently
+• Remaining open actions`,
+  };
+
+  return bodies[sessName] || `Hi team,\n\nThis session covers ${sessName}.\n\nPlease come prepared and ensure your system access is working.\n\nThanks,`;
+}
+
+// ═══════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════
+let sessions = [];
+let schedule = [];
+let activeDays = new Set([1,2,3,4,5]);
+let smartOpen = false;
+let calStart = null;
+let dragData = null;
+
+// ═══════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════
+(function init() {
+  buildTimeSelect('globalTime', '09:00');
+  initDayToggles();
+  restoreStorage();
+  bindListeners();
+  calStart = mondayOf(new Date());
+  render();
+})();
+
+function buildTimeSelect(id, def) {
+  const sel = document.getElementById(id);
+  for (let h = 6; h <= 20; h++) {
+    for (let m of [0, 30]) {
+      const v = pad(h)+':'+pad(m);
+      const o = document.createElement('option');
+      o.value = v; o.textContent = fmt12(v);
+      if (v === def) o.selected = true;
+      sel.appendChild(o);
+    }
+  }
+}
+
+function initDayToggles() {
+  document.querySelectorAll('.dt').forEach(btn => {
+    const d = +btn.dataset.day;
+    if (activeDays.has(d)) btn.classList.add('on');
+    btn.addEventListener('click', () => {
+      activeDays.has(d) ? (activeDays.delete(d), btn.classList.remove('on'))
+                        : (activeDays.add(d), btn.classList.add('on'));
+    });
+  });
+}
+
+function bindListeners() {
+  ['globalTime','globalDuration','globalLocation','globalOrganiser','globalEmail','globalInvitees','globalClient'].forEach(id =>
+    document.getElementById(id).addEventListener('change', () => { save(); render(); })
+  );
+  document.getElementById('newName').addEventListener('keydown', e => { if(e.key==='Enter') addSession(); });
+  document.querySelectorAll('.modal-overlay').forEach(el =>
+    el.addEventListener('click', e => { if(e.target===el) el.classList.remove('open'); })
+  );
+}
+
+// ═══════════════════════════════════════════════════
+// SESSIONS
+// ═══════════════════════════════════════════════════
+function uid()    { return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+function calUID() { return uid()+'@trainingplanner.local'; }
+
+function addSession() {
+  const name = document.getElementById('newName').value.trim();
+  if (!name) { toast('Enter a session name'); return; }
+  const dur = +document.getElementById('newDur').value;
+  const s = { id: uid(), name, duration: dur, calUID: calUID(), seq: 0 };
+  sessions.push(s);
+  schedule.push({ sessionId: s.id, date: '', time: '' });
+  document.getElementById('newName').value = '';
+  save(); render();
+}
+
+function removeSession(id) {
+  sessions = sessions.filter(s => s.id !== id);
+  schedule = schedule.filter(r => r.sessionId !== id);
+  save(); render();
+}
+
+function loadExamples() {
+  const ex = FISHBOWL_SESSIONS;
+  ex.forEach(({ name, duration }) => {
+    const s = { id: uid(), name, duration, calUID: calUID(), seq: 0 };
+    sessions.push(s);
+    schedule.push({ sessionId: s.id, date: '', time: '' });
+  });
+  save(); render(); toast('Fishbowl implementation sessions loaded');
+}
+
+function loadFromJSON() {
+  const raw = document.getElementById('jsonPaste').value.trim();
+  if (!raw) { toast('Paste JSON first'); return; }
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) throw 0;
+    arr.forEach(item => {
+      if (!item.name) return;
+      const s = { id: uid(), name: String(item.name), duration: +item.duration||60, calUID: calUID(), seq: 0 };
+      sessions.push(s);
+      schedule.push({ sessionId: s.id, date: '', time: '' });
+    });
+    document.getElementById('jsonPaste').value = '';
+    save(); render(); toast('Sessions loaded');
+  } catch { toast('Invalid JSON'); }
+}
+
+// ═══════════════════════════════════════════════════
+// SCHEDULE UPDATES
+// ═══════════════════════════════════════════════════
+function setDate(id, val) {
+  const r = schedule.find(r => r.sessionId===id);
+  if (r) r.date = val;
+  save(); refreshRow(id); renderCal();
+}
+
+function setTime(id, val) {
+  const r = schedule.find(r => r.sessionId===id);
+  if (r) r.time = val;
+  save(); refreshRow(id); renderCal();
+}
+
+function setDuration(id, val) {
+  const s = sessions.find(s => s.id===id);
+  if (s) s.duration = +val;
+  save(); renderCal();
+}
+
+function unschedule(id) {
+  const r = schedule.find(r => r.sessionId===id);
+  if (r) { r.date=''; r.time=''; }
+  save(); render();
+}
+
+function refreshRow(id) {
+  const r = schedule.find(r => r.sessionId===id);
+  const s = sessions.find(s => s.id===id);
+  if (!r||!s) return;
+  const badge = document.getElementById('badge-'+id);
+  if (badge) { badge.textContent = r.date ? fmtDateShort(r.date) : 'Not set'; badge.className='dbadge'+(r.date?' set':''); }
+  const ac = document.getElementById('ac-'+id);
+  if (ac) ac.innerHTML = actionHTML(s, r);
+  updateStatus();
+}
+
+// ═══════════════════════════════════════════════════
+// SMART FILL
+// ═══════════════════════════════════════════════════
+function toggleSmart() {
+  smartOpen = !smartOpen;
+  document.getElementById('smartPanel').classList.toggle('open', smartOpen);
+}
+
+function setDayPreset(days) {
+  activeDays = new Set(days);
+  document.querySelectorAll('.dt').forEach(b => b.classList.toggle('on', activeDays.has(+b.dataset.day)));
+}
+
+function applySmartFill() {
+  const sv = document.getElementById('smartStart').value;
+  if (!sv) { toast('Pick a start date'); return; }
+  if (!activeDays.size) { toast('Select at least one day'); return; }
+  let cur = parseDate(sv), count = 0;
+  schedule.forEach(r => {
+    if (r.date) return;
+    while (!activeDays.has(cur.getDay())) cur.setDate(cur.getDate()+1);
+    r.date = toDateStr(cur);
+    if (!r.time) r.time = document.getElementById('globalTime').value;
+    count++;
+    cur.setDate(cur.getDate()+1);
+    while (!activeDays.has(cur.getDay())) cur.setDate(cur.getDate()+1);
+  });
+  save(); render();
+  toast(count ? `Filled ${count} session${count>1?'s':''}` : 'All sessions already have dates');
+}
+
+function clearDates() { schedule.forEach(r=>{r.date='';r.time='';r.actioned=false;}); save(); render(); toast('Dates cleared'); }
+
+function applyAllTimes() {
+  const t = document.getElementById('globalTime').value;
+  schedule.forEach(r => { r.time = t; });
+  save(); render();
+  toast('Start time ' + fmt12(t) + ' applied to all sessions');
+}
+
+function sortByDate() {
+  const wd = schedule.filter(r=>r.date).sort((a,b)=>a.date.localeCompare(b.date));
+  const nd = schedule.filter(r=>!r.date);
+  const ord = [...wd,...nd];
+  sessions = ord.map(r=>sessions.find(s=>s.id===r.sessionId)).filter(Boolean);
+  schedule = ord;
+  save(); render();
+}
+
+// ═══════════════════════════════════════════════════
+// MEETING BODY — HTML
+// ═══════════════════════════════════════════════════
+function buildBodyHTML(sess, row) {
+  const dateStr = row.date ? fmtDateLong(row.date) : 'To be confirmed';
+  const timeStr = row.time ? fmt12(row.time) : 'To be confirmed';
+  const loc     = document.getElementById('globalLocation').value.trim();
+  const org     = document.getElementById('globalOrganiser').value.trim();
+
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:Calibri,Arial,sans-serif;font-size:14px;color:#1a1a2e;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 0;">
+<tr><td align="center">
+<table width="580" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+
+  <!-- Header -->
+  <tr><td style="background:#1a3a5c;padding:24px 28px;">
+    <div style="color:#e6a817;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px;">Training Session</div>
+    <div style="color:#ffffff;font-size:22px;font-weight:700;line-height:1.2;">${esc(sess.name)}</div>
+  </td></tr>
+
+  <!-- Details strip -->
+  <tr><td style="background:#f8f9fb;border-bottom:1px solid #e5e7eb;padding:14px 28px;">
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="width:33%;vertical-align:top;padding-right:12px;">
+          <div style="font-size:10px;color:#6b7280;text-transform:uppercase;font-weight:700;letter-spacing:1px;margin-bottom:3px;">📅 Date</div>
+          <div style="font-size:13px;font-weight:600;color:#1a1a2e;">${dateStr}</div>
+        </td>
+        <td style="width:33%;vertical-align:top;padding-right:12px;">
+          <div style="font-size:10px;color:#6b7280;text-transform:uppercase;font-weight:700;letter-spacing:1px;margin-bottom:3px;">🕐 Time</div>
+          <div style="font-size:13px;font-weight:600;color:#1a1a2e;">${timeStr}</div>
+          <div style="font-size:12px;color:#6b7280;">Duration: ${fmtDur(sess.duration)}</div>
+        </td>
+        <td style="width:33%;vertical-align:top;">
+          <div style="font-size:10px;color:#6b7280;text-transform:uppercase;font-weight:700;letter-spacing:1px;margin-bottom:3px;">📍 Location</div>
+          <div style="font-size:13px;font-weight:600;color:#1a1a2e;">${loc ? esc(loc) : 'To be advised'}</div>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  <!-- Body -->
+  <tr><td style="padding:22px 28px;">
+
+    <!-- Objectives -->
+    <div style="margin-bottom:20px;">
+      <div style="font-size:13px;font-weight:700;color:#1a3a5c;border-left:3px solid #e6a817;padding-left:10px;margin-bottom:10px;">Session Objectives</div>
+      <ul style="margin:0;padding-left:20px;color:#374151;font-size:13px;line-height:1.8;">
+        <li>Understand the concepts and workflows covered in this session</li>
+        <li>Complete hands-on configuration and practice exercises</li>
+        <li>Ask questions and confirm understanding before the next session</li>
+      </ul>
+    </div>
+
+    <!-- Agenda -->
+    <div style="margin-bottom:20px;">
+      <div style="font-size:13px;font-weight:700;color:#1a3a5c;border-left:3px solid #e6a817;padding-left:10px;margin-bottom:10px;">Agenda</div>
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;">
+        <tr style="background:#f3f4f6;">
+          <td style="padding:7px 10px;font-weight:700;color:#374151;width:70px;border-bottom:1px solid #e5e7eb;">Time</td>
+          <td style="padding:7px 10px;font-weight:700;color:#374151;border-bottom:1px solid #e5e7eb;">Topic</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 10px;color:#6b7280;border-bottom:1px solid #f3f4f6;">+0:00</td>
+          <td style="padding:7px 10px;color:#374151;border-bottom:1px solid #f3f4f6;">Welcome &amp; recap of previous session</td>
+        </tr>
+        <tr style="background:#fafafa;">
+          <td style="padding:7px 10px;color:#6b7280;border-bottom:1px solid #f3f4f6;">+0:10</td>
+          <td style="padding:7px 10px;color:#374151;border-bottom:1px solid #f3f4f6;">Core content — ${esc(sess.name)}</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 10px;color:#6b7280;border-bottom:1px solid #f3f4f6;">+0:45</td>
+          <td style="padding:7px 10px;color:#374151;border-bottom:1px solid #f3f4f6;">Hands-on practice &amp; Q&amp;A</td>
+        </tr>
+        <tr style="background:#fafafa;">
+          <td style="padding:7px 10px;color:#6b7280;">${fmtDur(sess.duration)}</td>
+          <td style="padding:7px 10px;color:#374151;">Wrap-up &amp; preview of next session</td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- Pre-session checklist -->
+    <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:14px 16px;margin-bottom:20px;">
+      <div style="font-size:12px;font-weight:700;color:#92400e;margin-bottom:7px;">✅ Before this session, please:</div>
+      <ul style="margin:0;padding-left:18px;color:#78350f;font-size:12px;line-height:1.8;">
+        <li>Review your notes from the previous session</li>
+        <li>Ensure your system login is working</li>
+        <li>Note down any questions from the previous session</li>
+      </ul>
+    </div>
+
+    ${org ? `<div style="font-size:12px;color:#6b7280;">Your trainer: <strong style="color:#374151;">${esc(org)}</strong></div>` : ''}
+
+  </td></tr>
+
+  <!-- Footer -->
+  <tr><td style="background:#f8f9fb;border-top:1px solid #e5e7eb;padding:12px 28px;text-align:center;">
+    <div style="font-size:11px;color:#9ca3af;">This training invite was generated by Training Planner. Please contact your trainer to reschedule.</div>
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+
+function buildBodyPlain(sess, row) {
+  const dateStr  = row.date ? fmtDateLong(row.date) : 'TBC';
+  const timeStr  = row.time ? fmt12(row.time) : 'TBC';
+  const loc      = document.getElementById('globalLocation').value.trim();
+  const org      = document.getElementById('globalOrganiser').value.trim();
+  const client   = document.getElementById('globalClient').value.trim();
+  const invitees = parseInvitees();
+
+  // Get the session-specific body and replace placeholder
+  let body = getSessionBody(sess.name);
+  body = body.replace(/\{\{Consultant Name\}\}/g, org || 'Your Consultant');
+
+  const subject = client ? 'Fishbowl | ' + client + ' | ' + sess.name : 'Fishbowl | ' + sess.name;
+  const isURL = loc && /^https?:\/\//i.test(loc);
+
+  const headerLines = [
+    subject,
+    '='.repeat(subject.length > 48 ? subject.length : 48),
+    'Date:     ' + dateStr,
+    'Time:     ' + timeStr + ' (' + fmtDur(sess.duration) + ')',
+    (loc && !isURL) ? 'Location: ' + loc : null,
+    invitees.length ? 'To:       ' + invitees.join(', ') : null,
+    '-'.repeat(48),
+  ].filter(Boolean).join('\n');
+
+  // Blank line between header and body — use null sentinel trick avoided, just concat
+  const header = headerLines + '\n\n';
+
+  // If location is a URL, append as join link at bottom
+  const joinBlock = isURL ? '\n\n---\nJoin meeting\n' + loc : '';
+
+  const footer = joinBlock + '\n\nThanks,\n' + (org || 'Your Consultant');
+
+  return header + body + footer;
+}
+
+// ═══════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+// ACTIONS
+// ═══════════════════════════════════════════════════
+function outlookURL(s, r) {
+  if (!r.date||!r.time) return null;
+  const loc  = document.getElementById('globalLocation').value.trim();
+  // Outlook Web body= param: use CRLF line endings, strip non-ASCII
+  const params = [
+    'subject='  + encodeURIComponent(buildSubject(s.name)),
+    'startdt='  + encodeURIComponent(r.date+'T'+r.time+':00'),
+    'enddt='    + encodeURIComponent(addMins(r.date, r.time, s.duration)),
+    'ismeeting=1',
+  ];
+  if (loc) params.push('location=' + encodeURIComponent(loc));
+  const inv = parseInvitees();
+  if (inv.length) params.push('to=' + encodeURIComponent(inv.join(';')));
+  return 'https://outlook.office.com/calendar/action/compose?' + params.join('&');
+}
+
+async function openOutlook(id) {
+  const r = schedule.find(r=>r.sessionId===id);
+  const s = sessions.find(s=>s.id===id);
+  if (!r||!r.date||!r.time) { toast('Set a date and time first'); return; }
+  const url  = outlookURL(s, r);
+  if (!url) return;
+  const body = buildBodyPlain(s, r);
+  navigator.clipboard.writeText(body).then(() => {
+    toast('Body copied — paste into the meeting invite', 4000);
+  }).catch(() => {
+    toast('Could not auto-copy — paste body manually');
+  });
+  window.open(url, '_blank');
+  const btn = document.querySelector('#ac-' + id + ' .lbtn-ol');
+  if (btn) { btn.classList.add('actioned'); btn.innerHTML = '&#x2713; Sent'; }
+  r.actioned = true;
+  save();
+}
+
+
+function outlookURL(s, r) {
+  if (!r.date||!r.time) return null;
+  const loc  = document.getElementById('globalLocation').value.trim();
+  // Outlook Web body= param: use CRLF line endings, strip non-ASCII
+  const params = [
+    'subject='  + encodeURIComponent(buildSubject(s.name)),
+    'startdt='  + encodeURIComponent(r.date+'T'+r.time+':00'),
+    'enddt='    + encodeURIComponent(addMins(r.date, r.time, s.duration)),
+    'ismeeting=1',
+  ];
+  if (loc) params.push('location=' + encodeURIComponent(loc));
+  const inv = parseInvitees();
+  if (inv.length) params.push('to=' + encodeURIComponent(inv.join(';')));
+  return 'https://outlook.office.com/calendar/action/compose?' + params.join('&');
+}
+
+// RENDER
+// ═══════════════════════════════════════════════════
+function render() {
+  renderChips();
+  renderTable();
+  renderPool();
+  renderCal();
+  updateStatus();
+}
+
+function renderChips() {
+  const el = document.getElementById('sessionChips');
+  document.getElementById('sessCount').textContent = sessions.length ? '('+sessions.length+')' : '';
+  if (!sessions.length) { el.innerHTML='<div style="font-size:.72rem;color:var(--text-dim);">No sessions yet</div>'; return; }
+  el.innerHTML = sessions.map((s,i)=>`
+    <div class="s-chip">
+      <span class="s-chip-num">${i+1}</span>
+      <span class="s-chip-name" title="${esc(s.name)}">${esc(s.name)}</span>
+      <span class="s-chip-dur">${fmtDur(s.duration)}</span>
+      <button class="s-chip-del" onclick="removeSession('${s.id}')">✕</button>
+    </div>`).join('');
+}
+
+function actionHTML(s, r) {
+  const has = r.date && r.time;
+  const done = r.actioned;
+  const cls  = 'lbtn lbtn-ol' + (done ? ' actioned' : '');
+  const lbl  = done ? '&#x2713; Sent' : '&#x1F4E7; Create Invite';
+  return `<button class="${cls}" onclick="openOutlook('${s.id}')" ${has?'':'disabled'} title="Open as new meeting invite in Outlook Web">${lbl}</button>`;
+}
+
+function renderTable() {
+  const empty = document.getElementById('emptyState');
+  const table = document.getElementById('scheduleTable');
+  const tbody = document.getElementById('scheduleBody');
+  if (!sessions.length) { empty.style.display='block'; table.style.display='none'; return; }
+  empty.style.display='none'; table.style.display='table';
+  const defTime = document.getElementById('globalTime').value;
+  tbody.innerHTML = sessions.map((s,i) => {
+    const r = schedule.find(r=>r.sessionId===s.id)||{date:'',time:''};
+    const tv = r.time||defTime;
+    let tOpts='';
+    for(let h=6;h<=20;h++) for(let m of[0,30]){const v=pad(h)+':'+pad(m);tOpts+=`<option value="${v}"${v===tv?' selected':''}>${fmt12(v)}</option>`;}
+    return `<tr>
+      <td class="seq">${i+1}</td>
+      <td class="sname">${esc(s.name)}</td>
+      <td>
+        <select class="dur-sel" onchange="setDuration('${s.id}',this.value)">
+          ${[30,45,60,90,120,150,180,240,480].map(m=>`<option value="${m}"${m===s.duration?' selected':''}>${fmtDur(m)}</option>`).join('')}
+        </select>
+      </td>
+      <td><div class="date-cell">
+        <input type="date" value="${r.date}" onchange="setDate('${s.id}',this.value)">
+        <span class="dbadge${r.date?' set':''}" id="badge-${s.id}">${r.date?fmtDateShort(r.date):'Not set'}</span>
+      </div></td>
+      <td><select class="time-sel" onchange="setTime('${s.id}',this.value)">${tOpts}</select></td>
+      <td><div class="act-cell" id="ac-${s.id}">${actionHTML(s,r)}</div></td>
+      <td><button class="btn-danger" onclick="removeSession('${s.id}')">✕</button></td>
+    </tr>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════
+// CALENDAR
+// ═══════════════════════════════════════════════════
+function renderPool() {
+  const el = document.getElementById('poolChips');
+  const unscheduled = sessions.filter(s => { const r=schedule.find(r=>r.sessionId===s.id); return !r||!r.date; });
+  if (!unscheduled.length) { el.innerHTML='<span class="pool-empty">All sessions scheduled ✓</span>'; return; }
+  el.innerHTML = unscheduled.map(s=>`
+    <div class="pool-chip" draggable="true" data-id="${s.id}"
+      ondragstart="onPoolDragStart(event,'${s.id}')"
+      ondragend="onDragEnd(event)">
+      ${esc(s.name)} <span class="pc-dur">${fmtDur(s.duration)}</span>
+    </div>`).join('');
+}
+
+function isMobile() { return window.innerWidth <= 768; }
+
+function renderCal() {
+  const grid = document.getElementById('calGrid');
+  const today = toDateStr(new Date());
+  const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const mobile = isMobile();
+
+  // On mobile show 5 work days; on desktop show 7
+  const colDays = 5;
+  grid.style.gridTemplateColumns = (mobile ? '30px' : '36px') + ' repeat('+colDays+',1fr)';
+
+  const endDate = new Date(calStart); endDate.setDate(endDate.getDate()+(mobile?34:55));
+  document.getElementById('calTitle').textContent =
+    calStart.toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'})
+    +' — '
+    +endDate.toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'});
+
+  // Corner cell
+  let html = '<div class="cal-col-hdr" style="border-bottom:2px solid var(--border);"></div>';
+  days.slice(0, colDays).forEach((d,i) => {
+    html += `<div class="cal-col-hdr${i>=5?' wknd':''}">${d}</div>`;
+  });
+
+  const weeks = mobile ? 6 : 8;
+  for (let w=0; w<weeks; w++) {
+    const ws = new Date(calStart); ws.setDate(ws.getDate()+w*7);
+    html += `<div class="cal-week-lbl">W${w+1}</div>`;
+    for (let d=0; d<colDays; d++) {
+      const day = new Date(ws); day.setDate(day.getDate()+d);
+      const ds = toDateStr(day);
+      const isToday = ds===today;
+      const isWknd = d>=5;
+      let cls='cal-day'; if(isToday)cls+=' today'; if(isWknd)cls+=' wknd';
+
+      const evs = sessions.filter(s=>{ const r=schedule.find(r=>r.sessionId===s.id); return r&&r.date===ds; });
+      const evHTML = evs.map(s=>{
+        const r=schedule.find(r=>r.sessionId===s.id);
+        const tv=r.time||document.getElementById('globalTime').value;
+        return `<div class="cal-event" draggable="true" data-id="${s.id}"
+          ondragstart="onEventDragStart(event,'${s.id}')"
+          ondragend="onDragEnd(event)"
+          title="${esc(s.name)}\n${fmt12(tv)} · ${fmtDur(s.duration)}">
+          <span class="cal-event-name">${esc(s.name)}</span>
+          <span class="cal-event-time">${fmt12(tv)}</span>
+          <button class="cal-event-x" onclick="unschedule('${s.id}')" title="Unschedule">✕</button>
+        </div>`;
+      }).join('');
+
+      html += `<div class="${cls}"
+        ondragover="onDragOver(event)"
+        ondragleave="onDragLeave(event)"
+        ondrop="onDrop(event,'${ds}')">
+        <div class="day-num">${day.getDate()}</div>
+        ${evHTML}
+      </div>`;
+    }
+  }
+  grid.innerHTML = html;
+}
+
+function calShift(dir) {
+  const weeks = isMobile() ? 6 : 8;
+  calStart.setDate(calStart.getDate()+dir*(weeks*7));
+  renderCal();
+}
+function calToday() { calStart=mondayOf(new Date()); renderCal(); }
+
+// ═══════════════════════════════════════════════════
+// DRAG & DROP
+// ═══════════════════════════════════════════════════
+function onPoolDragStart(e, id)  { dragData={type:'pool',sessionId:id}; e.currentTarget.classList.add('dragging'); e.dataTransfer.effectAllowed='move'; }
+function onEventDragStart(e, id) { dragData={type:'event',sessionId:id}; e.currentTarget.classList.add('dragging'); e.dataTransfer.effectAllowed='move'; e.stopPropagation(); }
+function onDragEnd(e)            { e.currentTarget.classList.remove('dragging'); }
+function onDragOver(e)           { e.preventDefault(); e.dataTransfer.dropEffect='move'; e.currentTarget.classList.add('drag-over'); }
+function onDragLeave(e)          { e.currentTarget.classList.remove('drag-over'); }
+function onDrop(e, dateStr) {
+  e.preventDefault(); e.currentTarget.classList.remove('drag-over');
+  if (!dragData) return;
+  const r = schedule.find(r=>r.sessionId===dragData.sessionId);
+  if (!r) return;
+  r.date = dateStr;
+  if (!r.time) r.time = document.getElementById('globalTime').value;
+  dragData = null;
+  save(); renderPool(); renderCal(); refreshRow(r.sessionId);
+}
+
+// ═══════════════════════════════════════════════════
+// PERSIST
+// ═══════════════════════════════════════════════════
+function save() {
+  try {
+    localStorage.setItem('tp_v3', JSON.stringify({
+      sessions, schedule,
+      globalTime:      document.getElementById('globalTime').value,
+      globalDuration:  document.getElementById('globalDuration').value,
+      globalLocation:  document.getElementById('globalLocation').value,
+      globalOrganiser: document.getElementById('globalOrganiser').value,
+      globalEmail:     document.getElementById('globalEmail').value,
+      globalInvitees: document.getElementById('globalInvitees').value,
+      globalClient:   document.getElementById('globalClient').value,
+    }));
+    document.getElementById('stSaved').textContent = 'Saved '+new Date().toLocaleTimeString();
+  } catch(e) {}
+}
+
+function restoreStorage() {
+  try {
+    const raw = localStorage.getItem('tp_v3');
+    if (!raw) return;
+    const d = JSON.parse(raw);
+    sessions = (d.sessions||[]).map(s=>({seq:0,...s,calUID:s.calUID||calUID()}));
+    schedule = d.schedule||[];
+    if (d.globalTime)      document.getElementById('globalTime').value      = d.globalTime;
+    if (d.globalDuration)  document.getElementById('globalDuration').value  = d.globalDuration;
+    if (d.globalLocation)  document.getElementById('globalLocation').value  = d.globalLocation;
+    if (d.globalOrganiser) document.getElementById('globalOrganiser').value = d.globalOrganiser;
+    if (d.globalEmail)     document.getElementById('globalEmail').value     = d.globalEmail;
+    if (d.globalInvitees) document.getElementById('globalInvitees').value = d.globalInvitees;
+    if (d.globalClient)    document.getElementById('globalClient').value    = d.globalClient;
+    document.getElementById('stSaved').textContent = 'Restored from storage';
+  } catch(e) {}
+}
+
+function exportSchedule() {
+  const data = {
+    sessions, schedule,
+    globalTime:      document.getElementById('globalTime').value,
+    globalDuration:  document.getElementById('globalDuration').value,
+    globalLocation:  document.getElementById('globalLocation').value,
+    globalOrganiser: document.getElementById('globalOrganiser').value,
+    globalEmail:     document.getElementById('globalEmail').value,
+    exported:        new Date().toISOString(),
+    note:            'calUID fields are stable. Reimport and re-export to update existing Outlook events (SEQUENCE increments automatically).',
+  };
+  dlBlob(JSON.stringify(data,null,2), 'training-schedule.json', 'application/json');
+  toast('Schedule exported');
+}
+
+function importSchedule() {
+  document.getElementById('importData').value='';
+  document.getElementById('importModal').classList.add('open');
+}
+
+function doImport() {
+  try {
+    const d = JSON.parse(document.getElementById('importData').value);
+    sessions = (d.sessions||[]).map(s=>({seq:0,...s,calUID:s.calUID||calUID()}));
+    schedule = d.schedule||[];
+    if (d.globalTime)      document.getElementById('globalTime').value      = d.globalTime;
+    if (d.globalDuration)  document.getElementById('globalDuration').value  = d.globalDuration;
+    if (d.globalLocation)  document.getElementById('globalLocation').value  = d.globalLocation;
+    if (d.globalOrganiser) document.getElementById('globalOrganiser').value = d.globalOrganiser;
+    if (d.globalEmail)     document.getElementById('globalEmail').value     = d.globalEmail;
+    if (d.globalInvitees) document.getElementById('globalInvitees').value = d.globalInvitees;
+    if (d.globalClient)    document.getElementById('globalClient').value    = d.globalClient;
+    save(); render();
+    closeModal('importModal');
+    toast('Schedule imported');
+  } catch { toast('Invalid JSON'); }
+}
+
+function updateStatus() {
+  const t  = sessions.length;
+  const sc = schedule.filter(r=>r.date&&r.time).length;
+  document.getElementById('stTotal').textContent = t+' session'+(t!==1?'s':'')+', '+sc+' scheduled';
+  document.getElementById('stSched').textContent = sc+' / '+t+' scheduled';
+}
+
+// ═══════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════
+function parseInvitees() {
+  const raw = document.getElementById('globalInvitees').value;
+  return raw.split(/[,;\s\n]+/).map(e=>e.trim().toLowerCase()).filter(e=>e.includes('@'));
+}
+
+function buildSubject(sessName) {
+  const client = document.getElementById('globalClient').value.trim();
+  const org    = document.getElementById('globalOrganiser').value.trim();
+  // Extract first word of organiser name as company prefix fallback
+  const prefix = org ? org.split(' ')[0] : 'Fishbowl';
+  return client
+    ? 'Fishbowl | ' + client + ' | ' + sessName
+    : 'Fishbowl | ' + sessName;
+}
+
+function pad(n)       { return String(n).padStart(2,'0'); }
+function fmt12(t)     { const[h,m]=t.split(':').map(Number); return(h%12||12)+':'+pad(m)+(h>=12?' PM':' AM'); }
+function fmtDur(m)    { if(m<60)return m+'m'; const h=Math.floor(m/60),r=m%60; return r?h+'h '+r+'m':h+'h'; }
+function fmtDateShort(s){ return parseDate(s).toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'}); }
+function fmtDateLong(s) { return parseDate(s).toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long',year:'numeric'}); }
+function parseDate(s) { const[y,mo,d]=s.split('-').map(Number); return new Date(y,mo-1,d); }
+function toDateStr(d) { return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+function mondayOf(d)  { const day=new Date(d),dow=day.getDay(),diff=dow===0?-6:1-dow; day.setDate(day.getDate()+diff); return day; }
+function addMins(ds,ts,m){ const[h,min]=ts.split(':').map(Number),d=parseDate(ds); d.setHours(h,min+m,0,0); return toDateStr(d)+'T'+pad(d.getHours())+':'+pad(d.getMinutes())+':00'; }
+function addMinsArr(ds,ts,m){ const[h,min]=ts.split(':').map(Number),d=parseDate(ds); d.setHours(h,min+m,0,0); return[toDateStr(d),pad(d.getHours())+':'+pad(d.getMinutes())]; }
+function esc(s)       { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+let _tt;
+function toast(msg, dur=2700){ const el=document.getElementById('toast'); el.textContent=msg; el.classList.add('show'); clearTimeout(_tt); _tt=setTimeout(()=>el.classList.remove('show'),dur); }
+function closeModal(id){ document.getElementById(id).classList.remove('open'); }
+
+// ═══════════════════════════════════════════════════
+// MOBILE SIDEBAR DRAWER
+// ═══════════════════════════════════════════════════
+function openSidebar() {
+  document.querySelector('.sidebar').classList.add('open');
+  document.getElementById('drawerOverlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeSidebar() {
+  document.querySelector('.sidebar').classList.remove('open');
+  document.getElementById('drawerOverlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+// Close sidebar when adding/loading sessions on mobile
+const _origAddSession = addSession;
+// Wrap save button actions to close drawer on mobile
+document.querySelector('.sidebar').addEventListener('click', e => {
+  if (isMobile() && (e.target.classList.contains('btn-primary') || e.target.classList.contains('btn-outline'))) {
+    setTimeout(closeSidebar, 300);
+  }
+});
+
+// ═══════════════════════════════════════════════════
+// MOBILE TABS
+// ═══════════════════════════════════════════════════
+let mobileActiveTab = 'schedule';
+function switchMobileTab(tab) {
+  mobileActiveTab = tab;
+  document.querySelectorAll('.mobile-tab').forEach((b,i) => {
+    b.classList.toggle('active', (i===0&&tab==='schedule')||(i===1&&tab==='calendar'));
+  });
+  const panel = document.querySelector('.panel');
+  const calPanel = document.querySelector('.cal-panel');
+  if (tab === 'schedule') {
+    panel.classList.remove('mob-hidden');
+    calPanel.classList.add('mob-hidden');
+  } else {
+    panel.classList.add('mob-hidden');
+    calPanel.classList.remove('mob-hidden');
+    renderCal();
+  }
+}
+
+// Rerender calendar on resize (handles orientation change)
+let _resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(() => { renderCal(); }, 200);
+});
+
+</script>
+</body>
+</html>
