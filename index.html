@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Training Schedule Planner</title>
-<script src="https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js" onerror="window.__msalPrimaryScriptError = true; console.error('MSAL CDN failed to load from alcdn.msauth.net');"></script>
 <style>
 :root {
   --bg: #f0f2f5;
@@ -1428,36 +1428,159 @@ function closeModal(id){ document.getElementById(id).classList.remove('open'); }
 // ── CONFIG — replace these two values after Azure app registration ──
 const GRAPH_CLIENT_ID = 'd1e57e3e-dccf-454b-9f85-68bed61fb0d4';   // Application (client) ID from Azure
 const GRAPH_TENANT_ID = '9456864c-263a-4b5b-92b3-5e830f75a8fe';   // Directory (tenant) ID from Azure
+
+const GRAPH_SCOPES = ['Calendars.ReadWrite'];
+const MSAL_CDN_URLS = [
+  'https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js',
+  'https://unpkg.com/@azure/msal-browser@2.39.0/lib/msal-browser.min.js',
+];
 // ────────────────────────────────────────────────────────────────────
 
 let msalInstance = null;
 let graphAccount = null;
+let msalInitPromise = null;
+let msalInitError = null;
+const msalScriptLoads = new Map();
 
-function initMsal() {
-  if (!GRAPH_CLIENT_ID || GRAPH_CLIENT_ID === 'YOUR_CLIENT_ID_HERE') return;
-  try {
-    msalInstance = new msal.PublicClientApplication({
-      auth: {
-        clientId:   GRAPH_CLIENT_ID,
-        authority:  'https://login.microsoftonline.com/' + GRAPH_TENANT_ID,
-        redirectUri: window.location.origin + window.location.pathname,
-      },
-      cache: { cacheLocation: 'sessionStorage' },
-    });
-    // Restore any existing session silently
-    const accounts = msalInstance.getAllAccounts();
-    if (accounts.length) {
-      graphAccount = accounts[0];
-      updateAuthUI();
+function hasGraphConfig() {
+  return Boolean(
+    GRAPH_CLIENT_ID &&
+    GRAPH_CLIENT_ID !== 'YOUR_CLIENT_ID_HERE' &&
+    GRAPH_TENANT_ID &&
+    GRAPH_TENANT_ID !== 'YOUR_TENANT_ID_HERE'
+  );
+}
+
+function isMsalAvailable() {
+  return Boolean(window.msal && window.msal.PublicClientApplication);
+}
+
+function loadExternalScript(src) {
+  if (msalScriptLoads.has(src)) return msalScriptLoads.get(src);
+
+  const promise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.dataset.msalSrc = src;
+    script.onload = () => {
+      if (isMsalAvailable()) {
+        console.info('MSAL loaded from', src);
+        resolve();
+      } else {
+        reject(new Error('MSAL loaded from ' + src + ' but window.msal.PublicClientApplication is unavailable.'));
+      }
+    };
+    script.onerror = () => reject(new Error('Failed to load MSAL from ' + src));
+    document.head.appendChild(script);
+  });
+
+  msalScriptLoads.set(src, promise);
+  return promise;
+}
+
+async function ensureMsalLoaded() {
+  if (isMsalAvailable()) return;
+
+  let lastError = null;
+  for (const src of MSAL_CDN_URLS) {
+    try {
+      await loadExternalScript(src);
+      return;
+    } catch (e) {
+      lastError = e;
+      console.error('MSAL script load failed:', src, e);
     }
-  } catch(e) {
-    console.warn('MSAL init failed:', e);
   }
+
+  throw lastError || new Error('MSAL could not be loaded from any configured CDN.');
+}
+
+async function initMsal() {
+  if (!hasGraphConfig()) {
+    console.warn('MSAL init skipped: Graph client or tenant ID is missing.');
+    return null;
+  }
+  if (msalInstance) return msalInstance;
+  if (msalInitPromise) return msalInitPromise;
+
+  msalInitPromise = (async () => {
+    try {
+      if (window.__msalPrimaryScriptError) {
+        console.error('Primary MSAL CDN failed before init. Trying fallback loader.');
+      }
+
+      await ensureMsalLoaded();
+
+      if (!isMsalAvailable()) {
+        throw new Error('MSAL library is not available on window.msal.');
+      }
+
+      console.info('Creating MSAL PublicClientApplication', {
+        clientId: GRAPH_CLIENT_ID,
+        tenantId: GRAPH_TENANT_ID,
+        redirectUri: window.location.origin + window.location.pathname,
+      });
+
+      const instance = new window.msal.PublicClientApplication({
+        auth: {
+          clientId: GRAPH_CLIENT_ID,
+          authority: 'https://login.microsoftonline.com/' + GRAPH_TENANT_ID,
+          redirectUri: window.location.origin + window.location.pathname,
+        },
+        cache: { cacheLocation: 'sessionStorage' },
+      });
+
+      if (typeof instance.initialize === 'function') {
+        await instance.initialize();
+      }
+
+      let redirectResult = null;
+      if (typeof instance.handleRedirectPromise === 'function') {
+        redirectResult = await instance.handleRedirectPromise();
+      }
+
+      msalInstance = instance;
+      msalInitError = null;
+
+      if (redirectResult?.account) {
+        graphAccount = redirectResult.account;
+      } else {
+        const accounts = msalInstance.getAllAccounts();
+        if (accounts.length) graphAccount = accounts[0];
+      }
+
+      if (graphAccount) updateAuthUI();
+      console.info('MSAL initialised successfully.');
+      return msalInstance;
+    } catch (e) {
+      msalInitError = e;
+      msalInstance = null;
+      console.error('MSAL init failed:', e);
+      return null;
+    } finally {
+      msalInitPromise = null;
+    }
+  })();
+
+  return msalInitPromise;
 }
 
 async function toggleAuth() {
-  if (!msalInstance) {
+  if (!hasGraphConfig()) {
     toast('Add your Azure Client ID and Tenant ID to enable M365 sync', 4000);
+    return;
+  }
+  if (!msalInstance) {
+    await initMsal();
+  }
+  if (!msalInstance) {
+    toast(
+      msalInitError
+        ? 'M365 sync could not start. Check the browser console for the MSAL error.'
+        : 'M365 sync is still initialising. Please try again.',
+      5000
+    );
     return;
   }
   if (graphAccount) {
@@ -1475,7 +1598,7 @@ async function signIn() {
   if (!msalInstance) return;
   try {
     const result = await msalInstance.loginPopup({
-      scopes: ['Calendars.ReadWrite'],
+      scopes: GRAPH_SCOPES,
       prompt: 'select_account',
     });
     graphAccount = result.account;
@@ -1483,6 +1606,7 @@ async function signIn() {
     render();
     toast('Connected as ' + graphAccount.name);
   } catch(e) {
+    console.error('MSAL loginPopup failed:', e);
     if (e.errorCode !== 'user_cancelled') toast('Sign-in failed: ' + (e.message||e));
   }
 }
@@ -1506,18 +1630,26 @@ function updateAuthUI() {
 }
 
 async function getGraphToken() {
+  if (!msalInstance) {
+    await initMsal();
+  }
   if (!msalInstance || !graphAccount) return null;
   try {
     const result = await msalInstance.acquireTokenSilent({
-      scopes: ['Calendars.ReadWrite'],
+      scopes: GRAPH_SCOPES,
       account: graphAccount,
     });
     return result.accessToken;
-  } catch {
+  } catch (silentError) {
+    console.warn('MSAL acquireTokenSilent failed, falling back to popup:', silentError);
     try {
-      const result = await msalInstance.acquireTokenPopup({ scopes: ['Calendars.ReadWrite'] });
+      const result = await msalInstance.acquireTokenPopup({
+        scopes: GRAPH_SCOPES,
+        account: graphAccount,
+      });
       return result.accessToken;
     } catch(e) {
+      console.error('MSAL acquireTokenPopup failed:', e);
       toast('Could not get calendar access: ' + (e.message||e));
       return null;
     }
@@ -1597,8 +1729,16 @@ async function pushToCalendar(id) {
   }
 }
 
-// Initialise MSAL on load
-initMsal();
+// Initialise MSAL once the DOM is ready so auth UI elements exist before restore/update.
+function bootstrapMsal() {
+  initMsal().catch(e => console.error('MSAL bootstrap failed:', e));
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bootstrapMsal, { once: true });
+} else {
+  bootstrapMsal();
+}
 
 
 function openSidebar() {
