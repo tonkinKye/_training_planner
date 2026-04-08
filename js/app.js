@@ -1,5 +1,7 @@
-import { closeModal, getTimeOptionsHTML, mondayOf } from "./utils.js";
-import { bootstrapMsal, pushToCalendar, toggleAuth } from "./m365.js";
+import { closeModal, getTimeOptionsHTML, mondayOf, pad, toast } from "./utils.js";
+import { getConflicts } from "./conflicts.js";
+import { openDayView, shiftDayView, pushAllScheduled, renderDayViewGrid } from "./dayview.js";
+import { bootstrapMsal, fetchCalendarEvents, pushToCalendar, toggleAuth } from "./m365.js";
 import { openOutlook } from "./invites.js";
 import { render, renderCal } from "./render.js";
 import {
@@ -173,11 +175,23 @@ function setupEventDelegation() {
     sortByDate: () => sortByDate(),
     toggleAuth: () => toggleAuth(),
     toggleSmart: () => toggleSmart(),
+    checkConflicts: async () => {
+      toast("Fetching calendar\u2026");
+      await fetchCalendarEvents();
+      render();
+      const conflicts = getConflicts();
+      const count = conflicts.size;
+      toast(count ? `${count} session${count > 1 ? "s" : ""} with conflicts` : "No conflicts found", 4000);
+    },
 
     removeSession: (el) => removeSession(el.dataset.id),
     pushToCalendar: (el) => pushToCalendar(el.dataset.id),
     openOutlook: (el) => openOutlook(el.dataset.id),
     unschedule: (el) => unschedule(el.dataset.id),
+
+    openDayView: (el) => openDayView(el.dataset.date),
+    shiftDayView: (el) => shiftDayView(Number(el.dataset.dir)),
+    pushAllScheduled: () => pushAllScheduled(),
 
     calShift: (el) => calShift(Number(el.dataset.dir)),
     closeModal: (el) => closeModal(el.dataset.modal),
@@ -225,7 +239,7 @@ function setupEventDelegation() {
   });
 
   document.addEventListener("dragover", (e) => {
-    const el = e.target.closest("[data-drop]");
+    const el = e.target.closest("[data-drop], [data-drop-dv]");
     if (!el) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
@@ -233,16 +247,35 @@ function setupEventDelegation() {
   });
 
   document.addEventListener("dragleave", (e) => {
-    const el = e.target.closest("[data-drop]");
+    const el = e.target.closest("[data-drop], [data-drop-dv]");
     if (el) el.classList.remove("drag-over");
   });
 
   document.addEventListener("drop", (e) => {
-    const el = e.target.closest("[data-drop]");
-    if (!el) return;
-    e.preventDefault();
-    el.classList.remove("drag-over");
-    dropOnDate(el.dataset.date);
+    const calDrop = e.target.closest("[data-drop]");
+    if (calDrop) {
+      e.preventDefault();
+      calDrop.classList.remove("drag-over");
+      dropOnDate(calDrop.dataset.date);
+      return;
+    }
+
+    const dvDrop = e.target.closest("[data-drop-dv]");
+    if (dvDrop && state.dragData) {
+      e.preventDefault();
+      dvDrop.classList.remove("drag-over");
+      const rect = dvDrop.getBoundingClientRect();
+      const hdrHeight = 32;
+      const relY = e.clientY - rect.top - hdrHeight;
+      const slotIndex = Math.max(0, Math.min(21, Math.floor(relY / 28)));
+      const minutes = 420 + slotIndex * 30;
+      const time = `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
+      const sessionId = state.dragData.sessionId;
+      state.dragData = null;
+      setDate(sessionId, dvDrop.dataset.date);
+      setTime(sessionId, time);
+      renderDayViewGrid();
+    }
   });
 }
 

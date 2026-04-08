@@ -20,6 +20,7 @@ export const state = {
   calStart: null,
   dragData: null,
   graphAccount: null,
+  calendarEvents: [],
 };
 
 let storageWarningShown = false;
@@ -139,6 +140,10 @@ export function invalidateAllInviteState(options) {
 
 export function setGraphAccount(account) {
   state.graphAccount = account || null;
+}
+
+export function clearCalendarEvents() {
+  state.calendarEvents = [];
 }
 
 function serializeState() {

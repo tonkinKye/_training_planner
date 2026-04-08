@@ -1,3 +1,4 @@
+import { getConflicts, getConflictsByDate } from "./conflicts.js";
 import { state, getScheduleRow } from "./state.js";
 import {
   esc,
@@ -36,6 +37,17 @@ function getEventCollections(defaultTime) {
 export function actionHTML(session, row) {
   const hasSchedule = Boolean(row.date && row.time);
 
+  let conflictWarn = "";
+  if (state.calendarEvents.length && hasSchedule) {
+    const conflicts = getConflicts();
+    const hits = conflicts.get(session.id);
+    if (hits?.length) {
+      const label = hits.length === 1 ? "1 conflict" : `${hits.length} conflicts`;
+      const titles = hits.map((e) => e.subject).join(", ");
+      conflictWarn = `<span class="conflict-warn" title="${esc(titles)}">&#x26A0; ${label}</span>`;
+    }
+  }
+
   let graphButton = "";
   if (state.graphAccount) {
     const graphClasses = `lbtn lbtn-graph${row.graphActioned ? " actioned" : ""}`;
@@ -60,7 +72,7 @@ export function actionHTML(session, row) {
     hasSchedule ? "" : "disabled"
   } title="${outlookTitle}">${outlookLabel}</button>`;
 
-  return graphButton + outlookButton;
+  return conflictWarn + graphButton + outlookButton;
 }
 
 export function updateStatus() {
@@ -197,10 +209,15 @@ export function renderCal() {
   const title = document.getElementById("calTitle");
   if (!grid || !title) return;
 
+  const conflictBtn = document.getElementById("conflictBtn");
+  if (conflictBtn) conflictBtn.classList.toggle("visible", Boolean(state.graphAccount));
+
   if (!state.calStart) state.calStart = mondayOf(new Date());
 
   const defaultTime = document.getElementById("globalTime")?.value || "09:00";
   const { eventsByDate } = getEventCollections(defaultTime);
+  const conflictsByDate = getConflictsByDate();
+  const sessionConflicts = state.calendarEvents.length ? getConflicts() : new Map();
   const today = toDateStr(new Date());
   const mobile = isMobile();
   const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -237,21 +254,33 @@ export function renderCal() {
       const dayString = toDateStr(day);
       const isToday = dayString === today;
       const isWeekend = dayIndex >= 5;
-      const classes = `cal-day${isToday ? " today" : ""}${isWeekend ? " wknd" : ""}`;
+      const hasConflict = conflictsByDate.has(dayString);
+      const classes = `cal-day${isToday ? " today" : ""}${isWeekend ? " wknd" : ""}${hasConflict ? " has-conflict" : ""}`;
       const events = eventsByDate.get(dayString) || [];
       const eventHTML = events
         .map(
-          ({ session, row, time }) => `<div class="cal-event" draggable="true" data-drag="event" data-id="${session.id}"
+          ({ session, row, time }) => {
+            const hits = sessionConflicts.get(session.id);
+            const conflictClass = hits?.length ? " cal-event-conflict" : "";
+            const conflictBadge = hits?.length
+              ? `<span class="cal-conflict-dot" title="${hits.length} conflict${hits.length > 1 ? "s" : ""}">!</span>`
+              : "";
+            return `<div class="cal-event${conflictClass}" draggable="true" data-drag="event" data-id="${session.id}"
             title="${esc(session.name)}&#10;${fmt12(time)} · ${fmtDur(session.duration)}">
             <span class="cal-event-name">${esc(session.name)}</span>
-            <span class="cal-event-time">${fmt12(time)}</span>
+            <span class="cal-event-time">${fmt12(time)}${conflictBadge}</span>
             <button class="cal-event-x" data-action="unschedule" data-id="${session.id}" title="Unschedule">✕</button>
-          </div>`
+          </div>`;
+          }
         )
         .join("");
 
+      const dayNumHTML = hasConflict
+        ? `<div class="day-num dv-link" data-action="openDayView" data-date="${dayString}">${day.getDate()} &#x26A0;</div>`
+        : `<div class="day-num">${day.getDate()}</div>`;
+
       html += `<div class="${classes}" data-drop data-date="${dayString}">
-        <div class="day-num">${day.getDate()}</div>
+        ${dayNumHTML}
         ${eventHTML}
       </div>`;
     }

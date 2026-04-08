@@ -2,6 +2,7 @@ import { GRAPH_CLIENT_ID, GRAPH_TENANT_ID } from "./config.js";
 import { buildBodyHTML, buildSubject, parseInvitees } from "./invites.js";
 import { refreshRow, render } from "./render.js";
 import {
+  clearCalendarEvents,
   getScheduleRow,
   getSession,
   invalidateAllInviteState,
@@ -217,6 +218,7 @@ export async function toggleAuth() {
     }
 
     setGraphAccount(null);
+    clearCalendarEvents();
     updateAuthUI();
     render();
     return;
@@ -431,6 +433,82 @@ export async function pushToCalendar(sessionId) {
     refreshRow(sessionId);
     toast(`Graph error: ${error.message}`, 5000);
   }
+}
+
+export async function fetchCalendarEvents() {
+  const scheduled = state.schedule.filter((row) => row.date && row.time);
+  if (!scheduled.length) {
+    toast("No sessions are scheduled yet");
+    return [];
+  }
+
+  const dates = scheduled.map((row) => row.date).sort();
+  const startDate = `${dates[0]}T00:00:00`;
+  const endDate = `${dates[dates.length - 1]}T23:59:59`;
+  const timeZone = getLocalTimeZone();
+
+  const accessToken = await getGraphToken();
+  if (!accessToken) {
+    toast("Could not get an access token. Try reconnecting M365.", 4000);
+    return [];
+  }
+
+  const allEvents = [];
+  let url =
+    `https://graph.microsoft.com/v1.0/me/calendarView` +
+    `?startDateTime=${encodeURIComponent(startDate)}` +
+    `&endDateTime=${encodeURIComponent(endDate)}` +
+    `&$select=id,subject,start,end,isCancelled` +
+    `&$top=250` +
+    `&$orderby=start/dateTime`;
+
+  try {
+    while (url) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), GRAPH_FETCH_TIMEOUT_MS);
+
+      let response;
+      try {
+        response = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Prefer: `outlook.timezone="${timeZone}"`,
+          },
+          signal: controller.signal,
+        });
+      } catch (fetchError) {
+        if (fetchError.name === "AbortError") throw new Error("Request timed out.");
+        throw fetchError;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ error: { message: response.statusText } }));
+        throw new Error(body.error?.message || response.statusText);
+      }
+
+      const data = await response.json();
+      for (const event of data.value || []) {
+        if (event.isCancelled) continue;
+        allEvents.push({
+          id: event.id,
+          subject: event.subject,
+          start: event.start?.dateTime,
+          end: event.end?.dateTime,
+        });
+      }
+
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (error) {
+    console.error("Calendar fetch failed:", error);
+    toast(`Could not read calendar: ${error.message}`, 5000);
+    return [];
+  }
+
+  state.calendarEvents = allEvents;
+  return allEvents;
 }
 
 export function bootstrapMsal() {

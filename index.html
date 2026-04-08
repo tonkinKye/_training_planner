@@ -194,6 +194,7 @@
       <h3 id="calTitle"></h3>
       <button class="btn-ghost btn-sm" data-action="calToday">Today</button>
       <button class="btn-ghost btn-sm" data-action="calShift" data-dir="1">Next &rarr;</button>
+      <button class="btn-ghost btn-sm" id="conflictBtn" data-action="checkConflicts">&#x26A0; Check Conflicts</button>
     </div>
 
     <div class="cal-scroll">
@@ -218,6 +219,26 @@
     <div class="modal-actions">
       <button class="btn-ghost" data-action="closeModal" data-modal="importModal">Cancel</button>
       <button class="btn-primary" data-action="doImport">Import</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="dayViewModal">
+  <div class="modal dv-modal">
+    <div class="dv-header">
+      <h3 id="dvTitle">Week View</h3>
+      <div class="dv-nav">
+        <button class="btn-ghost btn-sm" data-action="shiftDayView" data-dir="-1">&larr;</button>
+        <button class="btn-ghost btn-sm" data-action="shiftDayView" data-dir="1">&rarr;</button>
+      </div>
+      <button class="btn-ghost btn-sm" data-action="closeModal" data-modal="dayViewModal">&#x2715;</button>
+    </div>
+    <div class="dv-scroll" id="dvScroll">
+      <div class="dv-grid" id="dvGrid"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" data-action="closeModal" data-modal="dayViewModal">Close</button>
+      <button class="btn-primary" data-action="pushAllScheduled">Push All Scheduled</button>
     </div>
   </div>
 </div>
