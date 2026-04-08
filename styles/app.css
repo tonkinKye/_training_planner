@@ -894,7 +894,8 @@ select option {
 }
 
 .dv-scroll {
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   max-height: 70vh;
   border: 1px solid var(--border);
   border-radius: var(--r);
@@ -902,7 +903,6 @@ select option {
 
 .dv-grid {
   display: flex;
-  min-width: fit-content;
 }
 
 .dv-time-col {
@@ -922,7 +922,7 @@ select option {
 
 .dv-day-col {
   flex: 1;
-  min-width: 120px;
+  min-width: 0;
   position: relative;
   border-left: 1px solid var(--border);
 }

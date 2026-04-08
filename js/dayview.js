@@ -59,9 +59,6 @@ function getWeekSessions(weekStart) {
     }
   }
 
-  if (state.calendarEvents.length) {
-    console.info("Day view data:", { week: days, sessionsTotal: state.sessions.length, calEventsTotal: state.calendarEvents.length, byDate: Object.fromEntries([...byDate.entries()].map(([k, v]) => [k, { sessions: v.sessions.length, calEvents: v.calEvents.length }])) });
-  }
 
   return { days, byDate };
 }
