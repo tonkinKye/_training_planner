@@ -1,5 +1,5 @@
 import { getConflicts, getConflictedDates } from "./conflicts.js";
-import { pushToCalendar } from "./m365.js";
+import { fetchCalendarEvents, pushToCalendar } from "./m365.js";
 import { setDate, setTime } from "./scheduler.js";
 import { state, getScheduleRow, getSession } from "./state.js";
 import { parseDate, mondayOf, toDateStr, fmt12, fmtDur, esc, pad, toast } from "./utils.js";
@@ -192,6 +192,17 @@ export async function pushAllScheduled() {
   const scheduled = state.schedule.filter((r) => r.date && r.time);
   if (!scheduled.length) {
     toast("No sessions are scheduled");
+    return;
+  }
+
+  toast("Checking for conflicts\u2026");
+  await fetchCalendarEvents();
+
+  const conflicts = getConflicts();
+  if (conflicts.size) {
+    const dates = getConflictedDates();
+    toast(`Resolve conflicts first \u2014 reviewing ${dates.length} conflicted day${dates.length > 1 ? "s" : ""}`, 5000);
+    openDayView(dates[0]);
     return;
   }
 

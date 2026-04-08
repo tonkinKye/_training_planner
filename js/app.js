@@ -318,14 +318,15 @@ function setupEventDelegation() {
     const dvDrop = e.target.closest("[data-drop-dv]");
     if (dvDrop && state.dragData) {
       e.preventDefault();
-      const today = `${new Date().getFullYear()}-${pad(new Date().getMonth() + 1)}-${pad(new Date().getDate())}`;
-      if (dvDrop.dataset.date < today) {
+      const now = new Date();
+      const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      const slotIndex = dvSlotFromEvent(e, dvDrop);
+      const time = dvTimeFromSlot(slotIndex);
+      if (dvDrop.dataset.date < today || (dvDrop.dataset.date === today && time < `${pad(now.getHours())}:${pad(now.getMinutes())}`)) {
         toast("Cannot schedule in the past");
         state.dragData = null;
         return;
       }
-      const slotIndex = dvSlotFromEvent(e, dvDrop);
-      const time = dvTimeFromSlot(slotIndex);
       const sessionId = state.dragData.sessionId;
       state.dragData = null;
       setDate(sessionId, dvDrop.dataset.date);
