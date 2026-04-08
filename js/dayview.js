@@ -215,6 +215,7 @@ export async function pushAllScheduled() {
     await pushToCalendar(row.sessionId);
   }
 
+  await fetchCalendarEvents();
   renderDayViewGrid();
   toast(`${pushed} session${pushed > 1 ? "s" : ""} pushed to calendar`, 4000);
 }
