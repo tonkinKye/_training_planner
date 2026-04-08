@@ -52,10 +52,15 @@ function getWeekSessions(weekStart) {
 
   for (const event of state.calendarEvents) {
     if (pushedIds.has(event.id)) continue;
-    const eventDate = event.start?.split("T")[0];
+    const parsed = event.start ? new Date(event.start) : null;
+    const eventDate = parsed && !isNaN(parsed.getTime()) ? toDateStr(parsed) : null;
     if (eventDate && byDate.has(eventDate)) {
       byDate.get(eventDate).calEvents.push(event);
     }
+  }
+
+  if (state.calendarEvents.length) {
+    console.info("Day view data:", { week: days, sessionsTotal: state.sessions.length, calEventsTotal: state.calendarEvents.length, byDate: Object.fromEntries([...byDate.entries()].map(([k, v]) => [k, { sessions: v.sessions.length, calEvents: v.calEvents.length }])) });
   }
 
   return { days, byDate };
@@ -124,7 +129,7 @@ export function renderDayViewGrid() {
     for (const event of data.calEvents) {
       const evStart = event.start ? new Date(event.start) : null;
       const evEnd = event.end ? new Date(event.end) : null;
-      if (!evStart || !evEnd) continue;
+      if (!evStart || !evEnd || isNaN(evStart.getTime()) || isNaN(evEnd.getTime())) continue;
 
       const startMins = evStart.getHours() * 60 + evStart.getMinutes();
       const durationMins = (evEnd - evStart) / 60000;
