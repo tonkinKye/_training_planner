@@ -870,7 +870,7 @@ select option {
   text-decoration: underline;
 }
 
-.dv-modal {
+.modal.dv-modal {
   width: 95vw;
   max-width: 1100px;
   padding: 12px;
