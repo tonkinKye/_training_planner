@@ -25,7 +25,10 @@ export const state = {
 let storageWarningShown = false;
 
 export function uid() {
-  return crypto.randomUUID();
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
 export function calUID() {

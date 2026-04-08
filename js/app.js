@@ -189,7 +189,16 @@ function setupEventDelegation() {
     const el = e.target.closest("[data-action]");
     if (!el) return;
     const handler = clickActions[el.dataset.action];
-    if (handler) handler(el);
+    if (!handler) {
+      console.warn("Unknown data-action:", el.dataset.action);
+      return;
+    }
+    try {
+      const result = handler(el);
+      if (result instanceof Promise) result.catch((err) => console.error(`Async action "${el.dataset.action}" failed:`, err));
+    } catch (err) {
+      console.error(`Action "${el.dataset.action}" failed:`, err);
+    }
   });
 
   document.addEventListener("change", (e) => {
