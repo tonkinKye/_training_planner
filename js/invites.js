@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from "./config.js";
 import { getSessionBody } from "./session-templates.js";
 import { getScheduleRow, getSession, saveState } from "./state.js";
 import { fmt12, fmtDateLong, fmtDur, addMins, esc, toast } from "./utils.js";
@@ -13,7 +14,7 @@ export function parseInvitees() {
 
 export function buildSubject(sessionName) {
   const client = document.getElementById("globalClient")?.value.trim() || "";
-  return client ? `Fishbowl | ${client} | ${sessionName}` : `Fishbowl | ${sessionName}`;
+  return client ? `${PRODUCT_NAME} | ${client} | ${sessionName}` : `${PRODUCT_NAME} | ${sessionName}`;
 }
 
 function buildSignatureLines() {
@@ -174,7 +175,7 @@ export async function openOutlook(sessionId) {
 
   const openedWindow = window.open(url, "_blank", "noopener");
   if (!openedWindow) {
-    toast("Outlook Web popup was blocked", 4000);
+    toast("Popup blocked \u2014 invite text is on your clipboard. Open Outlook manually.", 5000);
     return;
   }
 

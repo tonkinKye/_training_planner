@@ -25,7 +25,7 @@ export const state = {
 let storageWarningShown = false;
 
 export function uid() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  return crypto.randomUUID();
 }
 
 export function calUID() {
@@ -206,18 +206,28 @@ export function openImportModal() {
   document.getElementById("importModal")?.classList.add("open");
 }
 
+function isValidSession(session) {
+  return session && typeof session.name === "string" && session.name.trim() !== "";
+}
+
 export function doImport() {
   try {
     const raw = document.getElementById("importData")?.value || "";
     const data = JSON.parse(raw);
-    state.sessions = (data.sessions || []).map(normalizeSession);
+
+    const rawSessions = data.sessions || [];
+    const validSessions = rawSessions.filter(isValidSession);
+    const skipped = rawSessions.length - validSessions.length;
+    if (skipped) console.warn(`Import skipped ${skipped} session(s) with missing or empty name.`);
+
+    state.sessions = validSessions.map(normalizeSession);
     state.schedule = (data.schedule || []).map(normalizeScheduleRow);
     syncScheduleRows();
     applyPlannerFormData(data);
     ensureScheduledRowsHaveTime();
     saveState();
     closeModal("importModal");
-    toast("Schedule imported");
+    toast(skipped ? `Imported (${skipped} invalid session${skipped > 1 ? "s" : ""} skipped)` : "Schedule imported");
     return true;
   } catch (error) {
     console.error("Schedule import failed:", error);

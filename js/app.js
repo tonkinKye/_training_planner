@@ -1,4 +1,4 @@
-import { closeModal, fmt12, mondayOf, TIME_SLOTS } from "./utils.js";
+import { closeModal, getTimeOptionsHTML, mondayOf } from "./utils.js";
 import { bootstrapMsal, pushToCalendar, toggleAuth } from "./m365.js";
 import { openOutlook } from "./invites.js";
 import { render, renderCal } from "./render.js";
@@ -9,14 +9,9 @@ import {
   calShift,
   calToday,
   clearDates,
+  dropOnDate,
   loadExamples,
   loadFromJSON,
-  onDragEnd,
-  onDragLeave,
-  onDragOver,
-  onDrop,
-  onEventDragStart,
-  onPoolDragStart,
   removeSession,
   setDate,
   setDayPreset,
@@ -43,10 +38,7 @@ let resizeTimer = null;
 function buildTimeSelect(id, selectedValue) {
   const select = document.getElementById(id);
   if (!select) return;
-  select.innerHTML = TIME_SLOTS.map(
-    (value) =>
-      `<option value="${value}"${value === selectedValue ? " selected" : ""}>${fmt12(value)}</option>`
-  ).join("");
+  select.innerHTML = getTimeOptionsHTML(selectedValue);
 }
 
 function syncNewSessionDurationWithGlobal() {
@@ -79,6 +71,10 @@ function handleFormChange(id) {
     return;
   }
 
+  // globalTime does not invalidate invite state — it only affects future
+  // auto-population of new rows, not existing per-row times. Use "Apply
+  // Time to All" (applyAllTimes) to change existing rows, which does
+  // invalidate.
   if (inviteAffectingFields.has(id)) {
     invalidateAllInviteState();
   }
@@ -160,40 +156,84 @@ export function switchMobileTab(tab) {
   }
 }
 
-function exposeGlobals() {
-  Object.assign(window, {
-    addSession,
-    applyAllTimes,
-    applySmartFill,
-    calShift,
-    calToday,
-    clearDates,
-    closeModal,
-    closeSidebar,
-    doImport,
-    exportSchedule,
-    importSchedule: openImportModal,
-    loadExamples,
-    loadFromJSON,
-    onDragEnd,
-    onDragLeave,
-    onDragOver,
-    onDrop,
-    onEventDragStart,
-    onPoolDragStart,
-    openOutlook,
-    openSidebar,
-    pushToCalendar,
-    removeSession,
-    setDate,
-    setDayPreset,
-    setDuration,
-    setTime,
-    sortByDate,
-    switchMobileTab,
-    toggleAuth,
-    toggleSmart,
-    unschedule,
+function setupEventDelegation() {
+  const clickActions = {
+    addSession: () => addSession(),
+    applyAllTimes: () => applyAllTimes(),
+    applySmartFill: () => applySmartFill(),
+    calToday: () => calToday(),
+    clearDates: () => clearDates(),
+    closeSidebar: () => closeSidebar(),
+    doImport: () => { if (doImport()) render(); },
+    exportSchedule: () => exportSchedule(),
+    loadExamples: () => loadExamples(),
+    loadFromJSON: () => loadFromJSON(),
+    openImportModal: () => openImportModal(),
+    openSidebar: () => openSidebar(),
+    sortByDate: () => sortByDate(),
+    toggleAuth: () => toggleAuth(),
+    toggleSmart: () => toggleSmart(),
+
+    removeSession: (el) => removeSession(el.dataset.id),
+    pushToCalendar: (el) => pushToCalendar(el.dataset.id),
+    openOutlook: (el) => openOutlook(el.dataset.id),
+    unschedule: (el) => unschedule(el.dataset.id),
+
+    calShift: (el) => calShift(Number(el.dataset.dir)),
+    closeModal: (el) => closeModal(el.dataset.modal),
+    switchMobileTab: (el) => switchMobileTab(el.dataset.tab),
+    setDayPreset: (el) => setDayPreset(el.dataset.days.split(",").map(Number)),
+  };
+
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest("[data-action]");
+    if (!el) return;
+    const handler = clickActions[el.dataset.action];
+    if (handler) handler(el);
+  });
+
+  document.addEventListener("change", (e) => {
+    const el = e.target.closest("[data-action]");
+    if (!el) return;
+    const { action, id } = el.dataset;
+    if (action === "setDate") setDate(id, el.value);
+    else if (action === "setTime") setTime(id, el.value);
+    else if (action === "setDuration") setDuration(id, el.value);
+  });
+
+  document.addEventListener("dragstart", (e) => {
+    const el = e.target.closest("[data-drag]");
+    if (!el) return;
+    el.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    state.dragData = { type: el.dataset.drag, sessionId: el.dataset.id };
+  });
+
+  document.addEventListener("dragend", (e) => {
+    const el = e.target.closest("[data-drag]");
+    if (el) el.classList.remove("dragging");
+    state.dragData = null;
+  });
+
+  document.addEventListener("dragover", (e) => {
+    const el = e.target.closest("[data-drop]");
+    if (!el) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    el.classList.add("drag-over");
+  });
+
+  document.addEventListener("dragleave", (e) => {
+    const el = e.target.closest("[data-drop]");
+    if (el) el.classList.remove("drag-over");
+  });
+
+  document.addEventListener("drop", (e) => {
+    const el = e.target.closest("[data-drop]");
+    if (!el) return;
+    e.preventDefault();
+    el.classList.remove("drag-over");
+    dropOnDate(el.dataset.date);
   });
 }
 
@@ -203,7 +243,7 @@ function init() {
   restoreStorage();
   syncNewSessionDurationWithGlobal();
   bindListeners();
-  exposeGlobals();
+  setupEventDelegation();
   state.calStart = mondayOf(new Date());
   render();
   bootstrapMsal();

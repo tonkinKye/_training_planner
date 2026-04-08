@@ -1,19 +1,28 @@
+import { GRAPH_CLIENT_ID, GRAPH_TENANT_ID } from "./config.js";
 import { buildBodyHTML, buildSubject, parseInvitees } from "./invites.js";
 import { refreshRow, render } from "./render.js";
-import { getScheduleRow, getSession, saveState, setGraphAccount, state } from "./state.js";
+import {
+  getScheduleRow,
+  getSession,
+  invalidateAllInviteState,
+  saveState,
+  setGraphAccount,
+  state,
+} from "./state.js";
 import { getLocalTimeZone, pad, toast } from "./utils.js";
-
-const GRAPH_CLIENT_ID = "d1e57e3e-dccf-454b-9f85-68bed61fb0d4";
-const GRAPH_TENANT_ID = "9456864c-263a-4b5b-92b3-5e830f75a8fe";
 const GRAPH_SCOPES = ["Calendars.ReadWrite"];
 const MSAL_CDN_URLS = [
   "https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js",
   "https://unpkg.com/@azure/msal-browser@2.39.0/lib/msal-browser.min.js",
 ];
 
+const GRAPH_FETCH_TIMEOUT_MS = 30000;
+const POPUP_COOLDOWN_MS = 5000;
+
 let msalInstance = null;
 let msalInitPromise = null;
 let msalInitError = null;
+let lastPopupDismissedAt = 0;
 const msalScriptLoads = new Map();
 
 function hasGraphConfig() {
@@ -49,8 +58,12 @@ function loadExternalScript(src) {
     document.head.appendChild(script);
   });
 
-  msalScriptLoads.set(src, promise);
-  return promise;
+  const tracked = promise.catch((error) => {
+    msalScriptLoads.delete(src);
+    throw error;
+  });
+  msalScriptLoads.set(src, tracked);
+  return tracked;
 }
 
 async function ensureMsalLoaded() {
@@ -98,6 +111,14 @@ export function updateAuthUI() {
   }
 }
 
+function setAuthButtonLoading(loading) {
+  const button = document.getElementById("authBtn");
+  if (!button) return;
+  button.classList.toggle("loading", loading);
+  if (loading) button.setAttribute("disabled", "");
+  else button.removeAttribute("disabled");
+}
+
 export async function initMsal() {
   if (!hasGraphConfig()) {
     console.warn("MSAL init skipped: Graph client or tenant ID is missing.");
@@ -109,6 +130,7 @@ export async function initMsal() {
 
   msalInitPromise = (async () => {
     try {
+      setAuthButtonLoading(true);
       if (window.__msalPrimaryScriptError) {
         console.error("Primary MSAL CDN failed before init. Trying fallback loader.");
       }
@@ -157,6 +179,7 @@ export async function initMsal() {
       console.error("MSAL init failed:", error);
       return null;
     } finally {
+      setAuthButtonLoading(false);
       msalInitPromise = null;
     }
   })();
@@ -210,7 +233,13 @@ async function signIn() {
       scopes: GRAPH_SCOPES,
       prompt: "select_account",
     });
+    const previousAccount = state.graphAccount;
     setGraphAccount(result.account);
+
+    if (previousAccount && previousAccount.username !== result.account.username) {
+      invalidateAllInviteState({ preserveGraphEventId: false });
+    }
+
     updateAuthUI();
     render();
     toast(`Connected as ${state.graphAccount.name || state.graphAccount.username}`);
@@ -237,6 +266,13 @@ async function getGraphToken() {
     return result.accessToken;
   } catch (silentError) {
     console.warn("MSAL acquireTokenSilent failed, falling back to popup:", silentError);
+
+    const elapsed = Date.now() - lastPopupDismissedAt;
+    if (elapsed < POPUP_COOLDOWN_MS) {
+      toast("Please wait a moment before retrying", 3000);
+      return null;
+    }
+
     try {
       const result = await msalInstance.acquireTokenPopup({
         scopes: GRAPH_SCOPES,
@@ -244,6 +280,7 @@ async function getGraphToken() {
       });
       return result.accessToken;
     } catch (popupError) {
+      lastPopupDismissedAt = Date.now();
       console.error("MSAL acquireTokenPopup failed:", popupError);
       toast(`Could not get calendar access: ${popupError.message || popupError}`, 5000);
       return null;
@@ -297,15 +334,29 @@ async function pushEventRequest(accessToken, row, eventPayload) {
     : "https://graph.microsoft.com/v1.0/me/events";
   const method = isUpdate ? "PATCH" : "POST";
 
-  const response = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      Prefer: "return=representation",
-    },
-    body: JSON.stringify(eventPayload),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), GRAPH_FETCH_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+      },
+      body: JSON.stringify(eventPayload),
+      signal: controller.signal,
+    });
+  } catch (fetchError) {
+    if (fetchError.name === "AbortError") {
+      throw new Error("Request timed out. Check your network and try again.");
+    }
+    throw fetchError;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     let errorPayload = null;
@@ -352,8 +403,9 @@ export async function pushToCalendar(sessionId) {
     try {
       result = await pushEventRequest(accessToken, row, payload);
     } catch (error) {
-      if (row.graphEventId && error.status === 404) {
-        console.warn("Stored Graph event was not found. Recreating event:", error);
+      const retryStatuses = new Set([401, 403, 404, 410]);
+      if (row.graphEventId && retryStatuses.has(error.status)) {
+        console.warn(`Graph PATCH returned ${error.status}. Clearing stale event ID and creating new event.`, error);
         row.graphEventId = "";
         row.graphActioned = false;
         result = await pushEventRequest(accessToken, row, payload);
@@ -382,5 +434,8 @@ export async function pushToCalendar(sessionId) {
 }
 
 export function bootstrapMsal() {
-  initMsal().catch((error) => console.error("MSAL bootstrap failed:", error));
+  initMsal().catch((error) => {
+    console.error("MSAL bootstrap failed:", error);
+    toast("M365 connection unavailable. You can retry via the Connect button.", 5000);
+  });
 }

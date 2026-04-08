@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from "./config.js";
 import { FISHBOWL_SESSIONS } from "./session-templates.js";
 import {
   calUID,
@@ -8,8 +9,8 @@ import {
   state,
   uid,
 } from "./state.js";
-import { render, renderCal, renderPool, refreshRow } from "./render.js";
-import { fmt12, isMobile, mondayOf, parseDate, toDateStr, toast } from "./utils.js";
+import { render, renderCal, renderChips, renderPool, refreshRow } from "./render.js";
+import { fmtDateShort, fmt12, isMobile, mondayOf, parseDate, toDateStr, toast } from "./utils.js";
 
 export function addSession() {
   const name = document.getElementById("newName")?.value.trim() || "";
@@ -54,7 +55,7 @@ export function loadExamples() {
 
   saveState();
   render();
-  toast("Fishbowl implementation sessions loaded");
+  toast(`${PRODUCT_NAME} implementation sessions loaded`);
 }
 
 export function loadFromJSON() {
@@ -137,10 +138,14 @@ export function setDuration(sessionId, value) {
   const nextDuration = Number(value) || session.duration;
   if (session.duration === nextDuration) return;
 
+  // Invalidate invite state — graphEventId is preserved so the next push
+  // will PATCH (update the end time) rather than create a duplicate event.
   session.duration = nextDuration;
   invalidateRowInviteState(row);
   saveState();
-  render();
+  renderChips();
+  refreshRow(sessionId);
+  renderCal();
 }
 
 export function unschedule(sessionId) {
@@ -151,7 +156,9 @@ export function unschedule(sessionId) {
   row.time = "";
   invalidateRowInviteState(row);
   saveState();
-  render();
+  renderPool();
+  refreshRow(sessionId);
+  renderCal();
 }
 
 export function toggleSmart() {
@@ -207,14 +214,26 @@ export function applySmartFill() {
 
   saveState();
   render();
-  toast(updatedCount ? `Filled ${updatedCount} session${updatedCount > 1 ? "s" : ""}` : "All sessions already have dates");
+
+  if (updatedCount) {
+    const dates = state.schedule.filter((r) => r.date).map((r) => r.date).sort();
+    const rangeHint = dates.length >= 2 ? ` (${fmtDateShort(dates[0])} \u2013 ${fmtDateShort(dates[dates.length - 1])})` : "";
+    toast(`Filled ${updatedCount} session${updatedCount > 1 ? "s" : ""}${rangeHint}`, 4000);
+  } else {
+    toast("All sessions already have dates");
+  }
 }
 
 export function clearDates() {
+  const scheduled = state.schedule.filter((row) => row.date).length;
+  if (scheduled && !window.confirm(`Clear dates from ${scheduled} scheduled session${scheduled > 1 ? "s" : ""}?`)) {
+    return;
+  }
+
   for (const row of state.schedule) {
     row.date = "";
     row.time = "";
-    invalidateRowInviteState(row);
+    invalidateRowInviteState(row, { preserveGraphEventId: false });
   }
 
   saveState();
@@ -241,46 +260,17 @@ export function sortByDate() {
   const withoutDate = state.schedule.filter((row) => !row.date);
   const orderedRows = [...withDate, ...withoutDate];
 
-  state.sessions = orderedRows
-    .map((row) => state.sessions.find((session) => session.id === row.sessionId))
-    .filter(Boolean);
+  const reordered = orderedRows.map((row) => state.sessions.find((session) => session.id === row.sessionId));
+  const lost = reordered.filter((s) => !s).length;
+  if (lost) console.warn(`sortByDate: ${lost} schedule row(s) had no matching session and were dropped.`);
+  state.sessions = reordered.filter(Boolean);
   state.schedule = orderedRows;
 
   saveState();
   render();
 }
 
-export function onPoolDragStart(event, sessionId) {
-  state.dragData = { type: "pool", sessionId };
-  event.currentTarget.classList.add("dragging");
-  event.dataTransfer.effectAllowed = "move";
-}
-
-export function onEventDragStart(event, sessionId) {
-  state.dragData = { type: "event", sessionId };
-  event.currentTarget.classList.add("dragging");
-  event.dataTransfer.effectAllowed = "move";
-  event.stopPropagation();
-}
-
-export function onDragEnd(event) {
-  state.dragData = null;
-  event.currentTarget.classList.remove("dragging");
-}
-
-export function onDragOver(event) {
-  event.preventDefault();
-  event.dataTransfer.dropEffect = "move";
-  event.currentTarget.classList.add("drag-over");
-}
-
-export function onDragLeave(event) {
-  event.currentTarget.classList.remove("drag-over");
-}
-
-export function onDrop(event, dateString) {
-  event.preventDefault();
-  event.currentTarget.classList.remove("drag-over");
+export function dropOnDate(dateString) {
   if (!state.dragData) return;
 
   const row = getScheduleRow(state.dragData.sessionId);

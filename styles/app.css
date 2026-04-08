@@ -959,6 +959,11 @@ select option {
   background: rgba(26, 127, 55, 0.14);
 }
 
+.auth-btn.loading {
+  opacity: 0.6;
+  cursor: wait;
+}
+
 .auth-avatar {
   width: 16px;
   height: 16px;

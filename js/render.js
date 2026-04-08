@@ -45,7 +45,7 @@ export function actionHTML(session, row) {
         ? "📅 Update Calendar"
         : "📅 Push to Calendar";
 
-    graphButton = `<button class="${graphClasses}" onclick="pushToCalendar('${session.id}')" ${
+    graphButton = `<button class="${graphClasses}" data-action="pushToCalendar" data-id="${session.id}" ${
       hasSchedule ? "" : "disabled"
     } title="Create or update this event directly in your M365 calendar">${graphLabel}</button>`;
   }
@@ -56,7 +56,7 @@ export function actionHTML(session, row) {
     ? "Outlook Web compose was opened. Review and send the invite in Outlook."
     : "Open a new meeting invite in Outlook Web";
 
-  const outlookButton = `<button class="${outlookClasses}" onclick="openOutlook('${session.id}')" ${
+  const outlookButton = `<button class="${outlookClasses}" data-action="openOutlook" data-id="${session.id}" ${
     hasSchedule ? "" : "disabled"
   } title="${outlookTitle}">${outlookLabel}</button>`;
 
@@ -97,7 +97,7 @@ export function renderChips() {
       <span class="s-chip-num">${index + 1}</span>
       <span class="s-chip-name" title="${esc(session.name)}">${esc(session.name)}</span>
       <span class="s-chip-dur">${fmtDur(session.duration)}</span>
-      <button class="s-chip-del" onclick="removeSession('${session.id}')">✕</button>
+      <button class="s-chip-del" data-action="removeSession" data-id="${session.id}">✕</button>
     </div>`
     )
     .join("");
@@ -143,7 +143,7 @@ export function renderTable() {
         <td class="seq">${index + 1}</td>
         <td class="sname">${esc(session.name)}</td>
         <td>
-          <select class="dur-sel" onchange="setDuration('${session.id}',this.value)">
+          <select class="dur-sel" data-action="setDuration" data-id="${session.id}">
             ${[30, 45, 60, 90, 120, 150, 180, 240, 480]
               .map(
                 (minutes) =>
@@ -155,16 +155,16 @@ export function renderTable() {
           </select>
         </td>
         <td><div class="date-cell">
-          <input type="date" value="${row.date}" onchange="setDate('${session.id}',this.value)">
+          <input type="date" value="${row.date}" data-action="setDate" data-id="${session.id}">
           <span class="dbadge${row.date ? " set" : ""}" id="badge-${session.id}">${
             row.date ? fmtDateShort(row.date) : "Not set"
           }</span>
         </div></td>
-        <td><select class="time-sel" onchange="setTime('${session.id}',this.value)">${getOptions(
+        <td><select class="time-sel" data-action="setTime" data-id="${session.id}">${getOptions(
           selectedTime
         )}</select></td>
         <td><div class="act-cell" id="ac-${session.id}">${actionHTML(session, row)}</div></td>
-        <td><button class="btn-danger" onclick="removeSession('${session.id}')">✕</button></td>
+        <td><button class="btn-danger" data-action="removeSession" data-id="${session.id}">✕</button></td>
       </tr>`;
     })
     .join("");
@@ -185,9 +185,7 @@ export function renderPool() {
   element.innerHTML = unscheduled
     .map(
       (session) => `
-    <div class="pool-chip" draggable="true" data-id="${session.id}"
-      ondragstart="onPoolDragStart(event,'${session.id}')"
-      ondragend="onDragEnd(event)">
+    <div class="pool-chip" draggable="true" data-drag="pool" data-id="${session.id}">
       ${esc(session.name)} <span class="pc-dur">${fmtDur(session.duration)}</span>
     </div>`
     )
@@ -243,21 +241,16 @@ export function renderCal() {
       const events = eventsByDate.get(dayString) || [];
       const eventHTML = events
         .map(
-          ({ session, row, time }) => `<div class="cal-event" draggable="true" data-id="${session.id}"
-            ondragstart="onEventDragStart(event,'${session.id}')"
-            ondragend="onDragEnd(event)"
+          ({ session, row, time }) => `<div class="cal-event" draggable="true" data-drag="event" data-id="${session.id}"
             title="${esc(session.name)}&#10;${fmt12(time)} · ${fmtDur(session.duration)}">
             <span class="cal-event-name">${esc(session.name)}</span>
             <span class="cal-event-time">${fmt12(time)}</span>
-            <button class="cal-event-x" onclick="unschedule('${session.id}')" title="Unschedule">✕</button>
+            <button class="cal-event-x" data-action="unschedule" data-id="${session.id}" title="Unschedule">✕</button>
           </div>`
         )
         .join("");
 
-      html += `<div class="${classes}"
-        ondragover="onDragOver(event)"
-        ondragleave="onDragLeave(event)"
-        ondrop="onDrop(event,'${dayString}')">
+      html += `<div class="${classes}" data-drop data-date="${dayString}">
         <div class="day-num">${day.getDate()}</div>
         ${eventHTML}
       </div>`;
