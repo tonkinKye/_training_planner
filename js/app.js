@@ -1,6 +1,15 @@
 import { closeModal, getTimeOptionsHTML, mondayOf, pad, toast } from "./utils.js";
-import { getConflicts, getConflictedDates } from "./conflicts.js";
-import { openDayView, shiftDayView, navigateConflict, pushAllScheduled, renderDayViewGrid } from "./dayview.js";
+import { getConflicts } from "./conflicts.js";
+import {
+  closeDayView,
+  confirmConflict,
+  openDayView,
+  shiftDayView,
+  navigateConflict,
+  pushAllScheduled,
+  renderDayViewGrid,
+  startConflictReview,
+} from "./dayview.js";
 import { bootstrapMsal, fetchCalendarEvents, pushToCalendar, toggleAuth } from "./m365.js";
 import { openOutlook } from "./invites.js";
 import { render, renderCal } from "./render.js";
@@ -104,7 +113,12 @@ function bindListeners() {
 
   document.querySelectorAll(".modal-overlay").forEach((element) => {
     element.addEventListener("click", (event) => {
-      if (event.target === element) element.classList.remove("open");
+      if (event.target !== element) return;
+      if (element.id === "dayViewModal") {
+        closeDayView();
+        return;
+      }
+      element.classList.remove("open");
     });
   });
 
@@ -188,18 +202,25 @@ function setupEventDelegation() {
       }
     },
     reviewConflicts: () => {
-      const dates = getConflictedDates();
-      if (dates.length) openDayView(dates[0]);
+      startConflictReview();
     },
 
-    removeSession: (el) => removeSession(el.dataset.id),
+    removeSession: (el) => {
+      removeSession(el.dataset.id);
+      renderDayViewGrid();
+    },
     pushToCalendar: (el) => pushToCalendar(el.dataset.id),
     openOutlook: (el) => openOutlook(el.dataset.id),
-    unschedule: (el) => unschedule(el.dataset.id),
+    unschedule: (el) => {
+      unschedule(el.dataset.id);
+      renderDayViewGrid({ focusActive: true });
+    },
 
     openDayView: (el) => openDayView(el.dataset.date),
+    closeDayView: () => closeDayView(),
     shiftDayView: (el) => shiftDayView(Number(el.dataset.dir)),
     navigateConflict: (el) => navigateConflict(Number(el.dataset.dir)),
+    confirmConflict: () => confirmConflict(),
     pushAllScheduled: () => pushAllScheduled(),
 
     calShift: (el) => calShift(Number(el.dataset.dir)),
@@ -228,9 +249,16 @@ function setupEventDelegation() {
     const el = e.target.closest("[data-action]");
     if (!el) return;
     const { action, id } = el.dataset;
-    if (action === "setDate") setDate(id, el.value);
-    else if (action === "setTime") setTime(id, el.value);
-    else if (action === "setDuration") setDuration(id, el.value);
+    if (action === "setDate") {
+      setDate(id, el.value);
+      renderDayViewGrid({ focusActive: true });
+    } else if (action === "setTime") {
+      setTime(id, el.value);
+      renderDayViewGrid({ focusActive: true });
+    } else if (action === "setDuration") {
+      setDuration(id, el.value);
+      renderDayViewGrid({ focusActive: true });
+    }
   });
 
   document.addEventListener("dragstart", (e) => {
@@ -331,7 +359,7 @@ function setupEventDelegation() {
       state.dragData = null;
       setDate(sessionId, dvDrop.dataset.date);
       setTime(sessionId, time);
-      renderDayViewGrid();
+      renderDayViewGrid({ focusActive: true });
     }
   });
 

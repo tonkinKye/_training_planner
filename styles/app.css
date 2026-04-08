@@ -879,6 +879,7 @@ select option {
 .dv-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -890,19 +891,30 @@ select option {
 
 .dv-nav {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
+.dv-review-meta {
+  min-height: 20px;
+  margin-bottom: 8px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
 .dv-scroll {
-  overflow-x: hidden;
+  overflow-x: auto;
   overflow-y: auto;
   max-height: 70vh;
   border: 1px solid var(--border);
   border-radius: var(--r);
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .dv-grid {
   display: flex;
+  min-width: max-content;
 }
 
 .dv-time-col {
@@ -921,10 +933,14 @@ select option {
 }
 
 .dv-day-col {
-  flex: 1;
-  min-width: 0;
+  flex: 1 0 140px;
+  min-width: 140px;
   position: relative;
   border-left: 1px solid var(--border);
+}
+
+.dv-day-col.active-conflict {
+  background: rgba(210, 36, 47, 0.04);
 }
 
 .dv-day-hdr {
@@ -942,6 +958,11 @@ select option {
 
 .dv-day-hdr.today {
   color: var(--accent);
+}
+
+.dv-day-hdr.active-conflict {
+  color: var(--red);
+  border-bottom-color: rgba(210, 36, 47, 0.35);
 }
 
 .dv-slot {
@@ -983,6 +1004,28 @@ select option {
   background: rgba(211, 47, 47, 0.1);
 }
 
+.dv-session.active-conflict {
+  z-index: 2;
+  border-color: rgba(210, 36, 47, 0.45);
+  box-shadow: 0 0 0 2px rgba(210, 36, 47, 0.16);
+}
+
+.dv-session.active-conflict strong::before {
+  content: "Reviewing";
+  display: block;
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.dv-session.active-conflict.resolved {
+  border-color: rgba(26, 127, 55, 0.45);
+  background: rgba(26, 127, 55, 0.12);
+  color: var(--green);
+  box-shadow: 0 0 0 2px rgba(26, 127, 55, 0.14);
+}
+
 .dv-cal-event {
   position: absolute;
   left: 2px;
@@ -996,6 +1039,12 @@ select option {
   z-index: 0;
   overflow: hidden;
   pointer-events: none;
+}
+
+.dv-cal-event.active-conflict {
+  border-color: rgba(210, 36, 47, 0.38);
+  background: rgba(210, 36, 47, 0.12);
+  color: var(--red);
 }
 
 .dv-drop-indicator {
@@ -1366,7 +1415,6 @@ select option {
     padding: 5px 10px;
     gap: 8px;
   }
-}
 
   .dv-modal {
     width: 100vw;
@@ -1378,11 +1426,16 @@ select option {
   }
 
   .dv-day-col {
-    min-width: 30vw;
+    flex-basis: 44vw;
+    min-width: 160px;
   }
 
   .dv-scroll {
     max-height: calc(100vh - 120px);
+  }
+
+  .dv-review-meta {
+    font-size: 0.7rem;
   }
 }
 

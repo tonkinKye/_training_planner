@@ -234,14 +234,15 @@
         <button class="btn-ghost btn-sm" data-action="navigateConflict" data-dir="-1">&larr; Prev Conflict</button>
         <button class="btn-ghost btn-sm" data-action="navigateConflict" data-dir="1">Next Conflict &rarr;</button>
       </div>
-      <button class="btn-ghost btn-sm" data-action="closeModal" data-modal="dayViewModal">&#x2715;</button>
+      <button class="btn-ghost btn-sm" data-action="closeDayView">&#x2715;</button>
     </div>
+    <div class="dv-review-meta" id="dvMeta" aria-live="polite"></div>
     <div class="dv-scroll" id="dvScroll">
       <div class="dv-grid" id="dvGrid"></div>
     </div>
     <div class="modal-actions">
-      <button class="btn-ghost" data-action="closeModal" data-modal="dayViewModal">Close</button>
-      <button class="btn-primary" data-action="pushAllScheduled">Push All Scheduled</button>
+      <button class="btn-ghost" data-action="closeDayView">Close</button>
+      <button class="btn-primary" id="dvConfirmBtn" data-action="confirmConflict" hidden>Confirm &amp; Next</button>
     </div>
   </div>
 </div>
