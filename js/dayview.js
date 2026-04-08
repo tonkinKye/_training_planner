@@ -1,4 +1,4 @@
-import { getConflicts } from "./conflicts.js";
+import { getConflicts, getConflictedDates } from "./conflicts.js";
 import { pushToCalendar } from "./m365.js";
 import { setDate, setTime } from "./scheduler.js";
 import { state, getScheduleRow, getSession } from "./state.js";
@@ -161,6 +161,30 @@ export function openDayView(dateString) {
 export function shiftDayView(direction) {
   if (!dvWeekStart) return;
   dvWeekStart.setDate(dvWeekStart.getDate() + direction * 7);
+  renderDayViewGrid();
+}
+
+export function navigateConflict(direction) {
+  const dates = getConflictedDates();
+  if (!dates.length) {
+    toast("No conflicts");
+    return;
+  }
+
+  const currentEnd = dvWeekStart ? toDateStr(new Date(dvWeekStart.getTime() + 4 * 86400000)) : "";
+  const currentStart = dvWeekStart ? toDateStr(dvWeekStart) : "";
+
+  let target = null;
+  if (direction > 0) {
+    target = dates.find((d) => d > currentEnd) || dates[0];
+  } else {
+    for (let i = dates.length - 1; i >= 0; i--) {
+      if (dates[i] < currentStart) { target = dates[i]; break; }
+    }
+    if (!target) target = dates[dates.length - 1];
+  }
+
+  dvWeekStart = mondayOf(parseDate(target));
   renderDayViewGrid();
 }
 

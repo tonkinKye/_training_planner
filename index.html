@@ -24,6 +24,7 @@
     <button class="auth-btn" id="authBtn" data-action="toggleAuth">
       <span id="authIcon">☁️</span> <span id="authLabel">Connect M365</span>
     </button>
+    <button class="btn-ghost btn-sm" data-action="pushAllScheduled">&#x1F4E4; Push All</button>
     <button class="btn-ghost btn-sm" data-action="openImportModal">&#x2B06; Import</button>
     <button class="btn-ghost btn-sm" data-action="exportSchedule">&#x2B07; Export</button>
   </div>
@@ -230,6 +231,8 @@
       <div class="dv-nav">
         <button class="btn-ghost btn-sm" data-action="shiftDayView" data-dir="-1">&larr;</button>
         <button class="btn-ghost btn-sm" data-action="shiftDayView" data-dir="1">&rarr;</button>
+        <button class="btn-ghost btn-sm" data-action="navigateConflict" data-dir="-1">&larr; Prev Conflict</button>
+        <button class="btn-ghost btn-sm" data-action="navigateConflict" data-dir="1">Next Conflict &rarr;</button>
       </div>
       <button class="btn-ghost btn-sm" data-action="closeModal" data-modal="dayViewModal">&#x2715;</button>
     </div>

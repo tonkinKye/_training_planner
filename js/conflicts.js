@@ -41,6 +41,11 @@ export function getConflicts() {
   return conflicts;
 }
 
+export function getConflictedDates() {
+  const byDate = getConflictsByDate();
+  return [...byDate.keys()].sort();
+}
+
 export function getConflictsByDate() {
   const byDate = new Map();
   const conflicts = getConflicts();

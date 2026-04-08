@@ -998,8 +998,16 @@ select option {
   pointer-events: none;
 }
 
-.dv-day-col.drag-over {
-  background: rgba(196, 127, 0, 0.06);
+.dv-drop-indicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 28px;
+  background: rgba(196, 127, 0, 0.15);
+  border: 2px dashed var(--accent);
+  border-radius: 4px;
+  z-index: 3;
+  pointer-events: none;
 }
 
 .status-bar {

@@ -97,6 +97,13 @@ export function setDate(sessionId, value) {
   const row = getScheduleRow(sessionId);
   if (!row) return;
 
+  if (value && value < toDateStr(new Date())) {
+    toast("Cannot schedule in the past");
+    const input = document.querySelector(`[data-action="setDate"][data-id="${sessionId}"]`);
+    if (input) input.value = row.date;
+    return;
+  }
+
   const nextValue = value || "";
   const priorDate = row.date;
   const priorTime = row.time;
@@ -272,6 +279,12 @@ export function sortByDate() {
 
 export function dropOnDate(dateString) {
   if (!state.dragData) return;
+
+  if (dateString < toDateStr(new Date())) {
+    toast("Cannot schedule in the past");
+    state.dragData = null;
+    return;
+  }
 
   const row = getScheduleRow(state.dragData.sessionId);
   state.dragData = null;

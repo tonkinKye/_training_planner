@@ -1,4 +1,4 @@
-import { getConflicts, getConflictsByDate } from "./conflicts.js";
+import { getConflicts, getConflictedDates, getConflictsByDate } from "./conflicts.js";
 import { state, getScheduleRow } from "./state.js";
 import {
   esc,
@@ -210,7 +210,17 @@ export function renderCal() {
   if (!grid || !title) return;
 
   const conflictBtn = document.getElementById("conflictBtn");
-  if (conflictBtn) conflictBtn.classList.toggle("visible", Boolean(state.graphAccount));
+  if (conflictBtn) {
+    conflictBtn.classList.toggle("visible", Boolean(state.graphAccount));
+    const conflictDates = getConflictedDates();
+    if (conflictDates.length) {
+      conflictBtn.textContent = `\u26A0 Review Conflicts (${conflictDates.length} day${conflictDates.length > 1 ? "s" : ""})`;
+      conflictBtn.dataset.action = "reviewConflicts";
+    } else {
+      conflictBtn.textContent = "\u26A0 Check Conflicts";
+      conflictBtn.dataset.action = "checkConflicts";
+    }
+  }
 
   if (!state.calStart) state.calStart = mondayOf(new Date());
 
