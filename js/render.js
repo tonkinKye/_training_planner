@@ -414,7 +414,7 @@ function workspace(project) {
   return `<main class="screen workspace-screen">
     <div class="workspace-toolbar">
       <div class="toolbar-group">${conflictButton(project)}<button class="btn-primary" data-action="pushOwned">${state.actor === "is" ? "Commit to Calendar" : "Push All"}</button>${state.actor === "pm" && readyForHandoff(project) ? '<button class="btn-amber" data-action="handoffToIs">Hand Off to IS</button>' : ""}</div>
-      <div class="toolbar-group"><button class="btn-secondary" data-action="toggleSmart">${state.ui.smartOpen ? "Hide Smart Fill" : "Smart Fill"}</button><button class="btn-secondary" data-action="openSettings">Project Settings</button></div>
+      <div class="toolbar-group"><button class="btn-secondary" data-action="toggleSmart">${state.ui.smartOpen ? "Hide Smart Fill" : "Smart Fill"}</button>${state.actor === "pm" ? '<button class="btn-secondary" data-action="generateClientPlan">Client Plan</button>' : ""}<button class="btn-secondary" data-action="openSettings">Project Settings</button></div>
     </div>
     <div class="mobile-tabs"><button class="mobile-tab${state.ui.mobileTab === "schedule" ? " active" : ""}" data-action="switchMobileTab" data-tab="schedule">Schedule</button><button class="mobile-tab${state.ui.mobileTab === "calendar" ? " active" : ""}" data-action="switchMobileTab" data-tab="calendar">Calendar</button></div>
     <div class="workspace-grid">${sidebar(project)}${sessionPanel(project)}${calendarPanel(project)}</div>

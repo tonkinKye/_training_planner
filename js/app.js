@@ -8,6 +8,7 @@ import {
   shiftDayView,
   startConflictReview,
 } from "./dayview.js";
+import { buildClientPlanHTML } from "./clientplan.js";
 import { decodeProjectParam } from "./deeplink.js";
 import { openOutlook } from "./invites.js";
 import {
@@ -64,8 +65,9 @@ import {
   updateOnboardingField,
   updateSettingsField,
 } from "./scheduler.js";
+import { getAllSessions } from "./projects.js";
 import { clearProjectError, getActiveProject, setActorMode, setDeepLink, setProjectError, setScreen, state } from "./state.js";
-import { pad, toast, toDateStr } from "./utils.js";
+import { downloadBlob, pad, toast, toDateStr } from "./utils.js";
 
 function afterRender() {
   if (document.getElementById("dayViewModal")) {
@@ -492,6 +494,20 @@ async function actionHandlers(action, element) {
       await navigator.clipboard?.writeText(state.ui.lastHandoff.url);
       toast("Handoff link copied", 3000);
       return;
+    case "generateClientPlan": {
+      const planProject = getActiveProject();
+      if (!planProject) return;
+      const externalDated = getAllSessions(planProject).filter((s) => s.type !== "internal" && s.date);
+      if (!externalDated.length) {
+        toast("Schedule at least one external session before generating the client plan.", 4500);
+        return;
+      }
+      const html = buildClientPlanHTML(planProject);
+      const safeName = (planProject.clientName || "project").replace(/[^a-zA-Z0-9 _-]/g, "").replace(/\s+/g, "_").toLowerCase();
+      downloadBlob(html, `${safeName}_training_plan.html`, "text/html");
+      toast("Client plan downloaded", 3000);
+      return;
+    }
     case "searchPeople":
       await searchPeople(state.ui.peopleQuery);
       rerender();

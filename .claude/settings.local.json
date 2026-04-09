@@ -8,7 +8,8 @@
       "Bash(wc:*)",
       "Bash(grep:*)",
       "Bash(node --check js/scheduler.js)",
-      "Bash(node --check js/render.js)"
+      "Bash(node --check js/render.js)",
+      "Bash(node --check js/clientplan.js)"
     ]
   }
 }
