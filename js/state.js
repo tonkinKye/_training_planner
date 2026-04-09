@@ -20,6 +20,14 @@ function createSettingsState() {
   };
 }
 
+function createCloseDialogState() {
+  return {
+    open: false,
+    projectId: "",
+    projectName: "",
+  };
+}
+
 function createDeleteDialogState() {
   return {
     open: false,
@@ -98,12 +106,15 @@ export const state = {
     windowChangeDialog: createWindowChangeDialogState(),
     shiftDialog: createShiftDialogState(),
     deleteDialog: createDeleteDialogState(),
+    closeDialog: createCloseDialogState(),
     peopleQuery: "",
     peopleMatches: [],
     peopleStatus: "idle",
     peopleError: "",
     projectError: createProjectErrorState(),
     lastHandoff: createLastHandoffState(),
+    showArchived: false,
+    projectSearch: "",
   },
   calendarAvailability: {
     status: "idle",
@@ -242,12 +253,15 @@ export function resetUIState() {
   state.ui.windowChangeDialog = createWindowChangeDialogState();
   state.ui.shiftDialog = createShiftDialogState();
   state.ui.deleteDialog = createDeleteDialogState();
+  state.ui.closeDialog = createCloseDialogState();
   state.ui.peopleQuery = "";
   state.ui.peopleMatches = [];
   state.ui.peopleStatus = "idle";
   state.ui.peopleError = "";
   state.ui.projectError = createProjectErrorState();
   state.ui.lastHandoff = createLastHandoffState();
+  state.ui.showArchived = false;
+  state.ui.projectSearch = "";
 }
 
 export function resetAppState({ preserveAuth = false } = {}) {

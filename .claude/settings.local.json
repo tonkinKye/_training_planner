@@ -10,7 +10,8 @@
       "Bash(node --check js/scheduler.js)",
       "Bash(node --check js/render.js)",
       "Bash(node --check js/clientplan.js)",
-      "Bash(node --check js/state.js)"
+      "Bash(node --check js/state.js)",
+      "Bash(find:*)"
     ]
   }
 }

@@ -1,10 +1,11 @@
 import { DEEP_LINK_LIMIT, SENTINEL_SCHEMA_ID, SENTINEL_SUBJECT, setActiveProject, setActorMode, setAuthStatus, setCalendarAvailability, setCalendarEvents, setGraphAccount, setProjects, setProjectError, setScreen, setSentinelState, state, upsertProject, getActiveProject } from "./state.js";
-import { GRAPH_CLIENT_ID, GRAPH_SCOPES, GRAPH_TENANT_ID } from "./config.js";
+import { GRAPH_CLIENT_ID, GRAPH_SCOPES, GRAPH_TENANT_ID, PRODUCT_NAME } from "./config.js";
 import { buildDeepLinkUrl } from "./deeplink.js";
 import { buildBodyHTML, buildSubject, parseInvitees } from "./invites.js";
 import {
   deriveProjectStatus,
   findSession,
+  getAllSessions,
   getCalendarOwnerName,
   getPhaseSessions,
   getProjectDateRange,
@@ -14,7 +15,7 @@ import {
   normalizeProject,
   serializeSentinelProjects,
 } from "./projects.js";
-import { getLocalTimeZone, pad, toast } from "./utils.js";
+import { getLocalTimeZone, pad, toast, toDateStr } from "./utils.js";
 
 const MSAL_CDN_URLS = [
   "https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js",
@@ -904,6 +905,86 @@ export async function applyDeepLinkProject(payload) {
   setScreen("workspace");
   await persistActiveProjects();
   return merged;
+}
+
+async function deleteGraphEvent(eventId) {
+  if (!eventId) return false;
+  try {
+    await graphRequest(`${getGraphBase()}/events/${encodeURIComponent(eventId)}`, { method: "DELETE" });
+    return true;
+  } catch (error) {
+    if ([404, 410].includes(error.status)) return true;
+    console.error(`deleteGraphEvent failed for ${eventId}:`, error);
+    return false;
+  }
+}
+
+export async function deleteFutureProjectEvents(project) {
+  const today = toDateStr(new Date());
+  const futureSessions = getAllSessions(project).filter(
+    (session) => session.graphEventId && session.date && session.date >= today
+  );
+  let deleted = 0;
+  let failed = 0;
+  for (const session of futureSessions) {
+    if (await deleteGraphEvent(session.graphEventId)) {
+      session.graphEventId = "";
+      session.graphActioned = false;
+      deleted += 1;
+    } else {
+      failed += 1;
+    }
+  }
+  return { deleted, failed, total: futureSessions.length };
+}
+
+async function createCloseNotificationEvent(project) {
+  const subject = `${PRODUCT_NAME} | ${project.clientName || "Project"} | Project Closed`;
+  const closedDate = project.closedAt ? new Date(project.closedAt).toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" }) : "today";
+  const body = `<!DOCTYPE html>
+<html><body style="font-family:'Trebuchet MS','Segoe UI',sans-serif;font-size:14px;color:#1f2933;">
+<h2>${project.clientName || "Project"} - Closed</h2>
+<p>This project was closed by <strong>${project.closedBy || "the Project Manager"}</strong> on ${closedDate}.</p>
+<p>Future calendar events from the PM's calendar have been removed. Please review your own calendar and remove any remaining sessions for this project.</p>
+</body></html>`;
+  const now = new Date();
+  const end = new Date(now.getTime() + 15 * 60000);
+  try {
+    return await graphRequest(`${getGraphBase()}/events`, {
+      method: "POST",
+      body: {
+        subject,
+        body: { contentType: "html", content: body },
+        start: { dateTime: toIsoLocal(now), timeZone: getLocalTimeZone() },
+        end: { dateTime: toIsoLocal(end), timeZone: getLocalTimeZone() },
+        showAs: "free",
+        attendees: project.isEmail
+          ? [{ emailAddress: { address: project.isEmail, name: project.isName || project.isEmail }, type: "required" }]
+          : undefined,
+      },
+    });
+  } catch (error) {
+    console.error("Close notification event failed:", error);
+    return null;
+  }
+}
+
+export async function closeProject(project) {
+  if (!project) throw new Error("No project to close");
+  if (project.closedAt) throw new Error("Project is already closed");
+
+  const deleteResult = await deleteFutureProjectEvents(project);
+  project.closedAt = new Date().toISOString();
+  project.closedBy = state.graphAccount?.name || "Project Manager";
+  project.status = deriveProjectStatus(project);
+  await persistActiveProjects();
+
+  await Promise.allSettled([
+    project.isEmail ? createCloseNotificationEvent(project) : Promise.resolve(null),
+    project.isEmail ? syncProjectToPartnerSentinel(project, "is") : Promise.resolve(false),
+  ]);
+
+  return deleteResult;
 }
 
 export async function toggleAuth() {

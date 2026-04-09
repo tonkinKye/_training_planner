@@ -14,7 +14,9 @@ import { openOutlook } from "./invites.js";
 import {
   applyDeepLinkProject,
   bootstrapMsal,
+  closeProject as closeProjectWorkflow,
   createHandoffEvent,
+  deleteFutureProjectEvents,
   fetchCalendarEvents,
   persistActiveProjects,
   pushSessionToCalendar,
@@ -319,6 +321,55 @@ async function actionHandlers(action, element) {
       state.ui.deleteDialog = { open: false, projectId: "", projectName: "" };
       rerender();
       return;
+    case "closeProject":
+      state.ui.closeDialog = {
+        open: true,
+        projectId: element.dataset.id || "",
+        projectName: element.dataset.name || "this project",
+      };
+      rerender();
+      return;
+    case "confirmCloseProject": {
+      const closeId = state.ui.closeDialog.projectId;
+      state.ui.closeDialog = { open: false, projectId: "", projectName: "" };
+      const projectToClose = state.projects.find((p) => p.id === closeId);
+      if (projectToClose) {
+        try {
+          const result = await closeProjectWorkflow(projectToClose);
+          setScreen("projects");
+          rerender();
+          toast(result.failed ? `Project closed. ${result.deleted} events removed, ${result.failed} could not be removed.` : "Project closed", 4000);
+        } catch (error) {
+          console.error("Close project failed:", error);
+          toast(error.message || String(error), 5000);
+          rerender();
+        }
+      } else {
+        rerender();
+      }
+      return;
+    }
+    case "dismissCloseProject":
+      state.ui.closeDialog = { open: false, projectId: "", projectName: "" };
+      rerender();
+      return;
+    case "toggleArchived":
+      state.ui.showArchived = !state.ui.showArchived;
+      rerender();
+      return;
+    case "cleanUpCalendar": {
+      const cleanupProject = getActiveProject();
+      if (!cleanupProject) return;
+      try {
+        const result = await deleteFutureProjectEvents(cleanupProject);
+        await persistAndRender(true);
+        toast(result.deleted ? `${result.deleted} calendar events removed` : "No future events found", 3500);
+      } catch (error) {
+        console.error("Calendar cleanup failed:", error);
+        toast(error.message || String(error), 5000);
+      }
+      return;
+    }
     case "addOnboardingSession":
       addOnboardingSession();
       rerender();
@@ -586,6 +637,14 @@ function bindEvents() {
         console.error(`Change action ${actionable.dataset.action} failed:`, error);
         toast(error.message || String(error), 5000);
       });
+    }
+  });
+
+  document.addEventListener("input", (event) => {
+    const actionable = event.target.closest("[data-action]");
+    if (actionable && actionable.dataset.action === "projectSearch") {
+      state.ui.projectSearch = actionable.value || "";
+      rerender();
     }
   });
 

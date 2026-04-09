@@ -37,6 +37,7 @@ export const STATUS_META = {
   pending_is_commit: "Pending IS",
   active: "Active",
   complete: "Complete",
+  closed: "Closed",
 };
 
 function normalizeInvitees(value) {
@@ -409,6 +410,8 @@ export function normalizeProject(project) {
     },
     isCommittedAt: project?.isCommittedAt || "",
     completedAt: project?.completedAt || "",
+    closedAt: project?.closedAt || "",
+    closedBy: String(project?.closedBy || "").trim(),
     createdAt: project?.createdAt || new Date().toISOString(),
     updatedAt: project?.updatedAt || new Date().toISOString(),
     status: project?.status || "scheduling",
@@ -764,6 +767,10 @@ export function projectIsComplete(project) {
   return deriveProjectStatus(project) === "complete";
 }
 
+export function projectIsClosed(project) {
+  return deriveProjectStatus(project) === "closed";
+}
+
 export function deriveProjectStatus(project) {
   const allSessions = getAllSessions(project);
   const setupSessions = getPhaseSessions(project, "setup");
@@ -776,6 +783,10 @@ export function deriveProjectStatus(project) {
     (session) => session.graphActioned || session.type === "internal"
   );
   const allProjectCommitted = allSessions.every((session) => session.graphActioned || session.type === "internal");
+
+  if (project.closedAt) {
+    return "closed";
+  }
 
   if (project.completedAt || (allProjectCommitted && implementationCommitted && pmSessionsCommitted)) {
     return "complete";

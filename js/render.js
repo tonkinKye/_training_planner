@@ -17,11 +17,14 @@ import {
   PHASE_META,
   PHASE_ORDER,
   PROJECT_TYPE_META,
+  STATUS_META,
 } from "./projects.js";
 import { getSmartAvailabilityState, readyForHandoff } from "./scheduler.js";
-import { esc, fmt12, fmtDur, getTimeOptionsHTML, mondayOf, parseDate, toDateStr } from "./utils.js";
+import { esc, fmt12, fmtDur, getTimeOptionsHTML, mondayOf, parseDate, timeAgo, toDateStr } from "./utils.js";
 
 const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
+const STATUS_PRIORITY = { scheduling: 0, pending_is_commit: 1, active: 2, complete: 3, closed: 4 };
+const ARCHIVE_STATUSES = new Set(["complete", "closed"]);
 
 function fmtDate(value) {
   if (!value) return "Not set";
@@ -149,10 +152,11 @@ function authScreen() {
   </main>`;
 }
 
-function projectCard(project) {
+function projectCard(project, archived = false) {
   const counts = getProjectCounts(project);
-  const canDelete = deriveProjectStatus(project) === "scheduling";
-  return `<button class="project-card" data-action="selectProject" data-id="${project.id}">
+  const status = deriveProjectStatus(project);
+  const canDelete = status === "scheduling";
+  return `<button class="project-card${archived ? " archived" : ""}" data-action="selectProject" data-id="${project.id}">
     <div class="card-top">
       <span class="pill type">${esc(PROJECT_TYPE_META[project.projectType] || "Project")}</span>
       <span class="pill status">${esc(getProjectCardStatus(project))}</span>
@@ -164,10 +168,56 @@ function projectCard(project) {
       <div><dt>Go-Live</dt><dd>${esc(fmtDate(project.goLiveDate))}</dd></div>
       <div><dt>Sessions</dt><dd>${counts.scheduled} / ${counts.total}</dd></div>
     </dl>
+    ${project.updatedAt ? `<div class="card-updated muted">Updated ${esc(timeAgo(project.updatedAt))}</div>` : ""}
   </button>`;
 }
 
 function projectsScreen() {
+  const search = (state.ui.projectSearch || "").toLowerCase().trim();
+  const archivedCount = state.projects.filter((p) => ARCHIVE_STATUSES.has(p.status || "scheduling")).length;
+
+  const visible = state.projects
+    .filter((project) => {
+      if (!state.ui.showArchived && ARCHIVE_STATUSES.has(project.status || "scheduling")) return false;
+      if (search) {
+        const haystack = `${project.clientName} ${project.isName} ${project.isEmail} ${project.pmName}`.toLowerCase();
+        if (!haystack.includes(search)) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const pa = STATUS_PRIORITY[a.status] ?? 9;
+      const pb = STATUS_PRIORITY[b.status] ?? 9;
+      if (pa !== pb) return pa - pb;
+      return (a.goLiveDate || "9999").localeCompare(b.goLiveDate || "9999");
+    });
+
+  const groups = new Map();
+  for (const project of visible) {
+    const key = project.isName || project.isEmail || "Unassigned";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(project);
+  }
+
+  const searchBar = `<div class="projects-toolbar">
+    <input type="text" class="project-search" placeholder="Search projects..." value="${esc(state.ui.projectSearch)}" data-action="projectSearch">
+    <label class="toggle-label"><input type="checkbox" ${state.ui.showArchived ? "checked" : ""} data-action="toggleArchived"> Show archived (${archivedCount})</label>
+  </div>`;
+
+  let groupsHTML = "";
+  for (const [isName, projects] of groups) {
+    groupsHTML += `<section class="is-group">
+      <header class="is-group-header"><h2>${esc(isName)}</h2><span class="muted">${projects.length} project${projects.length !== 1 ? "s" : ""}</span></header>
+      <div class="project-grid">${projects.map((p) => projectCard(p, ARCHIVE_STATUSES.has(p.status))).join("")}</div>
+    </section>`;
+  }
+
+  const emptyState = visible.length
+    ? ""
+    : state.projects.length
+      ? `<section class="empty-card"><h2>No matches</h2><p>No projects match "${esc(search)}"${!state.ui.showArchived && archivedCount ? ". Try showing archived projects." : ""}.</p></section>`
+      : `<section class="empty-card"><h2>No projects yet</h2><p>Create a project to seed the sentinel and open the scheduler.</p><button class="btn-primary" data-action="openOnboarding">Create Project</button></section>`;
+
   return `<main class="screen projects-screen">
     <section class="screen-head">
       <div>
@@ -176,19 +226,10 @@ function projectsScreen() {
       </div>
       <button class="btn-primary" data-action="openOnboarding">New Project</button>
     </section>
-    ${
-      state.sentinel.malformed
-        ? `<section class="inline-alert danger split">
-            <div><strong>Could not load projects.</strong><div>${esc(state.sentinel.error || "Malformed sentinel payload.")}</div></div>
-            <button class="btn-danger-outline" data-action="resetSentinel">Reset Sentinel</button>
-          </section>`
-        : ""
-    }
-    ${
-      state.projects.length
-        ? `<section class="project-grid">${state.projects.map(projectCard).join("")}</section>`
-        : `<section class="empty-card"><h2>No projects yet</h2><p>Create a project to seed the sentinel and open the scheduler.</p><button class="btn-primary" data-action="openOnboarding">Create Project</button></section>`
-    }
+    ${state.sentinel.malformed ? `<section class="inline-alert danger split"><div><strong>Could not load projects.</strong><div>${esc(state.sentinel.error || "Malformed sentinel payload.")}</div></div><button class="btn-danger-outline" data-action="resetSentinel">Reset Sentinel</button></section>` : ""}
+    ${state.projects.length ? searchBar : ""}
+    ${groupsHTML}
+    ${emptyState}
   </main>`;
 }
 
@@ -414,11 +455,20 @@ function calendarPanel(project) {
 }
 
 function workspace(project) {
-  return `<main class="screen workspace-screen">
-    <div class="workspace-toolbar">
+  const projectStatus = deriveProjectStatus(project);
+  const closedBanner = project.closedAt
+    ? `<div class="closed-banner inline-alert danger"><strong>Project Closed</strong> by ${esc(project.closedBy || "PM")} on ${esc(fmtDate(project.closedAt))}${state.actor === "is" ? ' <button class="btn-secondary btn-sm" data-action="cleanUpCalendar">Clean Up Calendar</button>' : ""}</div>`
+    : "";
+  const canClose = state.actor === "pm" && !["scheduling", "complete", "closed"].includes(projectStatus);
+  const toolbar = project.closedAt
+    ? ""
+    : `<div class="workspace-toolbar">
       <div class="toolbar-group">${conflictButton(project)}<button class="btn-primary" data-action="pushOwned">${state.actor === "is" ? "Commit to Calendar" : "Push All"}</button>${state.actor === "pm" && readyForHandoff(project) ? '<button class="btn-amber" data-action="handoffToIs">Hand Off to IS</button>' : ""}</div>
-      <div class="toolbar-group"><button class="btn-secondary" data-action="toggleSmart">${state.ui.smartOpen ? "Hide Smart Fill" : "Smart Fill"}</button>${state.actor === "pm" ? '<button class="btn-secondary" data-action="generateClientPlan">Client Plan</button>' : ""}<button class="btn-secondary" data-action="openSettings">Project Settings</button>${state.actor === "pm" && deriveProjectStatus(project) === "scheduling" ? `<button class="btn-danger-outline btn-sm" data-action="deleteProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled Project")}">Delete</button>` : ""}</div>
-    </div>
+      <div class="toolbar-group"><button class="btn-secondary" data-action="toggleSmart">${state.ui.smartOpen ? "Hide Smart Fill" : "Smart Fill"}</button>${state.actor === "pm" ? '<button class="btn-secondary" data-action="generateClientPlan">Client Plan</button>' : ""}<button class="btn-secondary" data-action="openSettings">Project Settings</button>${canClose ? `<button class="btn-danger-outline btn-sm" data-action="closeProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled Project")}">Close Project</button>` : ""}${state.actor === "pm" && projectStatus === "scheduling" ? `<button class="btn-danger-outline btn-sm" data-action="deleteProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled Project")}">Delete</button>` : ""}</div>
+    </div>`;
+  return `<main class="screen workspace-screen">
+    ${closedBanner}
+    ${toolbar}
     <div class="mobile-tabs"><button class="mobile-tab${state.ui.mobileTab === "schedule" ? " active" : ""}" data-action="switchMobileTab" data-tab="schedule">Schedule</button><button class="mobile-tab${state.ui.mobileTab === "calendar" ? " active" : ""}" data-action="switchMobileTab" data-tab="calendar">Calendar</button></div>
     <div class="workspace-grid">${sidebar(project)}${sessionPanel(project)}${calendarPanel(project)}</div>
   </main>`;
@@ -467,6 +517,12 @@ function deleteProjectDialog() {
   return `<div class="modal-overlay open"><div class="modal"><div class="modal-head"><div><h3>Delete Project</h3><p>Permanently delete <strong>${esc(dialog.projectName)}</strong>? This removes all sessions and cannot be undone.</p></div></div><div class="modal-actions"><button class="btn-secondary" data-action="dismissDeleteProject">Cancel</button><button class="btn-danger-outline" data-action="confirmDeleteProject">Delete Project</button></div></div></div>`;
 }
 
+function closeProjectDialog() {
+  const dialog = state.ui.closeDialog;
+  if (!dialog.open) return "";
+  return `<div class="modal-overlay open"><div class="modal"><div class="modal-head"><div><h3>Close Project</h3><p>Close <strong>${esc(dialog.projectName)}</strong>? Future calendar events will be removed from your calendar and the IS will be notified to clean up theirs.</p></div></div><div class="modal-actions"><button class="btn-secondary" data-action="dismissCloseProject">Cancel</button><button class="btn-danger-outline" data-action="confirmCloseProject">Close Project</button></div></div></div>`;
+}
+
 function projectErrorModal() {
   if (!state.ui.projectError.open) return "";
   return `<div class="modal-overlay open"><div class="modal"><div class="modal-head"><div><h3>Could Not Load Projects</h3><p>${esc(state.ui.projectError.message)}</p></div><button class="btn-secondary btn-sm" data-action="dismissProjectError">Close</button></div><pre class="error-pre">${esc(state.ui.projectError.details || "No diagnostic detail available.")}</pre><div class="modal-actions"><button class="btn-secondary" data-action="dismissProjectError">Close</button><button class="btn-danger-outline" data-action="resetSentinel">Reset Sentinel</button></div></div></div>`;
@@ -477,5 +533,5 @@ export function render() {
   if (!app) return;
   const project = getActiveProject();
   const main = state.ui.screen === "auth" ? authScreen() : state.ui.screen === "workspace" && project ? workspace(project) : projectsScreen();
-  app.innerHTML = `${state.ui.screen === "auth" ? "" : topbar()}${main}${onboardingModal()}${settingsModal()}${windowChangeDialog()}${shiftDialog()}${deleteProjectDialog()}${projectErrorModal()}${renderDayViewModal()}<div class="toast" id="toast"></div>`;
+  app.innerHTML = `${state.ui.screen === "auth" ? "" : topbar()}${main}${onboardingModal()}${settingsModal()}${windowChangeDialog()}${shiftDialog()}${deleteProjectDialog()}${closeProjectDialog()}${projectErrorModal()}${renderDayViewModal()}<div class="toast" id="toast"></div>`;
 }
