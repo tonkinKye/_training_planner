@@ -193,6 +193,19 @@ textarea { resize: vertical; }
   display: grid;
   gap: 1rem;
 }
+.empty-card {
+  padding: 1.4rem;
+  display: grid;
+  gap: 0.8rem;
+  align-items: start;
+}
+.empty-card h2,
+.empty-card p {
+  margin: 0;
+}
+.empty-card button {
+  justify-self: start;
+}
 .eyebrow {
   text-transform: uppercase;
   letter-spacing: 0.12em;
