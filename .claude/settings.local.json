@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check js/app.js)",
+      "Bash(node --check js/m365.js)",
+      "Bash(node --check js/deeplink.js)",
+      "Bash(node --check js/projects.js)"
+    ]
+  }
+}

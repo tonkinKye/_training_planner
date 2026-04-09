@@ -584,12 +584,21 @@ export async function pushSessionToCalendar(sessionId) {
 
   try {
     const payload = await pushGraphEvent(found.session, project);
+    const previousEventId = found.session.graphEventId;
+    const previousActioned = found.session.graphActioned;
     if (payload?.id) {
       found.session.graphEventId = payload.id;
     }
     found.session.graphActioned = true;
     project.status = deriveProjectStatus(project);
-    await persistActiveProjects();
+    try {
+      await persistActiveProjects();
+    } catch (persistError) {
+      found.session.graphEventId = previousEventId;
+      found.session.graphActioned = previousActioned;
+      project.status = deriveProjectStatus(project);
+      throw persistError;
+    }
     toast(`"${found.session.name}" synced to calendar`, 3500);
     return true;
   } catch (error) {
@@ -787,7 +796,11 @@ async function syncProjectToPartnerSentinel(project, partnerRole) {
   } catch (error) {
     console.warn("Partner sentinel sync failed:", error);
     project.handoff.pendingPmSync = partnerRole === "pm";
-    await persistActiveProjects();
+    try {
+      await persistActiveProjects();
+    } catch (persistError) {
+      console.warn("Could not persist pendingPmSync flag:", persistError);
+    }
     return false;
   }
 }
@@ -858,7 +871,6 @@ export async function applyDeepLinkProject(payload) {
     hypercareDuration: payload.h,
     location: payload.l,
     invitees: payload.a,
-    status: payload.st,
     phases: {
       setup: { owner: "pm", stages: [] },
       implementation: {

@@ -748,7 +748,8 @@ export function getCalendarOwnerName(project, phaseKey) {
 }
 
 export function projectHasImplementationReady(project) {
-  return getPhaseSessions(project, "implementation").every((session) => session.date && session.time);
+  const sessions = getPhaseSessions(project, "implementation");
+  return sessions.length > 0 && sessions.every((session) => session.date && session.time);
 }
 
 export function projectHasPendingCommit(project) {

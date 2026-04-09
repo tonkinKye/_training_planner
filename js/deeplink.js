@@ -64,6 +64,7 @@ function encodeSessionTuple(session, templateSession) {
 
 function encodeImplementationStages(project) {
   const { stageMap, sessionMap } = getImplementationTemplateMaps(project.projectType || "manufacturing");
+  // rangeStart/rangeEnd intentionally excluded — advisory only, recalculated by IS via Smart Fill
   return getPhaseStages(project, "implementation").map((stage) => [
     stage.key || "",
     stageMap.get(stage.key)?.label === stage.label ? "" : stage.label || "",

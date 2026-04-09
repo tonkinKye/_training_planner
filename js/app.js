@@ -15,7 +15,6 @@ import {
   bootstrapMsal,
   createHandoffEvent,
   fetchCalendarEvents,
-  loadProjectsFromSentinel,
   persistActiveProjects,
   pushSessionToCalendar,
   resetSentinel,
@@ -598,7 +597,6 @@ async function init() {
   rerender();
   await bootstrapMsal();
   if (state.graphAccount) {
-    await loadProjectsFromSentinel();
     await handleDeepLinkIfPresent();
     await refreshProjectContext();
   }

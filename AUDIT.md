@@ -400,3 +400,136 @@ This exactly matches the steering addition: "Stage ranges are advisory only afte
 | SF-M3 (Smart Fill) | Legacy `[TP] Project Index` sentinels are now found as the live series and renamed to `TP-ProjectIndex` on the next write. | :white_check_mark: Fixed |
 | Redesign C2 | Installation `type` is now external (removed from INTERNAL_BODY_KEYS) | :white_check_mark: Fixed |
 | Redesign M1 | Support Handover `type` is now external (removed from INTERNAL_BODY_KEYS) | :white_check_mark: Fixed |
+
+---
+
+## Full Repository Cross-Cutting Audit — 2026-04-09
+
+**Scope:** All 12 JS modules, index.html, styles/app.css — full static read of every file.
+**Method:** Cross-cutting review across all eight focus areas listed below. No browser or live Graph test.
+**Context:** Post three major architectural changes (M365 redesign, Smart Fill rebuild, hierarchical templates). First full repository audit; all previous audits were incremental.
+
+---
+
+### Critical — breaks core functionality or would cause data loss in production
+
+No critical findings.
+
+---
+
+### Major — incorrect behaviour or missing guard that affects a real user flow
+
+No major findings.
+
+---
+
+### Minor — edge cases, missing null checks, or inconsistencies that should be cleaned up
+
+#### XCA-m1. Double `loadProjectsFromSentinel` on auto-sign-in startup
+| | |
+|---|---|
+| **Status** | :white_large_square: Pending |
+| **File** | `js/app.js:601`, `js/m365.js:939-941` |
+
+For users with a restored MSAL session, `init()` calls `bootstrapMsal()` which internally calls `loadProjectsFromSentinel()` (m365.js:940). Then `init()` calls `loadProjectsFromSentinel()` again at app.js:601. Both calls reach `fetchSentinel()`, making two full Graph calendarView reads of the same sentinel on every auto-sign-in page load.
+
+The second call is redundant — `bootstrapMsal` already loaded projects and set the screen. The second call re-fetches identical data and re-sets `state.projects` to the same list.
+
+**Recommended fix:** Remove the explicit `loadProjectsFromSentinel()` call in `init()` (app.js:601). `bootstrapMsal` already handles it when `state.graphAccount` is set. The subsequent `handleDeepLinkIfPresent` and `refreshProjectContext` calls can proceed as-is since they only depend on `state.projects` being populated, which `bootstrapMsal` ensures.
+
+#### XCA-m2. `pushSessionToCalendar` mutates in-memory state before sentinel persist succeeds
+| | |
+|---|---|
+| **Status** | :white_large_square: Pending |
+| **File** | `js/m365.js:586-598` |
+
+In the try block, `pushGraphEvent` creates/updates the calendar event, then lines 587-590 immediately set `found.session.graphEventId` and `found.session.graphActioned = true`. The `persistActiveProjects()` call follows at line 592. If `persistActiveProjects` throws (sentinel write fails), the catch block fires but the in-memory session already has `graphActioned = true` and the real `graphEventId`.
+
+In the current session this is self-healing — the next successful persist from any action will save the updated state. But if the user closes the browser between the push-success/persist-failure, the sentinel still has the old state. On next load, the session appears unpushed, and re-pushing creates a duplicate calendar event (POST instead of PATCH since `graphEventId` was lost).
+
+**Recommended fix:** Capture the event ID in a local variable, call `persistActiveProjects()` first, and only set `found.session.graphEventId` and `graphActioned` after persist succeeds. On persist failure, the calendar event exists but the session remains "unpushed" — the user can re-push safely (as a POST, which is a duplicate but at least a visible one).
+
+#### XCA-m3. `syncProjectToPartnerSentinel` catch block can throw from inner persist
+| | |
+|---|---|
+| **Status** | :white_large_square: Pending |
+| **File** | `js/m365.js:788-792` |
+
+When `writeProjectToUserSentinel` fails, the catch block sets `project.handoff.pendingPmSync = true` (line 789) and then calls `await persistActiveProjects()` (line 790). If `persistActiveProjects` also throws, that error propagates out of the catch block unhandled within `syncProjectToPartnerSentinel`. The caller (`pushOwnedSessions`, line 704) does not catch it, so it propagates to the top-level action handler in app.js — which does catch it and shows a toast.
+
+The user sees an opaque "Graph error" toast. The `pendingPmSync` flag is set in memory but not persisted, and the partner sentinel was not updated.
+
+**Recommended fix:** Wrap the `persistActiveProjects()` call inside the catch block in its own try/catch, logging the nested failure without re-throwing.
+
+#### XCA-m4. Deep link encode drops stage `rangeStart`/`rangeEnd`; merge clears existing IS ranges on re-handoff
+| | |
+|---|---|
+| **Status** | :white_large_square: Pending |
+| **File** | `js/deeplink.js:67`, `js/projects.js:877-879` |
+
+`encodeImplementationStages` (deeplink.js:67) encodes each stage as `[key, label, sessions[]]`. Stage `rangeStart` and `rangeEnd` are not included in the tuple. On decode, `decodeImplementationStages` produces stages with no `rangeStart`/`rangeEnd`. `makeStage` defaults them to `""`.
+
+In `mergeDeepLinkProject` (projects.js:877), the merged project uses `incomingProject.phases.implementation`, which has empty stage ranges. If the IS had previously run Smart Fill and established stage ranges, those ranges are silently replaced with empty strings.
+
+Stage ranges are advisory (non-blocking) and can be recalculated by re-running Smart Fill. No data loss occurs, but the IS loses visual range context until Smart Fill is re-run.
+
+**Recommended fix:** Either encode `rangeStart`/`rangeEnd` in the stage tuple (adds ~20 chars per stage to the deep link), or document that re-handoff clears advisory ranges and prompt IS to re-run Smart Fill.
+
+#### XCA-m5. Dead `status: payload.st` reference in `applyDeepLinkProject`
+| | |
+|---|---|
+| **Status** | :white_large_square: Pending |
+| **File** | `js/m365.js:861` |
+
+`applyDeepLinkProject` passes `status: payload.st` to `normalizeProject`. The v2 deep link payload (`getDeepLinkPayload` in deeplink.js:199-216) does not include an `st` field, so `payload.st` is always `undefined`. `normalizeProject` defaults it to `"scheduling"`, and then `deriveProjectStatus` immediately overwrites it at projects.js:417. The field assignment is dead code with no runtime effect.
+
+**Recommended fix:** Remove `status: payload.st` from the `normalizeProject` call in `applyDeepLinkProject`.
+
+#### XCA-m6. `readyForHandoff` returns true for projects with zero implementation sessions
+| | |
+|---|---|
+| **Status** | :white_large_square: Pending |
+| **File** | `js/projects.js:750-752`, `js/scheduler.js:1206-1208` |
+
+`projectHasImplementationReady` calls `getPhaseSessions(project, "implementation").every(s => s.date && s.time)`. `Array.prototype.every()` on an empty array returns `true`. For custom-type projects with no implementation sessions, `readyForHandoff` returns `true`, and the PM sees the "Hand Off to IS" button.
+
+Clicking it creates a handoff event with an empty `impl` array in the deep link. The IS receives a project with zero implementation sessions, which is a valid but likely unintended state.
+
+**Recommended fix:** Add an early return in `projectHasImplementationReady`: if `sessions.length === 0` return `false`.
+
+---
+
+### Confirmed clean — focus areas checked and verified
+
+| Focus Area | Verdict | Key evidence |
+|---|---|---|
+| **1. Stale call sites after hierarchical model** | Clean | No flat `phase.sessions` references outside migration code (`normalizePhaseContainer` line 293 is the migration entry point). All callers of `getPhaseSessions`, `getAllSessions`, `getStageSessions`, `findSession` pass correct project objects with hierarchical `phases.*.stages[].sessions[]` structure. `session.phase` and `session.stageKey` are always set by `makeSession` (projects.js:101-104) and re-normalised by `normalizePhaseOrders` (projects.js:159-166). |
+| **2. Sentinel round-trip integrity** | Clean | Write path: `serializeSentinelProjects` → `normalizeProject` → JSON-stringify into extension payload. Read path: `parseSentinelExtension` → JSON-parse → `normalizeProject`. Both paths produce identical shapes. `rangeStart`/`rangeEnd` survive: written by `makeStage` (projects.js:125-126), read back by `normalizeModernPhase` (projects.js:275-276) → `makeStage`. Missing fields (e.g., from older sentinel versions) get defaults during normalisation. `suggestedWeeksMin`/`suggestedWeeksMax` fall back to template values when absent (projects.js:262-263). |
+| **3. Deep link encode/decode integrity** | Clean (with XCA-m4 caveat) | Session fields: `id`, `key`, `date`, `time` always encoded; `name`, `duration`, `type`, `bodyKey` conditionally encoded for non-template sessions (deeplink.js:43-63). Fields not encoded (`graphEventId`, `graphActioned`, `outlookActioned`) are correctly reconstituted by `mergeDeepLinkProject` reconciliation loop (projects.js:884-901). `warn: true` from `buildDeepLinkUrl` is handled by `createHandoffEvent` with a non-blocking toast (m365.js:799-801). Decode handles both tuple arrays and legacy object payloads (deeplink.js:74-99, 136-197). |
+| **4. Async error handling in m365.js** | Clean (with XCA-m2/m3 caveats) | All major async flows have error boundaries: `initMsal` has `.catch()` returning null (m365.js:127-133); `getAccessToken` has nested try/catch for silent/popup (m365.js:139-166); `loadProjectsFromSentinel` has try/catch setting sentinel error state (m365.js:424-447); `fetchCalendarEvents` has try/catch resetting events and availability (m365.js:638-681); `pushSessionToCalendar` has try/catch (m365.js:585-599); all action handlers wrapped by top-level click handler catch (app.js:504-513). No missing `await` on async calls found. |
+| **5. Conflict pipeline correctness** | Clean | `blockingOnly: true` used for all push/commit gate decisions: `buildConflictQueue` (dayview.js:64), `confirmConflict` (dayview.js:459), `conflictButton` in render (render.js:193), `checkConflicts` action (app.js:416). Advisory stage-range conflicts correctly carry `blocking: false` (conflicts.js:64) and are excluded by `filterBlocking` (conflicts.js:81-83). Conflict review queue uses `scope: "review"` → `getConflictReviewSessions` (conflicts.js:37), not `getPushableSessions`. `availabilityConflict` field always present on sessions via `makeSession` (projects.js:114); reads use truthiness (conflicts.js:133) or strict equality (render.js:400), both safe for `undefined`. |
+| **6. Render and dayview stale assumptions** | Clean | All session iteration goes through `getAllSessions` or `getPhaseStages`: render.js calendar panel (line 367, 374), dayview.js session blocks (line 164), dayview.js external events (line 141). No hardcoded phase key strings for rendering decisions — `getVisiblePhaseKeys`/`getContextPhaseKeys` used throughout (render.js:346-347, dayview.js:160-161). Blank-time sessions handled: `getTimeOptionsHTML` shows "Time needed" (utils.js:78-86), `fmtTimeLabel` returns "Time needed" (render.js:37-38), dayview splits timed/untimed into separate render paths (dayview.js:168). Push/invite buttons correctly suppressed for internal sessions: `canCommitSession` returns false for `type === "internal"` (projects.js:685), Outlook button guarded by `session.type === "external"` (render.js:311). |
+| **7. IS/PM boundary enforcement** | Clean | `canEditSession`: IS can only edit implementation sessions and Go-Live (projects.js:676-681). `canCommitSession`: PM can only commit PM-owned, IS can only commit IS-owned (projects.js:683-688). Go-Live: `canEditSession` returns false for PM (line 678), not draggable due to `lockedDate` (dayview.js:172). Handoff button gated by `state.actor === "pm" && readyForHandoff(project)` (render.js:407). Move/remove buttons restricted to PM via `state.actor === "pm" && editable` (render.js:312). |
+| **8. invites.js decoupling** | Clean | Zero DOM global references (`globalClient`, `globalOrganiser`, etc.) in invites.js or any invite-payload-building code. All project/session data accessed through `getActiveProject()` (invites.js:8), `findSession()` (invites.js:10), and function parameters. `buildEventPayload` in m365.js (line 510-543) delegates to `buildSubject` and `buildBodyHTML` from invites.js — no direct DOM access. |
+
+---
+
+### Resolution tracking
+
+| ID | Finding | Status | Resolution |
+|----|---------|--------|------------|
+| XCA-m1 | Double `loadProjectsFromSentinel` on auto-sign-in — redundant sentinel read | :white_check_mark: Fixed | Removed redundant `loadProjectsFromSentinel()` call and unused import from `init()` in app.js. `bootstrapMsal` already handles the load. |
+| XCA-m2 | `pushSessionToCalendar` mutates state before persist — potential duplicate events on persist failure | :white_check_mark: Fixed | Added rollback of `graphEventId` and `graphActioned` on persist failure in m365.js `pushSessionToCalendar`. Inner try/catch around `persistActiveProjects` restores previous values and re-throws. |
+| XCA-m3 | `syncProjectToPartnerSentinel` catch block can re-throw from nested persist | :white_check_mark: Fixed | Wrapped `persistActiveProjects()` in its own try/catch inside the catch block of `syncProjectToPartnerSentinel` in m365.js. Nested failure is logged without re-throwing. |
+| XCA-m4 | Deep link encode drops stage ranges — merge clears IS advisory ranges on re-handoff | :white_check_mark: Fixed | Documented as intentional. Added comment in `encodeImplementationStages` (deeplink.js): ranges are advisory only, recalculated by IS via Smart Fill. No code change. |
+| XCA-m5 | Dead `status: payload.st` reference in `applyDeepLinkProject` | :white_check_mark: Fixed | Removed `status: payload.st` from the `normalizeProject` call in `applyDeepLinkProject` (m365.js). |
+| XCA-m6 | `readyForHandoff` true on zero implementation sessions (empty `every()`) | :white_check_mark: Fixed | Added `sessions.length > 0` guard in `projectHasImplementationReady` (projects.js). Empty implementation now returns false. |
+
+### Findings summary
+
+| Severity | Count | IDs |
+|----------|-------|-----|
+| Critical | 0 | — |
+| Major | 0 | — |
+| Minor | 6 | XCA-m1, XCA-m2, XCA-m3, XCA-m4, XCA-m5, XCA-m6 |
+| Confirmed clean | 8/8 focus areas | See table above |
