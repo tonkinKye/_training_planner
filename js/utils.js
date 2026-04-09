@@ -87,10 +87,23 @@ export function getTimeOptionsHTML(selectedValue) {
 
 let toastTimer = null;
 
-export function toast(message, duration = 2700) {
+export function toast(message, duration = 2700, action = null) {
   const element = document.getElementById("toast");
   if (!element) return;
-  element.textContent = message;
+  if (action && action.label && action.callback) {
+    element.innerHTML = `${esc(message)} <button class="toast-action">${esc(action.label)}</button>`;
+    const button = element.querySelector(".toast-action");
+    if (button) {
+      button.onclick = (event) => {
+        event.stopPropagation();
+        element.classList.remove("show");
+        clearTimeout(toastTimer);
+        action.callback();
+      };
+    }
+  } else {
+    element.textContent = message;
+  }
   element.classList.add("show");
   clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => element.classList.remove("show"), duration);

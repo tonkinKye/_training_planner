@@ -207,6 +207,7 @@ export function getDeepLinkPayload(project) {
     pn: project.pmName || "",
     is: project.isEmail || "",
     in: project.isName || "",
+    ps: project.projectStart || "",
     s: project.implementationStart || "",
     g: project.goLiveDate || "",
     h: project.hypercareDuration || "1 week",
@@ -247,6 +248,7 @@ export function decodeHandoffPayload(value) {
     ...payload,
     v: Number(payload.v) || 1,
     id: String(payload.id),
+    projectStart: payload.ps || "",
   };
 }
 

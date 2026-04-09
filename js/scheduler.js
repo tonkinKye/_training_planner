@@ -11,6 +11,7 @@ import {
   addCustomSession,
   canEditSession,
   cloneProject,
+  computeImplementationStart,
   createOnboardingDraft,
   createProjectFromDraft,
   DEFAULT_WORKING_DAYS,
@@ -94,8 +95,12 @@ function ensureFutureDate(value) {
 }
 
 function setCalendarStartFromProject(project) {
-  const range = getProjectDateRange(project);
-  state.calStart = mondayOf(parseDate(range.start || getTodayString()));
+  const today = getTodayString();
+  const futureDated = getAllSessions(project)
+    .filter((session) => session.date && session.date >= today)
+    .map((session) => session.date)
+    .sort();
+  state.calStart = mondayOf(parseDate(futureDated[0] || today));
 }
 
 function getStageOptions(source, phaseKey) {
@@ -162,7 +167,7 @@ function resetSmartFillDefaults(project) {
   state.ui.activeDays = new Set(
     Array.isArray(project?.workingDays) && project.workingDays.length ? project.workingDays : DEFAULT_WORKING_DAYS
   );
-  state.ui.smartStart = getTodayString();
+  state.ui.smartStart = project?.projectStart || project?.implementationStart || getTodayString();
 }
 
 function clearWindowChangeDialog() {
@@ -256,7 +261,10 @@ function getEligibleDatesBetween(startDate, endDate) {
 
 function getSmartFillWindowForPhase(project, phaseKey, previousPhaseLastDate = "") {
   const window = getWindowForPhase(project, phaseKey);
-  const start = getSmartFillSearchStart(state.ui.smartStart, window.min, previousPhaseLastDate);
+  const effectiveSmartStart = state.actor === "pm" && window.min && state.ui.smartStart > window.min
+    ? window.min
+    : state.ui.smartStart;
+  const start = getSmartFillSearchStart(effectiveSmartStart, window.min, previousPhaseLastDate);
   let end = window.max || start;
 
   if (phaseKey === "implementation" && project.goLiveDate) {
@@ -739,6 +747,14 @@ export function updateOnboardingField(field, value) {
     return;
   }
 
+  if (field === "projectStart") {
+    draft.projectStart = value;
+    const computed = computeImplementationStart(draft);
+    if (computed) draft.implementationStart = computed;
+    refreshGoLiveSuggestion(draft, { forceAutofill: !draft.goLiveManuallySet });
+    return;
+  }
+
   draft[field] = value;
   if (field === "implementationStart") {
     refreshGoLiveSuggestion(draft, { forceAutofill: false });
@@ -851,6 +867,14 @@ export function updateSettingsField(field, value) {
     if (key === "stageKey" && value !== NEW_STAGE_VALUE) {
       draft.newSession.newStageLabel = "";
     }
+    return;
+  }
+
+  if (field === "projectStart") {
+    draft.projectStart = value;
+    const computed = computeImplementationStart(draft);
+    if (computed) draft.implementationStart = computed;
+    refreshGoLiveSuggestion(draft, { forceAutofill: !draft.goLiveManuallySet });
     return;
   }
 
@@ -980,6 +1004,20 @@ export function setSessionDate(sessionId, value) {
 
   touchProject(project);
   project.status = deriveProjectStatus(project);
+
+  if (nextValue) {
+    const futureSamePhase = getPhaseSessions(project, found.session.phase)
+      .filter((s) => s.id !== sessionId && s.date && s.date >= nextValue && !s.lockedDate);
+    if (futureSamePhase.length > 0) {
+      state.ui.shiftDialog = {
+        open: true,
+        sessionId,
+        newDate: nextValue,
+        phaseKey: found.session.phase,
+      };
+    }
+  }
+
   return true;
 }
 
@@ -1217,4 +1255,29 @@ export function visibleSessions(project = getActiveProject()) {
 
 export function getReviewableConflictCount(project = getActiveProject(), actor = state.actor) {
   return getConflictReviewSessions(project, actor).length;
+}
+
+export function confirmShiftRemaining() {
+  const { sessionId, newDate, phaseKey } = state.ui.shiftDialog;
+  state.ui.shiftDialog = { open: false, sessionId: "", newDate: "", phaseKey: "" };
+  if (!sessionId || !phaseKey) return false;
+
+  const project = getCurrentProjectOrToast();
+  if (!project) return false;
+
+  const phaseSessions = getPhaseSessions(project, phaseKey)
+    .filter((s) => s.id !== sessionId && s.date && s.date >= newDate && !s.lockedDate);
+  for (const session of phaseSessions) {
+    clearSessionScheduling(session, { preserveGraphEventId: false });
+  }
+
+  const result = { datedCount: 0, timedCount: 0, availabilityCount: 0, unplacedCount: 0, pass2Skipped: false, pass2SkipReason: "", unplacedSessionIds: [], availabilitySessionIds: [], rangeCount: 0 };
+  runPhaseSmartFill(project, phaseKey, state.actor, dayBefore(newDate), result);
+  touchProject(project);
+  project.status = deriveProjectStatus(project);
+  return true;
+}
+
+export function dismissShiftDialog() {
+  state.ui.shiftDialog = { open: false, sessionId: "", newDate: "", phaseKey: "" };
 }

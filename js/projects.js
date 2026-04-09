@@ -304,7 +304,7 @@ function syncGoLiveSession(project) {
   found.owner = "is";
   found.lockedDate = true;
   found.date = project.goLiveDate || "";
-  found.time = found.time || "09:00";
+  found.time = found.time || "08:30";
 
   const stage = getStageForSession(project, found);
   if (stage) {
@@ -352,6 +352,7 @@ export function createOnboardingDraft(projectType = "manufacturing") {
     pmEmail: "",
     isName: "",
     isEmail: "",
+    projectStart: "",
     implementationStart: "",
     goLiveDate: "",
     hypercareDuration: "1 week",
@@ -385,6 +386,7 @@ export function normalizeProject(project) {
     pmEmail: String(project?.pmEmail || "").trim().toLowerCase(),
     isName: String(project?.isName || "").trim(),
     isEmail: String(project?.isEmail || "").trim().toLowerCase(),
+    projectStart: project?.projectStart || "",
     implementationStart: project?.implementationStart || "",
     goLiveDate: project?.goLiveDate || "",
     hypercareDuration: ensureHypercareDuration(project?.hypercareDuration),
@@ -430,6 +432,7 @@ export function createProjectFromDraft(draft) {
     pmEmail: draft.pmEmail,
     isName: draft.isName,
     isEmail: draft.isEmail,
+    projectStart: draft.projectStart,
     implementationStart: draft.implementationStart,
     goLiveDate: draft.goLiveDate,
     hypercareDuration: draft.hypercareDuration,
@@ -598,8 +601,9 @@ export function getPhaseSummary(project, phaseKey) {
 
 export function getWindowForPhase(project, phaseKey) {
   if (phaseKey === "setup") {
+    const bufferDays = 10;
     return {
-      min: "",
+      min: project.projectStart ? toDateStr(addDays(parseDate(project.projectStart), -bufferDays)) : "",
       max: project.implementationStart ? toDateStr(addDays(parseDate(project.implementationStart), -1)) : "",
     };
   }
@@ -814,13 +818,21 @@ export function getProjectDateRange(project) {
     .filter((session) => session.date)
     .map((session) => session.date)
     .sort(compareByDate);
-  const windowStart = datedSessions[0] || project.implementationStart || toDateStr(new Date());
+  const windowStart = datedSessions[0] || project.projectStart || project.implementationStart || toDateStr(new Date());
   const hypercareWindow = getWindowForPhase(project, "hypercare");
   const windowEnd = hypercareWindow.max || project.goLiveDate || datedSessions[datedSessions.length - 1] || windowStart;
   return {
     start: windowStart,
     end: windowEnd,
   };
+}
+
+export function computeImplementationStart(source) {
+  const projectStart = source?.projectStart || "";
+  if (!projectStart) return "";
+  const setupPhase = source?.phases?.setup || {};
+  const suggestedWeeksMin = Number.isFinite(setupPhase?.suggestedWeeksMin) ? setupPhase.suggestedWeeksMin : 2;
+  return toDateStr(addDays(parseDate(projectStart), suggestedWeeksMin * 7));
 }
 
 export function getSuggestedGoLive(source) {

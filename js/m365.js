@@ -657,11 +657,14 @@ export async function fetchCalendarEvents({ project = getActiveProject(), startD
 
     const events = rawEvents
       .filter((event) => !event.isCancelled)
+      .filter((event) => event.showAs !== "free" && event.showAs !== "oof")
+      .filter((event) => !String(event.subject || "").startsWith(SENTINEL_SUBJECT))
       .map((event) => ({
         id: event.id,
         subject: event.subject || "Busy",
         start: event.start?.dateTime,
         end: event.end?.dateTime,
+        showAs: event.showAs || "",
         kind: "calendar",
       }));
     setCalendarEvents(events);
@@ -866,6 +869,7 @@ export async function applyDeepLinkProject(payload) {
     pmName: payload.pn,
     isEmail: payload.is,
     isName: payload.in,
+    projectStart: payload.projectStart || payload.ps || "",
     implementationStart: payload.s,
     goLiveDate: payload.g,
     hypercareDuration: payload.h,

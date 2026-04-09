@@ -4,7 +4,11 @@
       "Bash(node --check js/app.js)",
       "Bash(node --check js/m365.js)",
       "Bash(node --check js/deeplink.js)",
-      "Bash(node --check js/projects.js)"
+      "Bash(node --check js/projects.js)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(node --check js/scheduler.js)",
+      "Bash(node --check js/render.js)"
     ]
   }
 }

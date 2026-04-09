@@ -44,8 +44,10 @@ import {
   removeActiveSession,
   removeOnboardingSession,
   removeSettingsSession,
+  confirmShiftRemaining,
   confirmWindowChangeClear,
   confirmWindowChangeKeep,
+  dismissShiftDialog,
   saveSettingsDraft,
   setDayPreset,
   setSessionDate,
@@ -279,6 +281,17 @@ async function actionHandlers(action, element) {
       }
       return;
     }
+    case "confirmShiftRemaining":
+      if (confirmShiftRemaining()) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      return;
+    case "dismissShiftDialog":
+      dismissShiftDialog();
+      rerender();
+      return;
     case "addOnboardingSession":
       addOnboardingSession();
       rerender();
@@ -390,6 +403,13 @@ async function actionHandlers(action, element) {
     case "removeSession":
       if (removeActiveSession(element.dataset.id)) {
         await persistAndRender(true);
+        toast("Session removed", 4500, {
+          label: "Open Smart Fill",
+          callback: () => {
+            state.ui.smartOpen = true;
+            rerender();
+          },
+        });
       } else {
         rerender();
       }

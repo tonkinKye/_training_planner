@@ -20,6 +20,15 @@ function createSettingsState() {
   };
 }
 
+function createShiftDialogState() {
+  return {
+    open: false,
+    sessionId: "",
+    newDate: "",
+    phaseKey: "",
+  };
+}
+
 function createWindowChangeDialogState() {
   return {
     open: false,
@@ -79,6 +88,7 @@ export const state = {
     onboarding: createOnboardingState(),
     settings: createSettingsState(),
     windowChangeDialog: createWindowChangeDialogState(),
+    shiftDialog: createShiftDialogState(),
     peopleQuery: "",
     peopleMatches: [],
     peopleStatus: "idle",
@@ -221,6 +231,7 @@ export function resetUIState() {
   state.ui.onboarding = createOnboardingState();
   state.ui.settings = createSettingsState();
   state.ui.windowChangeDialog = createWindowChangeDialogState();
+  state.ui.shiftDialog = createShiftDialogState();
   state.ui.peopleQuery = "";
   state.ui.peopleMatches = [];
   state.ui.peopleStatus = "idle";
