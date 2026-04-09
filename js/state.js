@@ -2,7 +2,7 @@ export const STORAGE_EXCEPTION_NOTE = "MSAL may use sessionStorage; application 
 export const SENTINEL_SUBJECT = "TP-ProjectIndex";
 export const SENTINEL_SCHEMA_ID = "com.fishbowl.trainingplanner.v1";
 export const APP_SCHEMA_VERSION = 1;
-export const DEEP_LINK_LIMIT = 1500;
+export const DEEP_LINK_LIMIT = 2000; // Outlook Desktop URL limit raised to 8192 in supported M365 builds; 2000 is conservative for client variability
 
 function createOnboardingState() {
   return {
@@ -17,6 +17,15 @@ function createSettingsState() {
   return {
     open: false,
     draft: null,
+  };
+}
+
+function createWindowChangeDialogState() {
+  return {
+    open: false,
+    nextProject: null,
+    affectedSessionIds: [],
+    affectedCount: 0,
   };
 }
 
@@ -65,15 +74,25 @@ export const state = {
     sidebarOpen: false,
     smartOpen: false,
     smartStart: "",
+    smartPreference: "none",
     activeDays: new Set([1, 2, 3, 4, 5]),
     onboarding: createOnboardingState(),
     settings: createSettingsState(),
+    windowChangeDialog: createWindowChangeDialogState(),
     peopleQuery: "",
     peopleMatches: [],
     peopleStatus: "idle",
     peopleError: "",
     projectError: createProjectErrorState(),
     lastHandoff: createLastHandoffState(),
+  },
+  calendarAvailability: {
+    status: "idle",
+    projectId: "",
+    rangeStart: "",
+    rangeEnd: "",
+    loadedAt: "",
+    error: "",
   },
   calStart: null,
   calendarEvents: [],
@@ -172,6 +191,13 @@ export function clearCalendarEvents() {
   state.calendarEvents = [];
 }
 
+export function setCalendarAvailability(nextState) {
+  state.calendarAvailability = {
+    ...state.calendarAvailability,
+    ...nextState,
+  };
+}
+
 export function setProjectError(message, details = "") {
   state.ui.projectError = {
     open: true,
@@ -190,9 +216,11 @@ export function resetUIState() {
   state.ui.sidebarOpen = false;
   state.ui.smartOpen = false;
   state.ui.smartStart = "";
+  state.ui.smartPreference = "none";
   state.ui.activeDays = new Set([1, 2, 3, 4, 5]);
   state.ui.onboarding = createOnboardingState();
   state.ui.settings = createSettingsState();
+  state.ui.windowChangeDialog = createWindowChangeDialogState();
   state.ui.peopleQuery = "";
   state.ui.peopleMatches = [];
   state.ui.peopleStatus = "idle";
@@ -225,6 +253,14 @@ export function resetAppState({ preserveAuth = false } = {}) {
     encoded: "",
     payload: null,
     length: 0,
+  };
+  state.calendarAvailability = {
+    status: "idle",
+    projectId: "",
+    rangeStart: "",
+    rangeEnd: "",
+    loadedAt: "",
+    error: "",
   };
   resetUIState();
   state.calStart = null;

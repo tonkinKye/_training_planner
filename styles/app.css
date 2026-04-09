@@ -246,6 +246,11 @@ textarea { resize: vertical; }
   background: rgba(217, 147, 29, 0.16);
   border-color: rgba(191, 122, 0, 0.24);
 }
+.tag.info {
+  color: #365c78;
+  background: rgba(61, 104, 140, 0.12);
+  border-color: rgba(61, 104, 140, 0.24);
+}
 
 .workspace-toolbar {
   display: flex;
@@ -288,6 +293,23 @@ textarea { resize: vertical; }
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+.smart-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.smart-toggle-btn {
+  padding: 0.45rem 0.8rem;
+  background: rgba(255,255,255,0.92);
+}
+.smart-toggle-btn.active {
+  background: rgba(217, 147, 29, 0.16);
+  border-color: rgba(191, 122, 0, 0.35);
+  color: #7a4f00;
+}
+.smart-status.ready {
+  color: var(--success);
 }
 .unscheduled-chip, .people-pill, .day-chip {
   padding: 0.45rem 0.7rem;
@@ -380,6 +402,7 @@ textarea { resize: vertical; }
 .cal-cell.today { background: rgba(217, 147, 29, 0.08); }
 .cal-cell.has-conflict { box-shadow: inset 3px 0 0 var(--danger); }
 .cal-cell.has-window-conflict { outline: 2px dashed rgba(217, 147, 29, 0.42); outline-offset: -2px; }
+.cal-cell.has-availability-conflict { box-shadow: inset 0 0 0 2px rgba(61, 104, 140, 0.26); }
 .cal-date {
   padding: 0;
   border: none;
@@ -400,6 +423,11 @@ textarea { resize: vertical; }
 }
 .cal-chip.context { opacity: 0.72; cursor: default; }
 .cal-chip small { color: var(--muted); }
+.cal-chip.needs-time {
+  border-style: dashed;
+  border-color: rgba(61, 104, 140, 0.3);
+  background: rgba(61, 104, 140, 0.08);
+}
 
 .modal-overlay {
   position: fixed;
@@ -478,7 +506,7 @@ textarea { resize: vertical; }
   -webkit-overflow-scrolling: touch;
 }
 .dv-grid { display: flex; min-width: max-content; }
-.dv-time-col { width: 56px; flex: 0 0 56px; padding-top: 32px; }
+.dv-time-col { width: 56px; flex: 0 0 56px; padding-top: 96px; }
 .dv-time-label {
   height: 28px;
   line-height: 28px;
@@ -495,6 +523,7 @@ textarea { resize: vertical; }
 }
 .dv-day-col.active-conflict { background: rgba(194, 65, 45, 0.05); }
 .dv-day-col.active-window-conflict { background: rgba(217, 147, 29, 0.08); }
+.dv-day-col.active-availability-conflict { background: rgba(61, 104, 140, 0.07); }
 .dv-day-hdr {
   position: sticky;
   top: 0;
@@ -511,11 +540,27 @@ textarea { resize: vertical; }
 .dv-day-hdr.today { color: var(--amber-strong); }
 .dv-day-hdr.active-conflict { color: var(--danger); }
 .dv-day-hdr.active-window-conflict { color: var(--amber-strong); }
+.dv-day-hdr.active-availability-conflict { color: #365c78; }
+.dv-untimed-strip {
+  height: 64px;
+  padding: 0.35rem;
+  display: grid;
+  gap: 0.3rem;
+  align-content: start;
+  overflow: auto;
+  border-bottom: 1px solid rgba(217, 207, 192, 0.7);
+  background: rgba(248, 244, 238, 0.88);
+}
+.dv-untimed-empty {
+  color: var(--muted-soft);
+  font-size: 0.72rem;
+  align-self: center;
+}
 .dv-slot {
   height: 28px;
   border-bottom: 1px solid rgba(217, 207, 192, 0.55);
 }
-.dv-session, .dv-cal-event {
+.dv-session, .dv-cal-event, .dv-untimed-item {
   position: absolute;
   left: 4px;
   right: 4px;
@@ -527,17 +572,40 @@ textarea { resize: vertical; }
 }
 .dv-session { cursor: grab; z-index: 1; }
 .dv-session strong, .dv-cal-event strong { display: block; }
+.dv-untimed-item {
+  position: static;
+  cursor: grab;
+  background: rgba(255,255,255,0.9);
+}
+.dv-untimed-item strong {
+  display: block;
+}
 .dv-session.phase-setup { background: var(--phase-setup-tint); border-color: var(--phase-setup-border); color: var(--phase-setup-text); }
 .dv-session.phase-implementation { background: var(--phase-implementation-tint); border-color: var(--phase-implementation-border); color: var(--phase-implementation-text); }
 .dv-session.phase-hypercare { background: var(--phase-hypercare-tint); border-color: var(--phase-hypercare-border); color: var(--phase-hypercare-text); }
+.dv-untimed-item.phase-setup { background: var(--phase-setup-tint); border-color: var(--phase-setup-border); color: var(--phase-setup-text); }
+.dv-untimed-item.phase-implementation { background: var(--phase-implementation-tint); border-color: var(--phase-implementation-border); color: var(--phase-implementation-text); }
+.dv-untimed-item.phase-hypercare { background: var(--phase-hypercare-tint); border-color: var(--phase-hypercare-border); color: var(--phase-hypercare-text); }
 .dv-session.read-only, .dv-session.context, .dv-session.anchor { opacity: 0.82; cursor: default; }
+.dv-untimed-item.read-only, .dv-untimed-item.context { opacity: 0.82; cursor: default; }
 .dv-session.calendar-conflict, .dv-cal-event.active-conflict { box-shadow: inset 3px 0 0 var(--danger); }
 .dv-session.window-conflict {
   box-shadow: inset 3px 0 0 var(--amber);
   border-style: dashed;
 }
+.dv-untimed-item.window-conflict {
+  box-shadow: inset 3px 0 0 var(--amber);
+  border-style: dashed;
+}
+.dv-untimed-item.availability-conflict {
+  border-color: rgba(61, 104, 140, 0.32);
+  background: rgba(61, 104, 140, 0.12);
+  color: #365c78;
+}
 .dv-session.active-conflict { outline: 2px solid rgba(194, 65, 45, 0.32); }
 .dv-session.active-conflict.window-conflict { outline-color: rgba(217, 147, 29, 0.38); }
+.dv-untimed-item.active-conflict { outline: 2px solid rgba(61, 104, 140, 0.34); }
+.dv-untimed-item.active-conflict.window-conflict { outline-color: rgba(217, 147, 29, 0.38); }
 .dv-cal-event {
   background: rgba(32, 48, 58, 0.08);
   color: var(--muted);

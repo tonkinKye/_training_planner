@@ -16,6 +16,7 @@ import { esc, fmt12, fmtDur, mondayOf, pad, parseDate, toDateStr, toast } from "
 const SLOT_HEIGHT = 28;
 const SLOT_COUNT = 24;
 const HEADER_HEIGHT = 32;
+const UNTIMED_STRIP_HEIGHT = 64;
 const START_MINUTES = 6 * 60;
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -49,7 +50,7 @@ function minutesFromTime(timeValue) {
 }
 
 function topPx(minutes) {
-  return HEADER_HEIGHT + Math.max(0, ((minutes - START_MINUTES) / 30) * SLOT_HEIGHT);
+  return HEADER_HEIGHT + UNTIMED_STRIP_HEIGHT + Math.max(0, ((minutes - START_MINUTES) / 30) * SLOT_HEIGHT);
 }
 
 function heightPx(duration, startMinutes) {
@@ -61,7 +62,7 @@ function heightPx(duration, startMinutes) {
 function buildConflictQueue() {
   const project = getActiveProject();
   if (!project) return [];
-  const conflicts = getConflicts({ project, actor: state.actor, scope: "pushable" });
+  const conflicts = getConflicts({ project, actor: state.actor, scope: "review" });
 
   return [...conflicts.keys()].sort((leftId, rightId) => {
     const left = findSession(project, leftId)?.session;
@@ -158,13 +159,15 @@ function getExternalEventsByDate(project) {
 function getSessionBlocksByDate(project) {
   const visible = new Set(getVisiblePhaseKeys(state.actor));
   const context = new Set(getContextPhaseKeys(state.actor));
-  const byDate = new Map();
+  const timedByDate = new Map();
+  const untimedByDate = new Map();
 
   for (const session of getAllSessions(project)) {
-    if (!session.date || !session.time) continue;
+    if (!session.date) continue;
     if (!visible.has(session.phase) && !context.has(session.phase)) continue;
-    if (!byDate.has(session.date)) byDate.set(session.date, []);
-    byDate.get(session.date).push({
+    const target = session.time ? timedByDate : untimedByDate;
+    if (!target.has(session.date)) target.set(session.date, []);
+    target.get(session.date).push({
       session,
       editable: canEditSession(project, session, state.actor),
       context: context.has(session.phase),
@@ -173,8 +176,8 @@ function getSessionBlocksByDate(project) {
 
   const anchor = getProjectAnchor(project);
   if (state.actor === "is" && anchor.date) {
-    if (!byDate.has(anchor.date)) byDate.set(anchor.date, []);
-    byDate.get(anchor.date).push({
+    if (!timedByDate.has(anchor.date)) timedByDate.set(anchor.date, []);
+    timedByDate.get(anchor.date).push({
       session: {
         ...anchor,
         id: anchor.key,
@@ -186,7 +189,10 @@ function getSessionBlocksByDate(project) {
     });
   }
 
-  return byDate;
+  return {
+    timedByDate,
+    untimedByDate,
+  };
 }
 
 function renderTimeColumn() {
@@ -204,7 +210,7 @@ function renderSessionBlock(project, block, conflicts) {
   const { session, editable, context, anchor } = block;
   const conflictHits = conflicts.get(session.id) || [];
   const conflictSummary = summarizeConflictKinds(conflictHits);
-  const startMinutes = minutesFromTime(session.time || "09:00");
+  const startMinutes = minutesFromTime(session.time);
   const height = heightPx(session.duration, startMinutes);
   if (!height) return "";
 
@@ -225,10 +231,34 @@ function renderSessionBlock(project, block, conflicts) {
   return `<div class="${classes}" ${
     editable ? `draggable="true" data-drag="dayview-session" data-id="${session.id}"` : ""
   } style="top:${topPx(startMinutes)}px;height:${height}px;" title="${esc(session.name)}&#10;${fmt12(
-    session.time || "09:00"
+    session.time
   )} | ${fmtDur(session.duration)}${conflictSummary.label ? ` | ${esc(conflictSummary.label)}` : ""}">
     <strong>${esc(session.name)}</strong>
-    <span>${fmt12(session.time || "09:00")}</span>
+    <span>${fmt12(session.time)}</span>
+  </div>`;
+}
+
+function renderUntimedItem(project, block, conflicts) {
+  const { session, editable, context } = block;
+  const conflictHits = conflicts.get(session.id) || [];
+  const conflictSummary = summarizeConflictKinds(conflictHits);
+  const classes = [
+    "dv-untimed-item",
+    `phase-${session.phase}`,
+    editable ? "" : "read-only",
+    context ? "context" : "",
+    conflictSummary.hasAvailability ? "availability-conflict" : "",
+    conflictSummary.hasWindow ? "window-conflict" : "",
+    dayViewState.review.currentSessionId === session.id ? "active-conflict" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return `<div class="${classes}" ${editable ? `draggable="true" data-drag="dayview-session" data-id="${session.id}"` : ""} title="${esc(
+    session.name
+  )}${conflictSummary.label ? `&#10;${esc(conflictSummary.label)}` : ""}">
+    <strong>${esc(session.name)}</strong>
+    <span>Time needed</span>
   </div>`;
 }
 
@@ -247,7 +277,7 @@ function renderExternalBlock(event, activeConflictIds) {
   )}px;" title="${esc(event.subject || "Busy")}">${esc(event.subject || "Busy")}</div>`;
 }
 
-function renderDayColumn(project, dateString, index, sessionBlocks, externalEvents, conflicts) {
+function renderDayColumn(project, dateString, index, timedBlocks, untimedBlocks, externalEvents, conflicts) {
   const date = parseDate(dateString);
   const today = toDateStr(new Date());
   const activeSession = getReviewSession();
@@ -259,19 +289,21 @@ function renderDayColumn(project, dateString, index, sessionBlocks, externalEven
     slots += '<div class="dv-slot"></div>';
   }
 
-  const sessionsHTML = (sessionBlocks || [])
-    .sort((left, right) => minutesFromTime(left.session.time || "09:00") - minutesFromTime(right.session.time || "09:00"))
+  const sessionsHTML = (timedBlocks || [])
+    .sort((left, right) => minutesFromTime(left.session.time) - minutesFromTime(right.session.time))
     .map((block) => renderSessionBlock(project, block, conflicts))
     .join("");
+  const untimedHTML = (untimedBlocks || []).map((block) => renderUntimedItem(project, block, conflicts)).join("");
   const externalHTML = (externalEvents || [])
     .map((event) => renderExternalBlock(event, activeConflictIds))
     .join("");
 
-  return `<div class="dv-day-col${isActiveDay ? " active-conflict" : ""}${isActiveDay && activeConflictSummary.hasCalendar ? " active-calendar-conflict" : ""}${isActiveDay && activeConflictSummary.hasWindow ? " active-window-conflict" : ""}" data-drop-dv data-date="${dateString}">
-    <div class="dv-day-hdr${dateString === today ? " today" : ""}${isActiveDay ? " active-conflict" : ""}${isActiveDay && activeConflictSummary.hasCalendar ? " active-calendar-conflict" : ""}${isActiveDay && activeConflictSummary.hasWindow ? " active-window-conflict" : ""}">
+  return `<div class="dv-day-col${isActiveDay ? " active-conflict" : ""}${isActiveDay && activeConflictSummary.hasCalendar ? " active-calendar-conflict" : ""}${isActiveDay && activeConflictSummary.hasWindow ? " active-window-conflict" : ""}${isActiveDay && activeConflictSummary.hasAvailability ? " active-availability-conflict" : ""}" data-drop-dv data-date="${dateString}">
+    <div class="dv-day-hdr${dateString === today ? " today" : ""}${isActiveDay ? " active-conflict" : ""}${isActiveDay && activeConflictSummary.hasCalendar ? " active-calendar-conflict" : ""}${isActiveDay && activeConflictSummary.hasWindow ? " active-window-conflict" : ""}${isActiveDay && activeConflictSummary.hasAvailability ? " active-availability-conflict" : ""}">
       <span>${DAY_NAMES[index]}</span>
       <strong>${date.getDate()}</strong>
     </div>
+    <div class="dv-untimed-strip">${untimedHTML || '<span class="dv-untimed-empty">No date-only items</span>'}</div>
     ${slots}
     ${externalHTML}
     ${sessionsHTML}
@@ -308,7 +340,7 @@ export function renderDayViewModal() {
   const weekStart = dayViewState.weekStart || mondayOf(new Date());
   const weekEnd = new Date(weekStart);
   weekEnd.setDate(weekEnd.getDate() + 6);
-  const conflicts = getConflicts({ project, actor: state.actor, scope: isReviewMode() ? "pushable" : "editable" });
+  const conflicts = getConflicts({ project, actor: state.actor, scope: isReviewMode() ? "review" : "editable" });
   const sessionBlocks = getSessionBlocksByDate(project);
   const externalBlocks = getExternalEventsByDate(project);
 
@@ -340,7 +372,15 @@ export function renderDayViewModal() {
           ${renderTimeColumn()}
           ${weekDates
             .map((dateString, index) =>
-              renderDayColumn(project, dateString, index, sessionBlocks.get(dateString), externalBlocks.get(dateString), conflicts)
+              renderDayColumn(
+                project,
+                dateString,
+                index,
+                sessionBlocks.timedByDate.get(dateString),
+                sessionBlocks.untimedByDate.get(dateString),
+                externalBlocks.get(dateString),
+                conflicts
+              )
             )
             .join("")}
         </div>
@@ -380,7 +420,7 @@ export function shiftDayView(direction) {
 export function navigateConflict(direction) {
   const queue = buildConflictQueue();
   if (!queue.length) {
-    const dates = getConflictedDates({ actor: state.actor, scope: "editable" });
+    const dates = getConflictedDates({ actor: state.actor, scope: "review" });
     if (!dates.length) {
       toast("No conflicts");
       return;
@@ -423,9 +463,9 @@ export async function confirmConflict() {
   const project = getActiveProject();
   if (!project) return false;
   const currentId = dayViewState.review.currentSessionId;
-  const conflicts = getConflicts({ project, actor: state.actor, scope: "pushable" });
+  const conflicts = getConflicts({ project, actor: state.actor, scope: "review" });
   if (conflicts.has(currentId)) {
-    toast("This item still conflicts with the calendar or its phase window.", 4000);
+    toast("This item still needs review for window, calendar, or availability conflicts.", 4000);
     return false;
   }
 

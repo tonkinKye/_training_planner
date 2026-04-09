@@ -49,6 +49,7 @@ export function createOnboardingDraft() {
     implementationStart: "",
     goLiveDate: "",
     hypercareDuration: "1 week",
+    smartFillPreference: "none",
     invitees: "",
     location: "",
     sessions: getTemplateSessions("manufacturing"),
@@ -80,6 +81,11 @@ function ensureHypercareDuration(value) {
   return "1 week";
 }
 
+function ensureSmartFillPreference(value) {
+  if (value === "am" || value === "pm") return value;
+  return "none";
+}
+
 function addDays(date, amount) {
   const nextDate = new Date(date);
   nextDate.setDate(nextDate.getDate() + amount);
@@ -103,6 +109,7 @@ function makeSession(definition, index) {
     graphActioned: Boolean(definition?.graphActioned),
     outlookActioned: Boolean(definition?.outlookActioned),
     locked: Boolean(definition?.locked),
+    availabilityConflict: Boolean(definition?.availabilityConflict),
   };
 }
 
@@ -138,6 +145,7 @@ export function normalizeProject(project) {
     implementationStart: project?.implementationStart || "",
     goLiveDate: project?.goLiveDate || "",
     hypercareDuration: ensureHypercareDuration(project?.hypercareDuration),
+    smartFillPreference: ensureSmartFillPreference(project?.smartFillPreference),
     location: String(project?.location || "").trim(),
     invitees: normalizeInvitees(project?.invitees),
     phases: {
@@ -195,6 +203,7 @@ export function createProjectFromDraft(draft) {
     implementationStart: draft.implementationStart,
     goLiveDate: draft.goLiveDate,
     hypercareDuration: draft.hypercareDuration,
+    smartFillPreference: draft.smartFillPreference,
     location: draft.location,
     invitees: draft.invitees,
     phases,
@@ -362,6 +371,16 @@ export function getEditableSessions(project, actor) {
   return getAllSessions(project).filter((session) => canEditSession(project, session, actor));
 }
 
+export function getConflictReviewSessions(project, actor) {
+  return getAllSessions(project).filter(
+    (session) =>
+      session.owner === actor &&
+      session.type !== "internal" &&
+      session.date &&
+      canEditSession(project, session, actor)
+  );
+}
+
 export function getPushableSessions(project, actor) {
   return getAllSessions(project).filter(
     (session) => canCommitSession(session, actor) && session.date && session.time
@@ -469,7 +488,7 @@ export function getProjectDateRange(project) {
     .filter((session) => session.date)
     .map((session) => session.date)
     .sort();
-  const windowStart = project.implementationStart || datedSessions[0] || toDateStr(new Date());
+  const windowStart = datedSessions[0] || project.implementationStart || toDateStr(new Date());
   const hypercareWindow = getWindowForPhase(project, "hypercare");
   const windowEnd = hypercareWindow.max || project.goLiveDate || datedSessions[datedSessions.length - 1] || windowStart;
   return {

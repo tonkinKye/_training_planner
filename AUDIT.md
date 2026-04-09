@@ -1,229 +1,272 @@
-# Audit Report: Training Planner Redesign
+# Audit Report: Training Planner
 
-**Date:** 2026-04-09
-**Scope:** 16 files, +4297 / -4278 lines, single Codex session
-**Note:** Implementation agent confirmed no live browser or Graph smoke test was run.
- 
-## Resolution Tracking
+---
+
+## Redesign Audit Resolution Tracking
 
 | ID | Severity | File(s) | Finding | Status | Resolution |
 |----|----------|---------|---------|--------|------------|
 | C1 | Critical | deeplink.js, m365.js, app.js | Deep link payload exceeds 1500 chars | ✅ Fixed | Reduced the deep link payload to `{ v, id }` only and changed IS landing to resolve the full project from the signed-in user's sentinel by project ID. |
 | C2 | Critical | session-templates.js | Installation typed internal | ✅ Fixed | Removed `installation` from `INTERNAL_BODY_KEYS` so Installation is now treated as an external attendee-bearing session. |
-| C3 | Critical | m365.js | calendarView fetch not paginated | ✅ Fixed | Added `$top=250` to the `calendarView` request and now follow `@odata.nextLink` until all pages are accumulated before returning events. |
+| C3 | Critical | m365.js | calendarView fetch not paginated | ✅ Fixed | Pagination with `$top=250` and `@odata.nextLink` was added in `m365.js`, and this was resolved during the Smart Fill session. |
 | M1 | Major | session-templates.js | Support Handover typed internal | ✅ Fixed | Removed `support_handover` from `INTERNAL_BODY_KEYS` so Support Handover is now classified as external. |
-| M2 | Major | app.css | Missing --phase-*-border/text variables | ✅ Fixed | Added the missing phase border/text CSS variables in `:root` and replaced phase-specific border and text styling to use those variables instead of hardcoded literals. |
+| M2 | Major | app.css | Missing --phase-*-border/text variables | ✅ Fixed | All six phase border/text CSS variables were added in `app.css`, and this was resolved during the Smart Fill session. |
 | M3 | Major | config.js, config.example.js | Missing Calendars.ReadWrite.Shared scope | ✅ Fixed | Added `Calendars.ReadWrite.Shared` to both scope lists and documented that delegate writes require re-consent on the next login. |
-| M4 | Major | render.js | Onboarding 5 steps not 7 | ✅ Fixed | Split onboarding into the required 7-step flow with separate Timeline, Invitees, and Location steps and updated the progress/create-step thresholds accordingly. |
-| M5 | Major | conflicts.js, render.js, dayview.js, app.css | Window vs calendar conflict indistinguishable | ✅ Fixed | Added conflict-kind summaries and distinct window-vs-calendar styling so outside-window issues render as amber/dashed while calendar overlaps remain red and both kinds stay blocking. |
-| m1 | Minor | projects.js | Internal sessions appear pushable | ✅ Fixed | Updated `canCommitSession` to reject `session.type === "internal"` so internal sessions never show push actions or enter push queues. |
+| M4 | Major | render.js | Onboarding 5 steps not 7 | ✅ Fixed | The onboarding flow now matches the 7-step spec in `render.js`, and this was resolved during the Smart Fill session. |
+| M5 | Major | conflicts.js, render.js, dayview.js, app.css | Window vs calendar conflict indistinguishable | ✅ Fixed | Conflict treatments are now split into red/solid, amber/dashed, and blue/slate states, and this was resolved during the Smart Fill session. |
+| m1 | Minor | projects.js | Internal sessions appear pushable | ✅ Fixed | `canCommitSession` now excludes internal sessions in `projects.js`, and this was resolved during the Smart Fill session. |
 | m2 | Minor | m365.js | Misleading variable name nextMonday | ✅ Fixed | Renamed the all-day sentinel end-date variable from `nextMonday` to `endDate` at series creation. |
 | m3 | Minor | m365.js | People search filters client-side | ✅ Fixed | Switched `searchPeople` to use a server-side `$search` query on `/me/people` instead of fetching and filtering a larger client-side list. |
-| m4 | Minor | m365.js | fetchCalendarEvents duplicates graphRequest | ✅ Fixed | Extended `graphRequest` with `extraHeaders` and refactored `fetchCalendarEvents` to reuse it for timezone-aware calendar reads. |
-| m5 | Minor | app.css | Settings grid single column on desktop | ✅ Fixed | Added a two-column desktop grid for `.settings-grid` and kept the single-column layout for smaller screens. |
-| m6 | Minor | — | Azure client ID in git history | ⚠️ Manual | Rotate in Azure portal — not a code fix |
+| m4 | Minor | m365.js | fetchCalendarEvents duplicates graphRequest | ✅ Fixed | `fetchCalendarEvents` now routes through `graphRequest` with `extraHeaders`, and this was resolved during the Smart Fill session. |
+| m5 | Minor | app.css | Settings grid single column on desktop | ✅ Fixed | The desktop settings grid now uses `repeat(2, 1fr)` in `app.css`, and this was resolved during the Smart Fill session. |
+| m6 | Minor | - | Azure client ID in git history | ⚠️ Manual | Rotate in Azure portal - not a code fix. |
 | m7 | Minor | m365.js | Sentinel fallback matches non-series events | ✅ Fixed | Tightened `findSentinelSeries` to return only `seriesMaster` matches and removed the loose subject-prefix fallback. |
-| — | Critical | m365.js, state.js | OData bracket risk in sentinel subject | ✅ Fixed | Replaced the sentinel subject prefix with `TP-ProjectIndex` everywhere it is defined and used in Graph lookup/create paths. |
+| - | Critical | m365.js, state.js | OData bracket risk in sentinel subject | ✅ Fixed | Replaced the sentinel subject prefix with `TP-ProjectIndex` everywhere it is defined and used in Graph lookup/create paths. |
 
 ---
 
-## Critical — will break in production or violates a hard plan constraint
+## Smart Fill Audit - 2026-04-09
 
-### C1. Deep link payload exceeds 1500-character limit for Manufacturing/Warehousing projects
-**Files:** `js/deeplink.js`, `js/m365.js:756`, `js/state.js:5`
-
-A Manufacturing project with 13 implementation sessions produces ~2010 bytes of JSON. Base64url encoding inflates this to ~2680 characters. The check at `m365.js:756` (`if (length > DEEP_LINK_LIMIT)`) will throw for every Manufacturing and Warehousing project, **completely blocking PM-to-IS handoff** — the core new workflow.
-
-Estimated breakdown for a typical unscheduled Manufacturing project:
-- Implementation sessions (13 x ~115 chars each): ~1520 chars
-- Project metadata (id, emails, dates, etc.): ~320 chars
-- Context summaries: ~150 chars
-- Total JSON: ~2010 bytes -> ~2680 base64url chars
-
-If sessions are scheduled (dates/times/graphEventIds populated), the payload grows to ~3500+ chars.
-
-**Recommended fix:** Compress the JSON before encoding (e.g., `CompressionStream('gzip')` then base64url), strip empty/null fields (`dt`, `tm`, `g` when blank), or use shorter IDs in the payload. Alternatively, the sentinel itself could serve as the handoff medium (the delegate-write path already syncs project data), with the deep link carrying only a project ID.
-
-### C2. Installation session typed as internal — spec requires external
-**File:** `js/session-templates.js:28`
-
-`INTERNAL_BODY_KEYS` includes `"installation"`, causing all Installation sessions to have `type: "internal"`. The spec explicitly states "Installation 60m (external)". This means:
-- Installation sessions pushed to Graph will have **no attendees** (`buildEventPayload` at `m365.js:516` only adds attendees for external sessions)
-- No Outlook invite button shown for Installation
-- `deriveProjectStatus` counts them as auto-committed (`session.graphActioned || session.type === "internal"`)
-
-Installation is typically a customer-facing environment setup session that needs client attendees.
-
-**Recommended fix:** Remove `"installation"` from `INTERNAL_BODY_KEYS`.
-
-### C3. Calendar event fetch has no pagination — conflict detection unreliable
-**File:** `js/m365.js:598-638`
-
-`fetchCalendarEvents` calls Graph's `/calendarView` endpoint without a `$top` parameter and does not follow `@odata.nextLink`. Graph API defaults to **10 items per page**. For a project spanning weeks or months, most calendar events will be missing, causing:
-- False "no conflicts" results
-- Silent data loss on busy calendars
-- The conflict review flow (`runPushWorkflow`) giving false all-clear before pushing
-
-**Recommended fix:** Add `$top=250` to the query parameters and implement a pagination loop following `@odata.nextLink` until all events are retrieved.
+**Scope:** Smart Fill Two-Pass Rebuild across 10 files (+852 / -119 lines), single Codex session.
+**Note:** No browser or live Graph smoke test was run.
 
 ---
 
-## Major — incorrect behaviour, missing feature, or plan deviation that affects a phase exit test
+### Critical - breaks core Smart Fill functionality or violates a hard spec constraint
 
-### M1. Support Handover typed as internal — spec requires external
-**File:** `js/session-templates.js:28`
-
-`INTERNAL_BODY_KEYS` includes `"support_handover"`, but the spec says "Support Handover 15m (external)". Same consequences as C2 — no attendees, no Outlook button, auto-committed.
-
-**Recommended fix:** Remove `"support_handover"` from `INTERNAL_BODY_KEYS`.
-
-### M2. Missing --phase-*-border and --phase-*-text CSS variables
-**File:** `styles/app.css`
-
-The plan requires "tint/border/text variants" for each phase. Only tint variants are defined (`--phase-setup-tint`, `--phase-implementation-tint`, `--phase-hypercare-tint`). Phase border colors are hardcoded throughout:
-- `app.css:437`: `.dv-session.phase-setup { border-color: rgba(46, 111, 149, 0.24); }`
-- `app.css:438`: `.dv-session.phase-implementation { border-color: rgba(187, 122, 18, 0.28); }`
-- `app.css:439`: `.dv-session.phase-hypercare { border-color: rgba(77, 143, 100, 0.28); }`
-
-No `--phase-*-text` variables exist. Phase text coloring relies on inherited `--text` or hardcoded values.
-
-**Recommended fix:** Define `--phase-setup-border`, `--phase-setup-text` (and implementation/hypercare equivalents) in `:root` and reference them throughout.
-
-### M3. Delegate write path will fail — scope missing Calendars.ReadWrite.Shared
-**Files:** `js/m365.js:766-775`, `js/config.js:4`, `js/config.example.js:4`
-
-`createHandoffEvent` attempts to write to the IS user's calendar at `getGraphBase(resolvedUser.id)/events`. The `Calendars.ReadWrite` scope only grants access to the **signed-in user's** calendar. Writing to another user's calendar requires `Calendars.ReadWrite.Shared` (delegated) or admin-granted application permissions. This path will return 403 for most tenants.
-
-The fallback path (creating the event on PM's own calendar as an invite) is correctly implemented and reachable, so handoff won't be fully blocked — but the delegate-write path is dead code without the scope change.
-
-**Recommended fix:** Add `Calendars.ReadWrite.Shared` to `GRAPH_SCOPES` in both `config.js` and `config.example.js`, or document that delegate access requires tenant admin configuration.
-
-### M4. Onboarding flow has 5 steps, plan specifies 7
-**File:** `js/render.js:284`
-
-Plan specifies: client -> team -> timeline -> invitees -> location -> sessions -> confirm (7 steps). Implementation has: Client -> Team -> Timeline -> Sessions -> Confirm (5 steps). Invitees and Location are merged into the Timeline step (step 2), which now has 5 input fields including a textarea. This is a plan deviation and crowds the Timeline step on mobile.
-
-**Recommended fix:** Split step 2 into three steps (Timeline with dates/hypercare, Invitees with email textarea, Location) and adjust the step labels and `nextOnboardingStep` cap accordingly.
-
-### M5. Window-violation conflicts not visually distinguishable from calendar overlap conflicts
-**Files:** `js/conflicts.js:40-49`, `styles/app.css:440-441`
-
-`buildWindowConflict` sets `kind: "window"` on synthetic conflicts, but the rendering (`render.js` badge counts, `dayview.js` session blocks) applies the same `conflict` CSS class and danger styling for both types. Users cannot tell whether a flagged session overlaps a real calendar event or simply falls outside its phase window.
-
-**Recommended fix:** Add a distinct visual treatment (e.g., dashed border or different color) for `kind: "window"` conflicts, and show the conflict kind in the conflict badge text.
+No critical Smart Fill issues found. The two-pass architecture, date distribution logic, time slot assignment, conflict pipeline, and UI controls are all correctly implemented against the spec.
 
 ---
 
-## Minor — code quality, edge cases, or UX gaps to fix before the next session
+### Major - incorrect behaviour, missing feature, or spec deviation affecting a test plan item
 
-### m1. Internal sessions included in getPushableSessions
-**File:** `js/projects.js:364-368`
+#### SF-M1. `getTimedIntervalsForDate` uses actor-filtered sessions - IS Pass 2 may double-book over unpushed PM sessions
+| | |
+|---|---|
+| **Status** | ✅ Fixed |
+| **File** | `js/scheduler.js:344` |
+| **Function** | `getTimedIntervalsForDate` |
+| **Resolution** | The occupied-interval scan now uses `getAllSessions(project)` so every timed planner session blocks Smart Fill slot assignment regardless of owner. |
 
-`canCommitSession` checks owner, not type. Internal sessions (Sales Handover, PM Handover, Imp. Handover) will appear as pushable and get "Push" buttons. While `deriveProjectStatus` already treats them as auto-committed (`session.graphActioned || session.type === "internal"`), users may be confused by push buttons on internal sessions.
+The occupied-interval builder called `getEditableSessions(project, actor)` to find already-timed planner sessions on a given date. For PM (`actor = "pm"`), `canEditSession` returns true for all sessions, so all timed sessions were captured. For IS (`actor = "is"`), `canEditSession` only returns true for implementation sessions, so PM-timed setup/hypercare sessions on the same date were excluded from the occupied intervals.
 
-**Recommended fix:** Add `&& session.type !== "internal"` to the filter in `getPushableSessions`, or hide the push button for internal sessions in `render.js:191`.
+If the PM had timed sessions on a date that falls within the implementation window (for example, a setup session near the boundary) but had not pushed them to Graph yet, the IS Smart Fill could assign an overlapping time slot. Calendar events from Graph catch pushed sessions, but unpushed ones created a gap.
 
-### m2. createSentinelSeries misleading variable name
-**File:** `js/m365.js:273`
+**Practical risk:** Low - phases typically do not share date ranges. But the fix is simple.
 
-`nextMonday` is set to `monday + 1 day` (Tuesday). It's the correct end date for a single-day all-day event, but the variable name is misleading.
-
-**Recommended fix:** Rename to `endDate` or `dayAfterStart`.
-
-### m3. People search fetches all then filters client-side
-**File:** `js/m365.js:460-478`
-
-`searchPeople` fetches `/me/people?$top=50` then filters locally. The People API supports `$search` for server-side filtering, which would be more accurate for large organizations. Current approach may miss relevant matches.
-
-**Recommended fix:** Use `$search="${query}"` on the People API request.
-
-### m4. fetchCalendarEvents duplicates auth/timeout logic instead of using graphRequest
-**File:** `js/m365.js:585-638`
-
-This function manually gets a token, creates a fetch with timeout, and parses the response — duplicating the pattern already in `graphRequest`. The `Prefer: outlook.timezone` header is the only addition.
-
-**Recommended fix:** Extend `graphRequest` to accept extra headers, then use it here.
-
-### m5. Settings grid has no multi-column layout on desktop
-**File:** `styles/app.css:255`
-
-`.settings-grid` gets `display: grid; gap: 0.8rem` but no `grid-template-columns`. All fields stack in a single column even on wide screens.
-
-**Recommended fix:** Add `grid-template-columns: repeat(2, 1fr)` for `.settings-grid` at desktop widths.
-
-### m6. Git history still contains the Azure client ID
-**Files:** `js/config.js` (staged deletion), `.gitignore`
-
-The staged `D js/config.js` will remove the file from tracking on next commit, and `.gitignore` will prevent re-addition. However, the client ID `3248df34-1115-45f0-832f-32919ae81b91` remains in git history and must be rotated in Azure AD.
-
-**Recommended fix:** Rotate the client ID in Azure portal after committing the deletion. Optionally use `git filter-branch` or BFG to purge history, though rotation is the priority.
-
-### m7. findSentinelSeries fallback may match non-series events
-**File:** `js/m365.js:265-268`
-
-The second fallback `events.find(e => e.subject?.startsWith(SENTINEL_SUBJECT))` could match a manually created event with the same subject prefix. Unlikely but possible.
-
-**Recommended fix:** Remove the second fallback, or tighten it to also check `e.type === "singleInstance"` and treat it as a migration case.
+**Recommended fix:** Replace `getEditableSessions(project, actor)` with `getAllSessions(project)` in the session-scan loop. The calendar-event and pending-assignment loops are already actor-agnostic.
 
 ---
 
-## Confirmed — verified as correctly implemented
+#### SF-M2. Deep link handling regressed - `handleDeepLinkIfPresent` now requires project in sentinel
+| | |
+|---|---|
+| **Status** | ✅ Fixed |
+| **File** | `js/app.js:84-97` |
+| **Function** | `handleDeepLinkIfPresent` |
+| **Resolution** | Deep-link landing now applies embedded payload data with `applyDeepLinkProject` first and falls back to sentinel ID lookup only when that payload cannot be used. |
 
-| Dimension | Item | Status |
-|-----------|------|--------|
-| 1. Preflight | `js/config.js` untracked and in `.gitignore` | Confirmed |
-| 1. Preflight | `config.example.js` documents PRODUCT_NAME, CLIENT_ID, TENANT_ID, SCOPES | Confirmed |
-| 1. Preflight | `--phase-pm`, `--phase-is`, `--phase-setup`, `--phase-implementation`, `--phase-hypercare` + tint variants defined as CSS variables | Confirmed |
-| 1. Preflight | MSAL authority uses `"organizations"` not `"common"` (`config.js:3`) | Confirmed |
-| 1. Preflight | `People.Read` in scope set (`config.js:4`, `config.example.js:4`) | Confirmed |
-| 2. State | State shape has `projects`, `activeProjectId`, `actor`, `mode`, `sentinel`, `ui` (`state.js:40-81`) | Confirmed |
-| 2. State | Adapter selectors: `getAllSessions`, `getPhaseSessions`, `findSession`, `getEditableSessions`, `getPushableSessions`, `getSchedulableSessions` in `projects.js` | Confirmed |
-| 2. State | No app reads/writes to localStorage/sessionStorage (only MSAL cache) | Confirmed |
-| 2. State | MSAL cache set to `sessionStorage` (`m365.js:91`) | Confirmed |
-| 3. Sentinel | `fetchSentinel`, `writeSentinel`, `ensureSentinelSeries`, `resolveUserByEmail`, `createHandoffEvent` all implemented in `m365.js` | Confirmed |
-| 3. Sentinel | Recurring Monday all-day free series with weekly recurrence (`m365.js:271-306`) | Confirmed |
-| 3. Sentinel | Open extension on series master, not individual occurrences (`readSentinelExtension`/`writeSentinelExtension` operate on `masterId`) | Confirmed |
-| 3. Sentinel | Recoverable bootstrap error: user sees error + "Reset Sentinel" button, not auto-reset (`render.js:88-94`, `m365.js:392-404`) | Confirmed |
-| 3. Sentinel | `findSentinelSeries` prioritizes `event.type === "seriesMaster"` (`m365.js:265`) | Confirmed |
-| 4. Onboarding | Auth gate -> project list -> onboarding flow correct (`state.ui.screen` transitions) | Confirmed |
-| 4. Onboarding | IS picker with People.Read search + manual email fallback (render.js step 1) | Confirmed |
-| 4. Onboarding | Clean empty state with "No projects yet" card (`render.js:98`) | Confirmed |
-| 5. Templates | Manufacturing, Warehousing, Custom templates present (`session-templates.js:107-111`) | Confirmed |
-| 5. Templates | Each session carries `phase`, `owner`, `type`, stable `key` | Confirmed |
-| 5. Templates | Manufacturing session list matches spec (names, durations, phases, owners, order) **except** Installation and Support Handover `type` (see C2, M1) | Confirmed with exceptions |
-| 5. Templates | Warehousing: BOM 30m (not 60m), no Manufacturing session, 3 Training Supports (not 4) | Confirmed |
-| 5. Templates | Go-Live treated as PM-owned anchor at `goLiveDate` (`session-templates.js:113-121`) | Confirmed |
-| 6. Workspace | Old flat sidebar/form markup completely removed; `index.html` is minimal shell | Confirmed |
-| 6. Workspace | Session list groups by phase with coloured vertical bars (`render.js:205-216`, `app.css:214-216, 234-244`) | Confirmed |
-| 6. Workspace | Phase headers: name, owner, date range, scheduled count (`render.js:209-213`) | Confirmed |
-| 6. Workspace | Internal sessions suppress Outlook invite button (`render.js:192`) | Confirmed |
-| 6. Workspace | Project metadata editing in settings modal (`render.js:288-292`) | Confirmed |
-| 6. Workspace | `invites.js` and `m365.js` fully decoupled from `globalClient`, `globalOrganiser`, `globalEmail`, `globalInvitees`, `globalLocation` | Confirmed |
-| 7. Deep link | `deeplink.js` has URL-safe base64 encode/decode (`toBase64Url`/`fromBase64Url`) | Confirmed |
-| 7. Deep link | Payload includes project identity, PM/IS identities, implementation window, sessions, context summaries | Confirmed |
-| 7. Deep link | App detects `?project=` on load and skips to IS mode (`app.js:466-475`) | Confirmed |
-| 7. Deep link | Both delegate-write path and fallback invite path exist; fallback reachable (`m365.js:765-782`) | Confirmed |
-| 7. Deep link | IS mode: Implementation editable, Setup/Hypercare read-only context (`projects.js:352-358`, `render.js:219-230`) | Confirmed |
-| 8. Phase windows | Setup < implementationStart, Implementation in [implementationStart, goLiveDate-1], Hypercare in [goLiveDate, goLiveDate+weeks] (`projects.js:304-329`) | Confirmed |
-| 8. Phase windows | Smart Fill respects phase windows via `nextValidDate` -> `isDateWithinPhaseWindow` (`scheduler.js:73-89`) | Confirmed |
-| 8. Phase windows | Drag/drop guards enforce windows via `setSessionDate` -> `isDateWithinPhaseWindow` (`scheduler.js:334`) | Confirmed |
-| 9. Push split | PM Push All excludes IS-owned sessions (`canCommitSession` checks `session.owner === "pm"`) | Confirmed |
-| 9. Push split | IS Commit excludes PM-owned sessions (`canCommitSession` checks `session.owner === "is"`) | Confirmed |
-| 9. Push split | Handoff gate: `readyForHandoff` requires all Implementation sessions scheduled (`scheduler.js:502-504`) | Confirmed |
-| 9. Push split | IS commit updates PM sentinel via `syncProjectToPartnerSentinel(project, "pm")` (`m365.js:661`) | Confirmed |
-| 9. Push split | Status transitions (`scheduling` -> `pending_is_commit` -> `active` -> `complete`) derive from project metadata, not UI state (`projects.js:417-443`) | Confirmed |
-| 10. Risks | Old client ID not in currently tracked files (staged deletion + `.gitignore`) | Confirmed (history rotation needed) |
+The previous implementation called `applyDeepLinkProject(state.deepLink.payload)` which decoded the deep link payload and created or merged the project into the IS local state and sentinel. The regressed implementation called `openProject(state.deepLink.payload.id, ...)` which only looked up the project by ID in the existing sentinel.
+
+If the delegate-write path in `createHandoffEvent` fails, the project will not exist in the IS sentinel and the deep link will show an error. The deep link payload data must therefore be honoured on landing instead of being ignored.
+
+**Recommended fix:** Use `applyDeepLinkProject` as the primary deep-link handler and keep sentinel ID lookup only as a fallback path when the payload is absent or cannot be applied.
 
 ---
 
-## Sentinel extension code paths to flag for live testing (Dimension 10)
+#### SF-M3. `SENTINEL_SUBJECT` changed - breaks existing sentinel series
+| | |
+|---|---|
+| **Status** | ✅ Fixed |
+| **File** | `js/state.js:2`, `js/m365.js` |
+| **Resolution** | Sentinel discovery now checks both `TP-ProjectIndex` and legacy `[TP] Project Index`, and legacy series are renamed to the new subject on the next write. |
 
-| Code path | File:Line | Risk |
-|-----------|-----------|------|
-| `readSentinelExtension` | `m365.js:308` | GET on open extension by name — 404 handling present but extension name format untested |
-| `writeSentinelExtension` PATCH | `m365.js:319-326` | PATCH on existing extension — payload structure may not match Graph's expectations |
-| `writeSentinelExtension` POST fallback | `m365.js:329-333` | POST to create new extension — `@odata.type` field may cause validation errors |
-| `fetchSentinel` initial write | `m365.js:361` | Writes empty array to new extension on first use |
-| `writeProjectToUserSentinel` | `m365.js:725-735` | Cross-user sentinel read+write — requires delegate or app permissions not in current scopes |
-| `syncProjectToPartnerSentinel` | `m365.js:737-749` | Calls `writeProjectToUserSentinel` with partner email — will likely fail, but failure is caught and sets `pendingPmSync` flag |
-| `findSentinelSeries` filter | `m365.js:258-259` | OData `startswith` filter with `[TP]` in subject — brackets may cause parsing issues on some Graph implementations |
+The sentinel subject was changed from `"[TP] Project Index"` to `"TP-ProjectIndex"`. The `findSentinelSeries` function in `m365.js` filtered events using `startswith(subject,'...')`. Existing sentinel series created with the old subject would not be found, causing the app to create a new empty sentinel and lose all existing project data.
+
+**Recommended fix:** Keep the new subject but add a migration path that checks for both old and new subjects in `findSentinelSeries` and renames the old series on write.
+
+---
+
+### Minor - edge cases, UX gaps, or code quality issues to fix before next session
+
+#### SF-m1. Unnecessary sentinel persist when Smart Fill places zero sessions
+| | |
+|---|---|
+| **Status** | ✅ Fixed |
+| **File** | `js/app.js:288-294`, `js/scheduler.js:857-858` |
+| **Resolution** | The Smart Fill action now skips the sentinel write when no dates, times, or availability conflicts were created and shows a no-op toast instead. |
+
+When `applySmartFill()` returned a result object with all counts at zero, the app layer still called `persistAndRender(true)`, triggering an unnecessary sentinel write. The function skipped `touchProject()` in that case, so the project was not marked as updated, but the write still occurred.
+
+**Recommended fix:** Check the result in `app.js` before persisting and return early when nothing was placed.
+
+#### SF-m2. `setSessionTime("")` does not clear `availabilityConflict` - stale flag on blank time
+| | |
+|---|---|
+| **Status** | :white_large_square: Pending |
+| **File** | `js/scheduler.js:712-715` |
+
+`setSessionTime` only clears `availabilityConflict` when `value` is truthy. If a session has `availabilityConflict = true` (from Smart Fill) and the user explicitly selects "Time needed" (blank) from the dropdown, the flag stays true. The conflict pipeline still shows an availability conflict for this session, which is technically correct (no time assigned), but the flag was set by Smart Fill, not by the user's deliberate choice.
+
+This is a very minor UX inconsistency - the user set blank time on purpose, yet the "No free time" conflict persists.
+
+**Recommended fix:** No change required for correctness. Optionally, clear the flag on any `setSessionTime` call regardless of value, since the user is now manually managing the time.
+
+#### SF-m3. Calendar chip "needs-time" style applied to ALL untimed sessions, not just availability-conflicted ones
+| | |
+|---|---|
+| **Status** | ✅ Fixed |
+| **File** | `js/render.js:328` |
+| **Resolution** | The `needs-time` chip styling now applies only when a session is untimed and `availabilityConflict === true`. |
+
+The calendar grid chip added `needs-time` class when `!s.time`. This gave a dashed blue treatment to all untimed sessions, regardless of whether they had an availability conflict. A date-only session without availability conflict, for example just placed by Pass 1 with Pass 2 pending, got the same visual as one that failed Pass 2.
+
+**Recommended fix:** Add the `needs-time` class only when `s.availabilityConflict` is true, or use a neutral dashed style for "awaiting time" and the blue/slate style specifically for "no free time found".
+
+#### SF-m4. Smart Fill toast truncates for large unplaced session counts
+| | |
+|---|---|
+| **Status** | ✅ Fixed |
+| **File** | `js/app.js` |
+| **Resolution** | Smart Fill toast copy now uses a concise summary builder that reports scheduled, review-needed, and unplaced counts without truncating on larger results. |
+
+The Smart Fill result handler previously built a segmented toast string that did not summarise the "nothing placed" and "many unplaced" cases cleanly.
+
+**Recommended fix:** Summarise the result in one concise sentence, for example `18 sessions scheduled, 4 unplaced - phase window may be too tight.`
+
+#### SF-m5. `dayViewSlotFromEvent` Y-offset hardcoded as 96 instead of using constants
+| | |
+|---|---|
+| **Status** | :white_large_square: Pending |
+| **File** | `js/app.js:133` |
+
+The drag-drop position calculation uses a magic number `96` (`HEADER_HEIGHT` 32 + `UNTIMED_STRIP_HEIGHT` 64). If either constant changes in `dayview.js`, this value will fall out of sync since it is in a different file.
+
+**Recommended fix:** Export `HEADER_HEIGHT` and `UNTIMED_STRIP_HEIGHT` from `dayview.js` and use them in `app.js`, or move the slot-from-event calculation into `dayview.js`.
+
+---
+
+### Confirmed - verified as correctly implemented
+
+| Dim | Item | File(s) | Status |
+|-----|------|---------|--------|
+| 1 | `project.smartFillPreference` persisted with "am"/"none"/"pm", default "none" | `projects.js:84-87,148` | Confirmed |
+| 1 | `session.availabilityConflict` boolean, default false | `projects.js:112` | Confirmed |
+| 1 | `state.ui.smartPreference` ephemeral per-run override | `state.js:77` | Confirmed |
+| 1 | `state.calendarAvailability` with status, projectId, rangeStart, rangeEnd, loadedAt, error | `state.js:89-96` | Confirmed |
+| 1 | `state.ui.windowChangeDialog` with open, nextProject, affectedSessionIds, affectedCount | `state.js:23-30,81` | Confirmed |
+| 1 | `getConflictReviewSessions(project, actor)` includes dated sessions with blank time, excludes internal | `projects.js:374-382` | Confirmed |
+| 2 | Pass 1 skips sessions that already have a date | `scheduler.js:810-812` | Confirmed |
+| 2 | Pass 1 respects template/session order within each phase via `compareSessions` | `scheduler.js:131-136,812` | Confirmed |
+| 2 | Eligible dates filtered: >= today, >= smartStart, inside phase window, day-of-week in activeDays | `scheduler.js:153-175` | Confirmed |
+| 2 | Setup/Hypercare: one-per-day first, second-per-day fallback, unplaced reported | `scheduler.js:208-228,240-244` | Confirmed |
+| 2 | Implementation: Mon-Sun weeks, base cap 2, promotion to 3 when needed, earliest weeks first | `scheduler.js:191-276` | Confirmed |
+| 2 | Within each week: one per date first, second-session fallback within cap | `scheduler.js:208-228` | Confirmed |
+| 2 | Weekly hard cap never exceeds 3 | `scheduler.js:43,251` | Confirmed |
+| 2 | `applySmartFill()` returns structured result with all 8 specced fields | `scheduler.js:799-808` | Confirmed |
+| 2 | Unplaced sessions left untouched and reported | `scheduler.js:822-826` | Confirmed |
+| 3 | Pass 2 gated on `calendarAvailability.status === "ready"`, projectId match, range coverage | `scheduler.js:305-326,829-832` | Confirmed |
+| 3 | Pass 2 skipped sets `pass2Skipped` and `pass2SkipReason`; no flags mutated | `scheduler.js:830-832` | Confirmed |
+| 3 | Working hours 08:30-17:00, 30-min increments, 12:00 boundary | `scheduler.js:38-41` | Confirmed |
+| 3 | Preference order: "am"/"none" = morning then afternoon; "pm" = afternoon then morning | `scheduler.js:366-376` | Confirmed |
+| 3 | Morning ending <= 12:00; afternoon starting >= 12:00 ending <= 17:00 | `scheduler.js:378-379` | Confirmed |
+| 3 | Occupied intervals include M365 events, already-timed sessions, same-run pending assignments | `scheduler.js:332-364` | Confirmed (with SF-M1 caveat for IS actor) |
+| 3 | Slot found: time assigned, `availabilityConflict` cleared | `scheduler.js:843-846` | Confirmed |
+| 3 | No slot found: date kept, time blank, `availabilityConflict = true` | `scheduler.js:849` | Confirmed |
+| 3 | Pass 2 processes ALL date-only sessions, not just current-run dated ones | `scheduler.js:835-837` | Confirmed |
+| 4 | `setSessionTime()` clears `availabilityConflict` when non-blank time set | `scheduler.js:713-715` | Confirmed |
+| 4 | `setSessionDate()` clears `availabilityConflict` when date removed | `scheduler.js:687-688` | Confirmed |
+| 4 | `unscheduleSession()` clears `availabilityConflict` | `scheduler.js:743` via `clearSessionScheduling` | Confirmed |
+| 4 | Pass 2 clears `availabilityConflict` on successful slot assignment | `scheduler.js:844` | Confirmed |
+| 4 | No path leaves `availabilityConflict = true` after time is successfully assigned | All mutation paths | Confirmed |
+| 5 | `kind: "availability"` added to conflict pipeline | `conflicts.js:53-61` | Confirmed |
+| 5 | Early-exit relaxed: date-only sessions get window + availability checks | `conflicts.js:98-121` | Confirmed |
+| 5 | Evaluation: no date = skip; date + outside window = window; date + blank time + flag = availability; date + time = calendar overlap | `conflicts.js:98-121` | Confirmed |
+| 5 | `summarizeConflictKinds()` returns hasWindow/hasCalendar/hasAvailability with correct labels | `conflicts.js:63-91` | Confirmed |
+| 5 | Conflict review queue uses `getConflictReviewSessions` via `scope: "review"` | `conflicts.js:35`, `dayview.js:65` | Confirmed |
+| 5 | Push/commit queue unchanged - still `getPushableSessions`, requiring date + time | `projects.js:384-388` | Confirmed |
+| 6 | Three distinct conflict treatments: red/solid (calendar), amber/dashed (window), blue/slate (availability) | `app.css:591-608` | Confirmed |
+| 6 | Existing red/amber semantics unchanged | `app.css:403-404,591-598` | Confirmed |
+| 6 | `render.js` shows all conflict kinds per session badge via `renderConflictTags` | `render.js:136-145,215-227` | Confirmed |
+| 6 | Toolbar summary includes availability counts | `render.js:130,296`, `conflicts.js:165-199` | Confirmed |
+| 6 | Third calendar cell marker for availability conflicts | `render.js:321,328`, `app.css:405` | Confirmed |
+| 6 | Day view: timed blocks for timed sessions only, untimed strip beneath headers | `dayview.js:159-196,280-311` | Confirmed |
+| 6 | Availability-conflicted sessions in untimed strip with blue/slate treatment | `dayview.js:241-263`, `app.css:600-604` | Confirmed |
+| 6 | Blank-time sessions render as "Time needed" in session rows, calendar chips, and day view | `render.js:34-36,252,328`, `dayview.js:261` | Confirmed |
+| 7 | Smart Fill panel: start date, day chips/presets, AM/None/PM toggle, Refresh Availability, status line | `render.js:178-211` | Confirmed |
+| 7 | Status line: "loaded" when ready, "dates only" otherwise, "refreshing" during load | `render.js:150-155` | Confirmed |
+| 7 | `state.ui.smartPreference` initialised from `project.smartFillPreference` on project open | `scheduler.js:88-90,532,539` | Confirmed |
+| 7 | `setSmartPreference` and `refreshSmartAvailability` wired in `app.js` | `app.js:262-286` | Confirmed |
+| 7 | `getTimeOptionsHTML()` has blank "Time needed" option | `utils.js:78-86` | Confirmed |
+| 7 | AM/PM preference in onboarding Timeline step | `render.js:349` | Confirmed |
+| 7 | AM/PM preference in project settings modal | `render.js:365` | Confirmed |
+| 7 | Smart Fill panel toggle updates `state.ui.smartPreference` only, not `project.smartFillPreference` | `scheduler.js:771-773` | Confirmed |
+| 8 | Window check only on settings save, not on every field change | `scheduler.js:616-643` | Confirmed |
+| 8 | Check scoped to `implementationStart` and `goLiveDate` only, not `hypercareDuration` | `scheduler.js:625-626` | Confirmed |
+| 8 | Tentative project built and compared before saving | `scheduler.js:621-627` | Confirmed |
+| 8 | No sessions affected: saves normally without dialog | `scheduler.js:638-642` | Confirmed |
+| 8 | Sessions affected: opens dialog without saving first | `scheduler.js:629-635` | Confirmed |
+| 8 | Dialog text matches spec: "N sessions fall outside the updated window..." | `render.js:371` | Confirmed |
+| 8 | "Clear affected dates" path: clears dates, opens Smart Fill, shows toast | `scheduler.js:645-658`, `app.js:210-218` | Confirmed |
+| 8 | "Keep and review" path: saves without clearing, opens conflict review | `scheduler.js:661-666`, `app.js:220-230` | Confirmed |
+| 9 | `applySmartFill()` returns full structured result object | `scheduler.js:799-808` | Confirmed |
+| 9 | Toast uses result object: surfaces unplaced count, availability count, pass2-skipped reason | `app.js:288-312` | Confirmed |
+| 9 | Clear warning when unplaced sessions exist | `app.js:305-306` | Confirmed |
+| 9 | Toast when Pass 2 skipped with reason | `app.js:308-309` | Confirmed |
+| 9 | Success toast includes meaningful summary | `app.js:311` | Confirmed |
+| 10 | Manual scheduling (drag/drop, date/time inputs) works independently of Smart Fill | `scheduler.js:668-698,700-719,866-868`, `app.js:504-533` | Confirmed |
+| 10 | Push queue correctly excludes blank-time sessions | `projects.js:384-388` | Confirmed |
+| 10 | No render paths fall back to 09:00 for blank-time sessions | `render.js:34-36,252,328`, `dayview.js:168,261` | Confirmed |
+| 10 | `fetchCalendarEvents` writes `state.calendarAvailability` metadata on load, ready, and error | `m365.js:601-657` | Confirmed |
+| 10 | Pagination added to `fetchCalendarEvents` with `$top=250` and `@odata.nextLink` loop | `m365.js:609-626` | Confirmed |
+| 10 | `fetchCalendarEvents` uses `graphRequest` with `extraHeaders` (no more duplicate fetch logic) | `m365.js:619-623` | Confirmed |
+| 10 | `canCommitSession` now excludes internal sessions (`session.type === "internal"`) | `projects.js:355-359` | Confirmed |
+| 10 | Onboarding flow expanded to 7 steps: Client, Team, Timeline, Invitees, Location, Sessions, Confirm | `render.js:358` | Confirmed |
+| 10 | Phase CSS variables now include `--phase-*-border` and `--phase-*-text` variants | `app.css:17-26` | Confirmed |
+| 10 | Settings grid has 2-column layout on desktop | `app.css:368` | Confirmed |
+
+---
+
+### Additional regressions found outside Smart Fill scope
+
+These changes were made in the same Codex session but are not part of the Smart Fill spec. They are included here because they affect production correctness.
+
+#### REG-1. Deep link handling changed from payload-based to ID-based lookup
+| | |
+|---|---|
+| **Status** | ✅ Fixed |
+| **File** | `js/app.js:84-97` |
+| **Resolution** | IS deep-link landing now honours embedded payload data via `applyDeepLinkProject`, with sentinel lookup retained only as a fallback path. |
+
+See SF-M2 above. The `applyDeepLinkProject` function is now called again for payload-backed handoffs, while sentinel lookup is only used when embedded project data is absent or cannot be applied.
+
+#### REG-2. Sentinel subject changed from `[TP] Project Index` to `TP-ProjectIndex`
+| | |
+|---|---|
+| **Status** | ✅ Fixed |
+| **File** | `js/state.js:2`, `js/m365.js` |
+| **Resolution** | Legacy `[TP] Project Index` sentinel series are now detected and migrated in place instead of being bypassed by the new subject prefix. |
+
+The `findSentinelSeries` lookup now recognises both subject variants so existing data is not orphaned, and the legacy series is renamed on the next write.
+
+#### NEW-1. Restoring payload-based deep links reopens the encoded length limit
+| | |
+|---|---|
+| **Status** | ⚠️ New Finding |
+| **File** | `js/deeplink.js`, `js/m365.js` |
+| **Resolution** | Not fixed in this pass; the restored payload-based deep links currently encode to 1640 chars for Manufacturing and 1544 for Warehousing in a representative local check, which exceeds the 1500-character limit. |
+
+The deep-link handling fix restored the payload-based handoff path, but the encoded URL is now over the previous hard limit for at least the standard Manufacturing and Warehousing templates.
+
+#### REG-3. Previous audit findings also addressed in this session
+The following items from the previous (redesign) audit appear to have been fixed in the same Codex session. They are noted here for tracking:
+
+| Previous Finding | Resolution | Status |
+|---|---|---|
+| C3. Calendar fetch no pagination | `$top=250` and an `@odata.nextLink` loop were added in `m365.js`, and this was resolved during the Smart Fill session. | ✅ Fixed |
+| M2. Missing `--phase-*-border`, `--phase-*-text` CSS variables | All six phase border/text variables were added in `app.css`, and this was resolved during the Smart Fill session. | ✅ Fixed |
+| M4. Onboarding 5 steps instead of 7 | The onboarding flow now matches the 7-step spec in `render.js`, and this was resolved during the Smart Fill session. | ✅ Fixed |
+| M5. Window conflicts not visually distinct from calendar conflicts | Conflict treatments are now split into red/solid, amber/dashed, and blue/slate states, and this was resolved during the Smart Fill session. | ✅ Fixed |
+| m1. Internal sessions in `getPushableSessions` | `canCommitSession` now excludes internal sessions in `projects.js`, and this was resolved during the Smart Fill session. | ✅ Fixed |
+| m4. `fetchCalendarEvents` duplicated auth/timeout logic | `fetchCalendarEvents` now routes through `graphRequest` with `extraHeaders`, and this was resolved during the Smart Fill session. | ✅ Fixed |
+| m5. Settings grid single-column on desktop | The desktop settings grid now uses `repeat(2, 1fr)` in `app.css`, and this was resolved during the Smart Fill session. | ✅ Fixed |

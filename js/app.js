@@ -11,6 +11,7 @@ import {
 import { decodeProjectParam } from "./deeplink.js";
 import { openOutlook } from "./invites.js";
 import {
+  applyDeepLinkProject,
   bootstrapMsal,
   createHandoffEvent,
   fetchCalendarEvents,
@@ -44,10 +45,14 @@ import {
   removeActiveSession,
   removeOnboardingSession,
   removeSettingsSession,
+  confirmWindowChangeClear,
+  confirmWindowChangeKeep,
   saveSettingsDraft,
   setDayPreset,
   setSessionDate,
   setSessionDuration,
+  setSmartPreference,
+  getSmartFillCoverageRange,
   setSessionTime,
   setSmartStart,
   toggleActiveDay,
@@ -79,12 +84,29 @@ async function persistAndRender(shouldPersist = true) {
 
 async function handleDeepLinkIfPresent() {
   if (!state.deepLink.payload || !state.graphAccount) return;
-  const project = openProject(state.deepLink.payload.id, { actor: "is", mode: "is" });
+  const payload = state.deepLink.payload;
+  const hasEmbeddedProject =
+    Boolean(payload?.c || payload?.pt || payload?.pm || payload?.pn || payload?.is || payload?.in) ||
+    Array.isArray(payload?.impl);
+  let project = null;
+
+  if (hasEmbeddedProject) {
+    try {
+      project = await applyDeepLinkProject(payload);
+    } catch (error) {
+      console.warn("Deep link payload apply failed, falling back to sentinel lookup:", error);
+    }
+  }
+
+  if (!project && payload?.id) {
+    project = openProject(payload.id, { actor: "is", mode: "is" });
+  }
+
   if (!project) {
     setScreen("projects");
     setProjectError(
       "Could not load the handoff project.",
-      `Project ${state.deepLink.payload.id} was not found in this calendar sentinel.`
+      `Project ${payload?.id || "unknown"} was not found in this calendar sentinel.`
     );
     return;
   }
@@ -126,13 +148,42 @@ function applyBinding(binding, value) {
 
 function dayViewSlotFromEvent(event, column) {
   const rect = column.getBoundingClientRect();
-  const relativeY = event.clientY - rect.top - 32;
+  const relativeY = event.clientY - rect.top - 96;
   return Math.max(0, Math.min(23, Math.floor(relativeY / 28)));
 }
 
 function timeFromSlot(slotIndex) {
   const minutes = 360 + slotIndex * 30;
   return `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
+}
+
+function buildSmartFillToast(result) {
+  if (!result) return "No additional sessions could be placed";
+
+  if (!result.datedCount && !result.timedCount && !result.availabilityCount) {
+    if (result.unplacedCount) {
+      return `${result.unplacedCount} unplaced — phase window may be too tight.`;
+    }
+    return "No sessions were placed.";
+  }
+
+  const parts = [];
+  if (result.datedCount) {
+    parts.push(`${result.datedCount} session${result.datedCount > 1 ? "s" : ""} scheduled`);
+  }
+  if (result.timedCount) {
+    parts.push(`${result.timedCount} time slot${result.timedCount > 1 ? "s" : ""} assigned`);
+  }
+  if (result.availabilityCount) {
+    parts.push(`${result.availabilityCount} need manual time review`);
+  }
+  if (result.unplacedCount) {
+    parts.push(`${result.unplacedCount} unplaced — phase window may be too tight`);
+  }
+  if (result.pass2Skipped && result.datedCount) {
+    parts.push("availability not loaded, so times were not assigned");
+  }
+  return parts.join(", ");
 }
 
 async function actionHandlers(action, element) {
@@ -193,10 +244,32 @@ async function actionHandlers(action, element) {
       rerender();
       return;
     case "saveSettings": {
-      const project = saveSettingsDraft();
+      const outcome = saveSettingsDraft();
+      if (outcome?.status === "saved" && outcome.project) {
+        await persistAndRender(true);
+        await fetchCalendarEvents({ project: outcome.project });
+      } else {
+        rerender();
+      }
+      return;
+    }
+    case "confirmWindowChangeClear": {
+      const project = confirmWindowChangeClear();
       if (project) {
         await persistAndRender(true);
         await fetchCalendarEvents({ project });
+        toast("Affected dates were cleared. Re-run Smart Fill to place them again.", 4500);
+      } else {
+        rerender();
+      }
+      return;
+    }
+    case "confirmWindowChangeKeep": {
+      const project = confirmWindowChangeKeep();
+      if (project) {
+        await persistAndRender(true);
+        await fetchCalendarEvents({ project });
+        startConflictReview();
       } else {
         rerender();
       }
@@ -233,6 +306,10 @@ async function actionHandlers(action, element) {
     case "setSmartStart":
       setSmartStart(element.value);
       return;
+    case "setSmartPreference":
+      setSmartPreference(element.dataset.value || element.value);
+      rerender();
+      return;
     case "toggleActiveDay":
       toggleActiveDay(Number(element.dataset.day));
       rerender();
@@ -241,13 +318,35 @@ async function actionHandlers(action, element) {
       setDayPreset(element.dataset.days.split(",").map(Number));
       rerender();
       return;
-    case "applySmartFill":
-      if (applySmartFill()) {
-        await persistAndRender(true);
-      } else {
+    case "refreshSmartAvailability": {
+      const project = getActiveProject();
+      if (!project) {
         rerender();
+        return;
       }
+      const range = getSmartFillCoverageRange(project, state.actor);
+      const pending = fetchCalendarEvents({ project, startDate: range.start, endDate: range.end });
+      rerender();
+      await pending;
+      rerender();
       return;
+    }
+    case "applySmartFill":
+      {
+        const result = applySmartFill();
+        if (!result) {
+          rerender();
+          return;
+        }
+        if (!result.datedCount && !result.timedCount && !result.availabilityCount) {
+          rerender();
+          toast(buildSmartFillToast(result), 5000);
+          return;
+        }
+        await persistAndRender(true);
+        toast(buildSmartFillToast(result), 5000);
+        return;
+      }
     case "setSessionDate":
       if (setSessionDate(element.dataset.id, element.value)) {
         await persistAndRender(true);
@@ -301,7 +400,7 @@ async function actionHandlers(action, element) {
     case "checkConflicts":
       await refreshProjectContext();
       rerender();
-      toast(getConflicts({ project: getActiveProject(), actor: state.actor, scope: "pushable" }).size ? "Conflicts found" : "No conflicts found", 3500);
+      toast(getConflicts({ project: getActiveProject(), actor: state.actor, scope: "review" }).size ? "Conflicts found" : "No conflicts found", 3500);
       return;
     case "reviewConflicts":
       await refreshProjectContext();

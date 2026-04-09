@@ -1,4 +1,4 @@
-import { DEEP_LINK_LIMIT, SENTINEL_SCHEMA_ID, SENTINEL_SUBJECT, setActiveProject, setActorMode, setAuthStatus, setCalendarEvents, setGraphAccount, setProjects, setProjectError, setScreen, setSentinelState, state, upsertProject, getActiveProject } from "./state.js";
+import { DEEP_LINK_LIMIT, SENTINEL_SCHEMA_ID, SENTINEL_SUBJECT, setActiveProject, setActorMode, setAuthStatus, setCalendarAvailability, setCalendarEvents, setGraphAccount, setProjects, setProjectError, setScreen, setSentinelState, state, upsertProject, getActiveProject } from "./state.js";
 import { GRAPH_CLIENT_ID, GRAPH_SCOPES, GRAPH_TENANT_ID } from "./config.js";
 import { buildDeepLinkUrl } from "./deeplink.js";
 import { buildBodyHTML, buildSubject, parseInvitees } from "./invites.js";
@@ -24,6 +24,7 @@ const MSAL_CDN_URLS = [
 const GRAPH_TIMEOUT_MS = 30000;
 const SENTINEL_LOOKBACK_COUNT = 25;
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
+const LEGACY_SENTINEL_SUBJECT = "[TP] Project Index";
 
 let msalInstance = null;
 let msalInitPromise = null;
@@ -254,15 +255,22 @@ function parseSentinelExtension(extension) {
   throw new Error("Sentinel extension did not contain a valid payload.");
 }
 
-async function findSentinelSeries(userId = "me") {
+async function findSentinelSeriesBySubject(subject, userId = "me", { exact = false } = {}) {
+  const filter = exact ? `subject eq '${subject}'` : `startswith(subject,'${subject}')`;
   const path =
     `${getGraphBase(userId)}/events` +
-    `?$filter=${encodeURIComponent(`startswith(subject,'${SENTINEL_SUBJECT}')`)}` +
+    `?$filter=${encodeURIComponent(filter)}` +
     `&$top=${SENTINEL_LOOKBACK_COUNT}` +
     `&$select=id,subject,type,seriesMasterId,createdDateTime,start`;
   const data = await graphRequest(path);
   const events = data?.value || [];
   return events.find((event) => event.type === "seriesMaster") || null;
+}
+
+async function findSentinelSeries(userId = "me") {
+  const current = await findSentinelSeriesBySubject(SENTINEL_SUBJECT, userId);
+  if (current) return current;
+  return findSentinelSeriesBySubject(LEGACY_SENTINEL_SUBJECT, userId, { exact: true });
 }
 
 async function createSentinelSeries(userId = "me") {
@@ -299,6 +307,15 @@ async function createSentinelSeries(userId = "me") {
   return graphRequest(`${getGraphBase(userId)}/events`, {
     method: "POST",
     body: event,
+  });
+}
+
+async function renameSentinelSeries(masterId, userId = "me") {
+  await graphRequest(`${getGraphBase(userId)}/events/${encodeURIComponent(masterId)}`, {
+    method: "PATCH",
+    body: {
+      subject: SENTINEL_SUBJECT,
+    },
   });
 }
 
@@ -371,6 +388,10 @@ export async function fetchSentinel({ userId = "me" } = {}) {
 
 export async function writeSentinel(projects, { userId = "me" } = {}) {
   const master = await ensureSentinelSeries(userId);
+  if (master.subject === LEGACY_SENTINEL_SUBJECT) {
+    await renameSentinelSeries(master.id, userId);
+    master.subject = SENTINEL_SUBJECT;
+  }
   await writeSentinelExtension(master.id, projects, userId);
   if (userId === "me") {
     setSentinelState({
@@ -578,13 +599,34 @@ export async function pushSessionToCalendar(sessionId) {
   }
 }
 
-export async function fetchCalendarEvents({ project = getActiveProject() } = {}) {
+export async function fetchCalendarEvents({ project = getActiveProject(), startDate = "", endDate = "" } = {}) {
   if (!project) {
     setCalendarEvents([]);
+    setCalendarAvailability({
+      status: "idle",
+      projectId: "",
+      rangeStart: "",
+      rangeEnd: "",
+      loadedAt: "",
+      error: "",
+    });
     return [];
   }
 
-  const range = getProjectDateRange(project);
+  const range = {
+    ...(getProjectDateRange(project) || {}),
+    start: startDate || getProjectDateRange(project).start,
+    end: endDate || getProjectDateRange(project).end,
+  };
+  setCalendarEvents([]);
+  setCalendarAvailability({
+    status: "loading",
+    projectId: project.id,
+    rangeStart: range.start,
+    rangeEnd: range.end,
+    loadedAt: "",
+    error: "",
+  });
   let nextLink =
     `${getGraphBase()}/calendarView` +
     `?startDateTime=${encodeURIComponent(`${range.start}T00:00:00`)}` +
@@ -614,9 +656,26 @@ export async function fetchCalendarEvents({ project = getActiveProject() } = {})
         kind: "calendar",
       }));
     setCalendarEvents(events);
+    setCalendarAvailability({
+      status: "ready",
+      projectId: project.id,
+      rangeStart: range.start,
+      rangeEnd: range.end,
+      loadedAt: new Date().toISOString(),
+      error: "",
+    });
     return events;
   } catch (error) {
     console.error("fetchCalendarEvents failed:", error);
+    setCalendarEvents([]);
+    setCalendarAvailability({
+      status: "error",
+      projectId: project.id,
+      rangeStart: range.start,
+      rangeEnd: range.end,
+      loadedAt: "",
+      error: error.message || String(error),
+    });
     toast(`Could not read the calendar: ${error.message || error}`, 5000);
     return [];
   }

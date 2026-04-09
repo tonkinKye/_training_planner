@@ -16,13 +16,17 @@ import {
   deriveProjectStatus,
   findSession,
   getAllSessions,
+  getConflictReviewSessions,
   getEditableSessions,
+  getPhaseSessions,
   getProjectById,
   getProjectDateRange,
   getPushableSessions,
+  getWindowForPhase,
   isDateWithinPhaseWindow,
   moveSession,
   normalizeProject,
+  PHASE_ORDER,
   projectHasImplementationReady,
   removeSession,
   touchProject,
@@ -30,7 +34,13 @@ import {
 import { getTemplateReviewJSON, getTemplateSessions } from "./session-templates.js";
 import { mondayOf, parseDate, toDateStr, toast } from "./utils.js";
 
-const DEFAULT_START_TIME = "09:00";
+const SMART_FILL_PREFERENCES = new Set(["am", "none", "pm"]);
+const WORK_START_MINUTES = 8 * 60 + 30;
+const HALF_DAY_BOUNDARY_MINUTES = 12 * 60;
+const WORK_END_MINUTES = 17 * 60;
+const SLOT_INCREMENT_MINUTES = 30;
+const IMPLEMENTATION_BASE_WEEKLY_CAP = 2;
+const IMPLEMENTATION_PROMOTED_WEEKLY_CAP = 3;
 
 function invalidateSessionInviteState(session, { preserveGraphEventId = true } = {}) {
   session.graphActioned = false;
@@ -71,21 +81,317 @@ function createDraftFromAccount() {
   return draft;
 }
 
-function nextValidDate(cursor, project, session) {
-  const windowMin = session.phase === "setup" ? "" : "";
-  const today = getTodayString();
-  let probe = parseDate(cursor < today ? today : cursor);
+function normalizeSmartFillPreference(value) {
+  return SMART_FILL_PREFERENCES.has(value) ? value : "none";
+}
 
-  while (probe.getFullYear() < 2100) {
-    const dateString = toDateStr(probe);
-    const day = probe.getDay();
-    if (state.ui.activeDays.has(day) && isDateWithinPhaseWindow(project, session, dateString)) {
-      return dateString;
+function resetSmartFillPreference(project) {
+  state.ui.smartPreference = normalizeSmartFillPreference(project?.smartFillPreference);
+}
+
+function clearWindowChangeDialog() {
+  state.ui.windowChangeDialog = {
+    open: false,
+    nextProject: null,
+    affectedSessionIds: [],
+    affectedCount: 0,
+  };
+}
+
+function queueWindowChangeDialog(nextProject, affectedSessionIds) {
+  state.ui.windowChangeDialog = {
+    open: true,
+    nextProject,
+    affectedSessionIds: [...affectedSessionIds],
+    affectedCount: affectedSessionIds.length,
+  };
+}
+
+function applySavedProject(project) {
+  upsertProject(project);
+  setActiveProject(project.id);
+  setCalendarStartFromProject(project);
+  resetSmartFillPreference(project);
+  clearWindowChangeDialog();
+  closeSettings();
+  return project;
+}
+
+function toMinutes(timeValue) {
+  const [hours, minutes] = String(timeValue || "00:00").split(":").map(Number);
+  return (hours || 0) * 60 + (minutes || 0);
+}
+
+function toTimeString(minutes) {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+}
+
+function compareSessions(left, right) {
+  if (left.phase !== right.phase) {
+    return PHASE_ORDER.indexOf(left.phase) - PHASE_ORDER.indexOf(right.phase);
+  }
+  return (left.order || 0) - (right.order || 0);
+}
+
+function compareDatedSessions(left, right) {
+  const leftDate = left.date || "9999-12-31";
+  const rightDate = right.date || "9999-12-31";
+  if (leftDate !== rightDate) {
+    return leftDate.localeCompare(rightDate);
+  }
+  return compareSessions(left, right);
+}
+
+function getEditablePhaseKeys(project, actor = state.actor) {
+  return PHASE_ORDER.filter((phaseKey) =>
+    project.phases[phaseKey]?.sessions?.some((session) => canEditSession(project, session, actor))
+  );
+}
+
+function getSmartFillSearchStart(dateString, windowMin = "") {
+  const today = getTodayString();
+  const candidates = [today, dateString || today, windowMin || ""].filter(Boolean).sort();
+  return candidates[candidates.length - 1] || today;
+}
+
+function getEligibleDatesForPhase(project, phaseKey, startDate) {
+  const window = getWindowForPhase(project, phaseKey);
+  const searchStart = getSmartFillSearchStart(startDate, window.min);
+  const searchEnd = window.max || searchStart;
+  if (searchStart > searchEnd) return [];
+
+  const dates = [];
+  const cursor = parseDate(searchStart);
+  const endDate = parseDate(searchEnd);
+  while (cursor <= endDate) {
+    if (state.ui.activeDays.has(cursor.getDay())) {
+      dates.push(toDateStr(cursor));
     }
-    probe.setDate(probe.getDate() + 1);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
+}
+
+function applySessionDate(session, dateString) {
+  session.date = dateString;
+  session.time = "";
+  session.availabilityConflict = false;
+  invalidateSessionInviteState(session);
+}
+
+function clearSessionScheduling(session, { preserveGraphEventId = false } = {}) {
+  session.date = "";
+  session.time = "";
+  session.availabilityConflict = false;
+  invalidateSessionInviteState(session, { preserveGraphEventId });
+}
+
+function groupDatesByWeek(eligibleDates) {
+  const weeks = new Map();
+  for (const dateString of eligibleDates) {
+    const weekKey = toDateStr(mondayOf(parseDate(dateString)));
+    if (!weeks.has(weekKey)) {
+      weeks.set(weekKey, []);
+    }
+    weeks.get(weekKey).push(dateString);
+  }
+  return [...weeks.entries()].map(([weekKey, dates]) => ({
+    weekKey,
+    dates,
+    physicalCapacity: dates.length * 2,
+    capacity: Math.min(IMPLEMENTATION_BASE_WEEKLY_CAP, dates.length * 2),
+  }));
+}
+
+function assignSessionsAcrossDates(sessions, eligibleDates, limit = sessions.length) {
+  const assignments = [];
+  let sessionIndex = 0;
+
+  for (const dateString of eligibleDates) {
+    if (sessionIndex >= sessions.length || assignments.length >= limit) break;
+    assignments.push([sessions[sessionIndex], dateString]);
+    sessionIndex += 1;
+  }
+
+  for (const dateString of eligibleDates) {
+    if (sessionIndex >= sessions.length || assignments.length >= limit) break;
+    assignments.push([sessions[sessionIndex], dateString]);
+    sessionIndex += 1;
+  }
+
+  return {
+    assignments,
+    placed: sessionIndex,
+  };
+}
+
+function distributePhaseDates(project, phaseKey, sessions, startDate) {
+  const eligibleDates = getEligibleDatesForPhase(project, phaseKey, startDate);
+  if (!eligibleDates.length || !sessions.length) {
+    return {
+      placed: [],
+      unplaced: [...sessions],
+    };
+  }
+
+  if (phaseKey !== "implementation") {
+    const { assignments, placed } = assignSessionsAcrossDates(sessions, eligibleDates);
+    return {
+      placed: assignments,
+      unplaced: sessions.slice(placed),
+    };
+  }
+
+  const weeks = groupDatesByWeek(eligibleDates);
+  let totalCapacity = weeks.reduce((sum, week) => sum + week.capacity, 0);
+  if (totalCapacity < sessions.length) {
+    for (const week of weeks) {
+      const promotedCapacity = Math.min(IMPLEMENTATION_PROMOTED_WEEKLY_CAP, week.physicalCapacity);
+      if (promotedCapacity <= week.capacity) continue;
+      totalCapacity += promotedCapacity - week.capacity;
+      week.capacity = promotedCapacity;
+      if (totalCapacity >= sessions.length) break;
+    }
+  }
+
+  const assignments = [];
+  let sessionIndex = 0;
+  for (const week of weeks) {
+    if (sessionIndex >= sessions.length) break;
+    const { assignments: weeklyAssignments, placed } = assignSessionsAcrossDates(
+      sessions.slice(sessionIndex),
+      week.dates,
+      week.capacity
+    );
+    assignments.push(...weeklyAssignments);
+    sessionIndex += placed;
+  }
+
+  return {
+    placed: assignments,
+    unplaced: sessions.slice(sessionIndex),
+  };
+}
+
+export function getSmartFillCoverageRange(project = getActiveProject(), actor = state.actor, startDate = state.ui.smartStart) {
+  if (!project) {
+    const today = getTodayString();
+    return { start: today, end: today };
+  }
+
+  const relevantSessions = getEditableSessions(project, actor);
+  const dated = relevantSessions.filter((session) => session.date).map((session) => session.date);
+  const phaseDates = [];
+
+  for (const phaseKey of getEditablePhaseKeys(project, actor)) {
+    const window = getWindowForPhase(project, phaseKey);
+    const phaseStart = getSmartFillSearchStart(startDate, window.min);
+    const phaseEnd = window.max || phaseStart;
+    if (phaseStart <= phaseEnd) {
+      phaseDates.push(phaseStart, phaseEnd);
+    }
+  }
+
+  const allDates = [...dated, ...phaseDates].filter(Boolean).sort();
+  const today = getTodayString();
+  return {
+    start: allDates[0] || today,
+    end: allDates[allDates.length - 1] || today,
+  };
+}
+
+export function getSmartAvailabilityState(project = getActiveProject(), actor = state.actor) {
+  if (!project) {
+    return { ready: false, reason: "no_project" };
+  }
+
+  const requiredRange = getSmartFillCoverageRange(project, actor);
+  const availability = state.calendarAvailability;
+  if (availability.status !== "ready") {
+    return { ready: false, reason: availability.status === "error" ? "error" : "not_loaded", requiredRange };
+  }
+  if (availability.projectId !== project.id) {
+    return { ready: false, reason: "project_mismatch", requiredRange };
+  }
+  if (availability.rangeStart > requiredRange.start || availability.rangeEnd < requiredRange.end) {
+    return { ready: false, reason: "range_mismatch", requiredRange };
+  }
+  return {
+    ready: true,
+    reason: "",
+    requiredRange,
+  };
+}
+
+function getDateEvents(dateString) {
+  return state.calendarEvents.filter((event) => event.start?.slice(0, 10) === dateString);
+}
+
+function getTimedIntervalsForDate(project, actor, dateString, currentSessionId = "", pendingAssignments = new Map()) {
+  const intervals = [];
+
+  for (const event of getDateEvents(dateString)) {
+    const start = new Date(event.start);
+    const end = new Date(event.end);
+    intervals.push({
+      start: start.getHours() * 60 + start.getMinutes(),
+      end: end.getHours() * 60 + end.getMinutes(),
+    });
+  }
+
+  for (const session of getAllSessions(project)) {
+    if (session.id === currentSessionId) continue;
+    if (session.date !== dateString || !session.time) continue;
+    intervals.push({
+      start: toMinutes(session.time),
+      end: toMinutes(session.time) + session.duration,
+    });
+  }
+
+  for (const [sessionId, timeValue] of pendingAssignments.entries()) {
+    if (sessionId === currentSessionId || !timeValue) continue;
+    const found = findSession(project, sessionId)?.session;
+    if (!found || found.date !== dateString) continue;
+    intervals.push({
+      start: toMinutes(timeValue),
+      end: toMinutes(timeValue) + found.duration,
+    });
+  }
+
+  return intervals.sort((left, right) => left.start - right.start);
+}
+
+function findOpenSlot(duration, intervals, preferredHalf) {
+  const halfRanges =
+    preferredHalf === "pm"
+      ? [
+          [HALF_DAY_BOUNDARY_MINUTES, WORK_END_MINUTES],
+          [WORK_START_MINUTES, HALF_DAY_BOUNDARY_MINUTES],
+        ]
+      : [
+          [WORK_START_MINUTES, HALF_DAY_BOUNDARY_MINUTES],
+          [HALF_DAY_BOUNDARY_MINUTES, WORK_END_MINUTES],
+        ];
+
+  for (const [rangeStart, rangeEnd] of halfRanges) {
+    for (let minutes = rangeStart; minutes + duration <= rangeEnd; minutes += SLOT_INCREMENT_MINUTES) {
+      const candidateEnd = minutes + duration;
+      const overlaps = intervals.some((interval) => minutes < interval.end && candidateEnd > interval.start);
+      if (!overlaps) {
+        return toTimeString(minutes);
+      }
+    }
   }
 
   return "";
+}
+
+function detectAffectedWindowSessions(project) {
+  return getAllSessions(project)
+    .filter((session) => session.date && !isDateWithinPhaseWindow(project, session, session.date))
+    .map((session) => session.id);
 }
 
 function validateDraft(draft) {
@@ -217,6 +523,7 @@ export function createProjectFromOnboarding() {
   setActorMode("pm", "pm");
   setScreen("workspace");
   setCalendarStartFromProject(project);
+  resetSmartFillPreference(project);
   closeOnboarding();
   clearProjectError();
   return project;
@@ -229,6 +536,7 @@ export function openProject(projectId, { actor = "pm", mode = actor } = {}) {
   setActorMode(actor, mode);
   setScreen("workspace");
   setCalendarStartFromProject(project);
+  resetSmartFillPreference(project);
   return project;
 }
 
@@ -308,16 +616,53 @@ export function moveSettingsSession(sessionId, direction) {
 export function saveSettingsDraft() {
   const project = getCurrentProjectOrToast();
   const draft = state.ui.settings.draft;
-  if (!project || !draft) return null;
+  if (!project || !draft) return { status: "failed", project: null };
 
   const validated = normalizeProject({
     ...project,
     ...draft,
   });
-  upsertProject(validated);
-  setActiveProject(validated.id);
-  closeSettings();
-  return validated;
+  const windowChanged =
+    project.implementationStart !== validated.implementationStart || project.goLiveDate !== validated.goLiveDate;
+  const affectedSessionIds = windowChanged ? detectAffectedWindowSessions(validated) : [];
+
+  if (affectedSessionIds.length) {
+    queueWindowChangeDialog(validated, affectedSessionIds);
+    return {
+      status: "confirm",
+      project: null,
+      affectedSessionIds,
+    };
+  }
+
+  return {
+    status: "saved",
+    project: applySavedProject(validated),
+    affectedSessionIds: [],
+  };
+}
+
+export function confirmWindowChangeClear() {
+  const { nextProject, affectedSessionIds } = state.ui.windowChangeDialog;
+  if (!nextProject) return null;
+
+  for (const sessionId of affectedSessionIds) {
+    const found = findSession(nextProject, sessionId);
+    if (found) {
+      clearSessionScheduling(found.session, { preserveGraphEventId: false });
+    }
+  }
+
+  nextProject.status = deriveProjectStatus(nextProject);
+  state.ui.smartOpen = true;
+  return applySavedProject(nextProject);
+}
+
+export function confirmWindowChangeKeep() {
+  const { nextProject } = state.ui.windowChangeDialog;
+  if (!nextProject) return null;
+  nextProject.status = deriveProjectStatus(nextProject);
+  return applySavedProject(nextProject);
 }
 
 export function setSessionDate(sessionId, value) {
@@ -339,14 +684,11 @@ export function setSessionDate(sessionId, value) {
   const nextValue = value || "";
   if (found.session.date === nextValue) return true;
 
-  found.session.date = nextValue;
   if (!nextValue) {
-    found.session.time = "";
-    invalidateSessionInviteState(found.session, { preserveGraphEventId: false });
+    clearSessionScheduling(found.session, { preserveGraphEventId: false });
   } else {
-    if (!found.session.time) {
-      found.session.time = DEFAULT_START_TIME;
-    }
+    found.session.date = nextValue;
+    found.session.availabilityConflict = false;
     invalidateSessionInviteState(found.session);
   }
 
@@ -368,8 +710,12 @@ export function setSessionTime(sessionId, value) {
 
   if (found.session.time === value) return true;
   found.session.time = value || "";
+  if (value) {
+    found.session.availabilityConflict = false;
+  }
   invalidateSessionInviteState(found.session);
   touchProject(project);
+  project.status = deriveProjectStatus(project);
   return true;
 }
 
@@ -394,9 +740,7 @@ export function unscheduleSession(sessionId) {
 
   const found = findSession(project, sessionId);
   if (!found || !canEditSession(project, found.session, state.actor)) return false;
-  found.session.date = "";
-  found.session.time = "";
-  invalidateSessionInviteState(found.session, { preserveGraphEventId: false });
+  clearSessionScheduling(found.session, { preserveGraphEventId: false });
   touchProject(project);
   project.status = deriveProjectStatus(project);
   return true;
@@ -424,6 +768,10 @@ export function setSmartStart(value) {
   state.ui.smartStart = value || "";
 }
 
+export function setSmartPreference(value) {
+  state.ui.smartPreference = normalizeSmartFillPreference(value);
+}
+
 export function toggleActiveDay(day) {
   if (state.ui.activeDays.has(day)) {
     state.ui.activeDays.delete(day);
@@ -438,50 +786,81 @@ export function setDayPreset(days) {
 
 export function applySmartFill() {
   const project = getCurrentProjectOrToast();
-  if (!project) return false;
+  if (!project) return null;
   if (!state.ui.smartStart) {
     toast("Pick a start date");
-    return false;
+    return null;
   }
   if (!state.ui.activeDays.size) {
     toast("Select at least one day");
-    return false;
+    return null;
   }
 
-  let cursor = state.ui.smartStart;
-  let updated = 0;
-  const sessions = getEditableSessions(project, state.actor)
+  const result = {
+    datedCount: 0,
+    timedCount: 0,
+    availabilityCount: 0,
+    unplacedCount: 0,
+    pass2Skipped: false,
+    pass2SkipReason: "",
+    unplacedSessionIds: [],
+    availabilitySessionIds: [],
+  };
+
+  const undatedSessions = getEditableSessions(project, state.actor)
     .filter((session) => !session.date)
-    .sort((left, right) => {
-      if (left.phase !== right.phase) {
-        const phaseOrder = ["setup", "implementation", "hypercare"];
-        return phaseOrder.indexOf(left.phase) - phaseOrder.indexOf(right.phase);
-      }
-      return left.order - right.order;
-    });
+    .sort(compareSessions);
 
-  for (const session of sessions) {
-    const nextDate = nextValidDate(cursor, project, session);
-    if (!nextDate) continue;
-    session.date = nextDate;
-    session.time = session.time || DEFAULT_START_TIME;
-    invalidateSessionInviteState(session);
-    updated += 1;
+  for (const phaseKey of PHASE_ORDER) {
+    const phaseSessions = undatedSessions.filter((session) => session.phase === phaseKey);
+    if (!phaseSessions.length) continue;
 
-    const nextCursor = parseDate(nextDate);
-    nextCursor.setDate(nextCursor.getDate() + 1);
-    cursor = toDateStr(nextCursor);
+    const distribution = distributePhaseDates(project, phaseKey, phaseSessions, state.ui.smartStart);
+    for (const [session, dateString] of distribution.placed) {
+      applySessionDate(session, dateString);
+      result.datedCount += 1;
+    }
+    if (distribution.unplaced.length) {
+      result.unplacedSessionIds.push(...distribution.unplaced.map((session) => session.id));
+      result.unplacedCount += distribution.unplaced.length;
+    }
   }
 
-  if (!updated) {
-    toast("No additional sessions could be placed within the phase windows", 4000);
-    return false;
+  const availabilityState = getSmartAvailabilityState(project, state.actor);
+  if (!availabilityState.ready) {
+    result.pass2Skipped = true;
+    result.pass2SkipReason = availabilityState.reason;
+  } else {
+    const pendingAssignments = new Map();
+    const candidates = getEditableSessions(project, state.actor)
+      .filter((session) => session.date && !session.time)
+      .sort(compareDatedSessions);
+
+    for (const session of candidates) {
+      const intervals = getTimedIntervalsForDate(project, state.actor, session.date, session.id, pendingAssignments);
+      const slot = findOpenSlot(session.duration, intervals, normalizeSmartFillPreference(state.ui.smartPreference));
+      if (slot) {
+        session.time = slot;
+        session.availabilityConflict = false;
+        pendingAssignments.set(session.id, slot);
+        invalidateSessionInviteState(session);
+        result.timedCount += 1;
+      } else {
+        session.availabilityConflict = true;
+        result.availabilitySessionIds.push(session.id);
+      }
+    }
+
+    result.availabilityCount = result.availabilitySessionIds.length;
+  }
+
+  if (!result.datedCount && !result.timedCount && !result.availabilityCount && !result.unplacedCount) {
+    return result;
   }
 
   touchProject(project);
   project.status = deriveProjectStatus(project);
-  toast(`Placed ${updated} session${updated > 1 ? "s" : ""}`, 3500);
-  return true;
+  return result;
 }
 
 export function dropOnDate(sessionId, dateString) {
@@ -509,4 +888,8 @@ export function pushableCount(project = getActiveProject(), actor = state.actor)
 
 export function visibleSessions(project = getActiveProject()) {
   return getAllSessions(project || {});
+}
+
+export function getReviewableConflictCount(project = getActiveProject(), actor = state.actor) {
+  return getConflictReviewSessions(project, actor).length;
 }

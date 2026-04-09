@@ -3,6 +3,7 @@ export function pad(value) {
 }
 
 export function fmt12(timeValue) {
+  if (!timeValue || !String(timeValue).includes(":")) return "";
   const [hours, minutes] = String(timeValue).split(":").map(Number);
   return `${hours % 12 || 12}:${pad(minutes)}${hours >= 12 ? " PM" : " AM"}`;
 }
@@ -75,10 +76,13 @@ export const TIME_SLOTS = (() => {
 })();
 
 export function getTimeOptionsHTML(selectedValue) {
-  return TIME_SLOTS.map(
+  return [
+    `<option value=""${selectedValue ? "" : " selected"}>Time needed</option>`,
+    ...TIME_SLOTS.map(
     (value) =>
       `<option value="${value}"${value === selectedValue ? " selected" : ""}>${fmt12(value)}</option>`
-  ).join("");
+    ),
+  ].join("");
 }
 
 let toastTimer = null;
