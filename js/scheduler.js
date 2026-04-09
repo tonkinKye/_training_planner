@@ -13,15 +13,18 @@ import {
   cloneProject,
   createOnboardingDraft,
   createProjectFromDraft,
+  DEFAULT_WORKING_DAYS,
   deriveProjectStatus,
   findSession,
   getAllSessions,
   getConflictReviewSessions,
   getEditableSessions,
   getPhaseSessions,
+  getPhaseStages,
   getProjectById,
   getProjectDateRange,
   getPushableSessions,
+  getSuggestedGoLive,
   getWindowForPhase,
   isDateWithinPhaseWindow,
   moveSession,
@@ -31,7 +34,7 @@ import {
   removeSession,
   touchProject,
 } from "./projects.js";
-import { getTemplateReviewJSON, getTemplateSessions } from "./session-templates.js";
+import { GO_LIVE_SESSION_KEY, getTemplateReviewJSON } from "./session-templates.js";
 import { mondayOf, parseDate, toDateStr, toast } from "./utils.js";
 
 const SMART_FILL_PREFERENCES = new Set(["am", "none", "pm"]);
@@ -41,6 +44,33 @@ const WORK_END_MINUTES = 17 * 60;
 const SLOT_INCREMENT_MINUTES = 30;
 const IMPLEMENTATION_BASE_WEEKLY_CAP = 2;
 const IMPLEMENTATION_PROMOTED_WEEKLY_CAP = 3;
+const NEW_STAGE_VALUE = "__new__";
+
+function addDays(date, amount) {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + amount);
+  return nextDate;
+}
+
+function getTodayString() {
+  return toDateStr(new Date());
+}
+
+function dayAfter(dateString) {
+  return dateString ? toDateStr(addDays(parseDate(dateString), 1)) : "";
+}
+
+function dayBefore(dateString) {
+  return dateString ? toDateStr(addDays(parseDate(dateString), -1)) : "";
+}
+
+function maxDate(...values) {
+  return values.filter(Boolean).sort().at(-1) || "";
+}
+
+function normalizeSmartFillPreference(value) {
+  return SMART_FILL_PREFERENCES.has(value) ? value : "none";
+}
 
 function invalidateSessionInviteState(session, { preserveGraphEventId = true } = {}) {
   session.graphActioned = false;
@@ -48,10 +78,6 @@ function invalidateSessionInviteState(session, { preserveGraphEventId = true } =
   if (!preserveGraphEventId) {
     session.graphEventId = "";
   }
-}
-
-function getTodayString() {
-  return toDateStr(new Date());
 }
 
 function getCurrentProjectOrToast() {
@@ -72,21 +98,71 @@ function setCalendarStartFromProject(project) {
   state.calStart = mondayOf(parseDate(range.start || getTodayString()));
 }
 
+function getStageOptions(source, phaseKey) {
+  return getPhaseStages(source, phaseKey).map((stage) => ({
+    key: stage.key,
+    label: stage.label,
+  }));
+}
+
+function ensureBuilderStage(source, builderKey) {
+  const builder = source?.[builderKey];
+  if (!builder) return;
+
+  const stageOptions = getStageOptions(source, builder.phase);
+  if (!stageOptions.length) {
+    builder.stageKey = "";
+    return;
+  }
+
+  if (builder.stageKey === NEW_STAGE_VALUE) return;
+  if (!stageOptions.some((stage) => stage.key === builder.stageKey)) {
+    builder.stageKey = stageOptions[0].key;
+  }
+}
+
+function buildGoLiveWarning(source, suggestion) {
+  if (!source?.goLiveDate || !suggestion.suggestedDate) {
+    return suggestion.warning || "";
+  }
+
+  if (source.goLiveDate < suggestion.suggestedDate) {
+    return `This timeline may be too tight. Minimum recommended is ${suggestion.recommendedWeeks} weeks for this template.`;
+  }
+
+  return suggestion.warning || "";
+}
+
+function refreshGoLiveSuggestion(source, { forceAutofill = false } = {}) {
+  if (!source) return;
+
+  const suggestion = getSuggestedGoLive(source);
+  source.goLiveSuggestedDate = suggestion.suggestedDate;
+  source.goLiveRecommendedWeeks = suggestion.recommendedWeeks;
+  source.goLiveWarning = buildGoLiveWarning(source, suggestion);
+
+  if ((forceAutofill || !source.goLiveManuallySet || !source.goLiveDate) && suggestion.suggestedDate) {
+    source.goLiveDate = suggestion.suggestedDate;
+  }
+}
+
 function createDraftFromAccount() {
   const draft = createOnboardingDraft();
   if (state.graphAccount) {
     draft.pmName = state.graphAccount.name || "";
     draft.pmEmail = state.graphAccount.username || "";
   }
+  refreshGoLiveSuggestion(draft, { forceAutofill: true });
+  ensureBuilderStage(draft, "customSession");
   return draft;
 }
 
-function normalizeSmartFillPreference(value) {
-  return SMART_FILL_PREFERENCES.has(value) ? value : "none";
-}
-
-function resetSmartFillPreference(project) {
+function resetSmartFillDefaults(project) {
   state.ui.smartPreference = normalizeSmartFillPreference(project?.smartFillPreference);
+  state.ui.activeDays = new Set(
+    Array.isArray(project?.workingDays) && project.workingDays.length ? project.workingDays : DEFAULT_WORKING_DAYS
+  );
+  state.ui.smartStart = getTodayString();
 }
 
 function clearWindowChangeDialog() {
@@ -111,7 +187,7 @@ function applySavedProject(project) {
   upsertProject(project);
   setActiveProject(project.id);
   setCalendarStartFromProject(project);
-  resetSmartFillPreference(project);
+  resetSmartFillDefaults(project);
   clearWindowChangeDialog();
   closeSettings();
   return project;
@@ -132,6 +208,9 @@ function compareSessions(left, right) {
   if (left.phase !== right.phase) {
     return PHASE_ORDER.indexOf(left.phase) - PHASE_ORDER.indexOf(right.phase);
   }
+  if (left.stageKey !== right.stageKey) {
+    return String(left.stageKey || "").localeCompare(String(right.stageKey || ""));
+  }
   return (left.order || 0) - (right.order || 0);
 }
 
@@ -141,37 +220,54 @@ function compareDatedSessions(left, right) {
   if (leftDate !== rightDate) {
     return leftDate.localeCompare(rightDate);
   }
+
+  const leftTime = left.time || "99:99";
+  const rightTime = right.time || "99:99";
+  if (leftTime !== rightTime) {
+    return leftTime.localeCompare(rightTime);
+  }
+
   return compareSessions(left, right);
 }
 
 function getEditablePhaseKeys(project, actor = state.actor) {
-  return PHASE_ORDER.filter((phaseKey) =>
-    project.phases[phaseKey]?.sessions?.some((session) => canEditSession(project, session, actor))
-  );
+  const editable = getEditableSessions(project, actor);
+  return PHASE_ORDER.filter((phaseKey) => editable.some((session) => session.phase === phaseKey));
 }
 
-function getSmartFillSearchStart(dateString, windowMin = "") {
-  const today = getTodayString();
-  const candidates = [today, dateString || today, windowMin || ""].filter(Boolean).sort();
-  return candidates[candidates.length - 1] || today;
+function getSmartFillSearchStart(dateString, windowMin = "", startAfterDate = "") {
+  return maxDate(getTodayString(), dateString || "", windowMin || "", startAfterDate ? dayAfter(startAfterDate) : "");
 }
 
-function getEligibleDatesForPhase(project, phaseKey, startDate) {
-  const window = getWindowForPhase(project, phaseKey);
-  const searchStart = getSmartFillSearchStart(startDate, window.min);
-  const searchEnd = window.max || searchStart;
-  if (searchStart > searchEnd) return [];
+function getEligibleDatesBetween(startDate, endDate) {
+  if (!startDate || !endDate || startDate > endDate) return [];
 
   const dates = [];
-  const cursor = parseDate(searchStart);
-  const endDate = parseDate(searchEnd);
-  while (cursor <= endDate) {
+  const cursor = parseDate(startDate);
+  const end = parseDate(endDate);
+  while (cursor <= end) {
     if (state.ui.activeDays.has(cursor.getDay())) {
       dates.push(toDateStr(cursor));
     }
     cursor.setDate(cursor.getDate() + 1);
   }
   return dates;
+}
+
+function getSmartFillWindowForPhase(project, phaseKey, previousPhaseLastDate = "") {
+  const window = getWindowForPhase(project, phaseKey);
+  const start = getSmartFillSearchStart(state.ui.smartStart, window.min, previousPhaseLastDate);
+  let end = window.max || start;
+
+  if (phaseKey === "implementation" && project.goLiveDate) {
+    end = dayBefore(project.goLiveDate);
+  }
+
+  return {
+    start,
+    end,
+    dates: getEligibleDatesBetween(start, end),
+  };
 }
 
 function applySessionDate(session, dateString) {
@@ -205,124 +301,229 @@ function groupDatesByWeek(eligibleDates) {
   }));
 }
 
-function assignSessionsAcrossDates(sessions, eligibleDates, limit = sessions.length) {
-  const assignments = [];
-  let sessionIndex = 0;
+function spreadDates(dates, count) {
+  if (!dates.length || count <= 0) return [];
 
-  for (const dateString of eligibleDates) {
-    if (sessionIndex >= sessions.length || assignments.length >= limit) break;
-    assignments.push([sessions[sessionIndex], dateString]);
-    sessionIndex += 1;
+  const picks = [];
+  for (let index = 0; index < count; index += 1) {
+    const dateIndex = Math.min(dates.length - 1, Math.floor((index * dates.length) / count));
+    picks.push(dates[dateIndex]);
+  }
+  return picks;
+}
+
+function spreadDatesWithSecondPass(dates, count) {
+  if (!dates.length || count <= 0) return [];
+  const firstCount = Math.min(count, dates.length);
+  const picks = [...spreadDates(dates, firstCount)];
+  const remaining = count - firstCount;
+  if (remaining > 0) {
+    picks.push(...spreadDates(dates, Math.min(remaining, dates.length)));
+  }
+  return picks;
+}
+
+function allocateSequentialCounts(stageStates, totalDateCount) {
+  const counts = new Map();
+  if (!stageStates.length || totalDateCount <= 0) {
+    stageStates.forEach((stageState) => counts.set(stageState.stage.key, 0));
+    return counts;
   }
 
-  for (const dateString of eligibleDates) {
-    if (sessionIndex >= sessions.length || assignments.length >= limit) break;
-    assignments.push([sessions[sessionIndex], dateString]);
-    sessionIndex += 1;
+  if (totalDateCount < stageStates.length) {
+    stageStates.forEach((stageState, index) => counts.set(stageState.stage.key, index < totalDateCount ? 1 : 0));
+    return counts;
   }
 
+  const weights = stageStates.map((stageState) => Math.max(1, stageState.weight));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  const remainingDates = totalDateCount - stageStates.length;
+  const details = stageStates.map((stageState, index) => {
+    const rawExtra = totalWeight ? (weights[index] / totalWeight) * remainingDates : 0;
+    const extra = Math.floor(rawExtra);
+    return {
+      key: stageState.stage.key,
+      count: 1 + extra,
+      remainder: rawExtra - extra,
+    };
+  });
+
+  let leftover = totalDateCount - details.reduce((sum, detail) => sum + detail.count, 0);
+  details
+    .slice()
+    .sort((left, right) => right.remainder - left.remainder)
+    .forEach((detail) => {
+      if (leftover <= 0) return;
+      detail.count += 1;
+      leftover -= 1;
+    });
+
+  details.forEach((detail) => counts.set(detail.key, detail.count));
+  return counts;
+}
+
+function getLatestSessionDate(sessions) {
+  return sessions
+    .filter((session) => session.date)
+    .map((session) => session.date)
+    .sort()
+    .at(-1) || "";
+}
+
+function getStageFixedDates(stage) {
+  return (stage.sessions || [])
+    .filter((session) => session.key !== GO_LIVE_SESSION_KEY && session.date)
+    .map((session) => session.date)
+    .sort();
+}
+
+function buildStageStates(project, phaseKey, actor) {
+  return getPhaseStages(project, phaseKey).map((stage) => {
+    const placeableSessions = stage.sessions.filter((session) => session.key !== GO_LIVE_SESSION_KEY);
+    const pendingSessions = placeableSessions
+      .filter((session) => !session.date && canEditSession(project, session, actor))
+      .sort(compareSessions);
+    const fixedDates = getStageFixedDates(stage);
+    return {
+      stage,
+      isGoLive: stage.sessions.some((session) => session.key === GO_LIVE_SESSION_KEY),
+      weight: placeableSessions.length || fixedDates.length || 1,
+      pendingSessions,
+      fixedDates,
+    };
+  });
+}
+
+function assignSetupOrHypercareStage(stageState, stageDates) {
+  const picks = spreadDatesWithSecondPass(stageDates, stageState.pendingSessions.length);
+  const assignments = stageState.pendingSessions.slice(0, picks.length).map((session, index) => [session, picks[index]]);
   return {
     assignments,
-    placed: sessionIndex,
+    unplaced: stageState.pendingSessions.slice(assignments.length),
   };
 }
 
-function distributePhaseDates(project, phaseKey, sessions, startDate) {
-  const eligibleDates = getEligibleDatesForPhase(project, phaseKey, startDate);
-  if (!eligibleDates.length || !sessions.length) {
-    return {
-      placed: [],
-      unplaced: [...sessions],
-    };
-  }
-
-  if (phaseKey !== "implementation") {
-    const { assignments, placed } = assignSessionsAcrossDates(sessions, eligibleDates);
-    return {
-      placed: assignments,
-      unplaced: sessions.slice(placed),
-    };
-  }
-
-  const weeks = groupDatesByWeek(eligibleDates);
+function assignImplementationStage(stageState, stageDates) {
+  const weeks = groupDatesByWeek(stageDates);
   let totalCapacity = weeks.reduce((sum, week) => sum + week.capacity, 0);
-  if (totalCapacity < sessions.length) {
+
+  if (totalCapacity < stageState.pendingSessions.length) {
     for (const week of weeks) {
-      const promotedCapacity = Math.min(IMPLEMENTATION_PROMOTED_WEEKLY_CAP, week.physicalCapacity);
-      if (promotedCapacity <= week.capacity) continue;
-      totalCapacity += promotedCapacity - week.capacity;
-      week.capacity = promotedCapacity;
-      if (totalCapacity >= sessions.length) break;
+      const promoted = Math.min(IMPLEMENTATION_PROMOTED_WEEKLY_CAP, week.physicalCapacity);
+      if (promoted <= week.capacity) continue;
+      totalCapacity += promoted - week.capacity;
+      week.capacity = promoted;
+      if (totalCapacity >= stageState.pendingSessions.length) {
+        break;
+      }
     }
   }
 
   const assignments = [];
   let sessionIndex = 0;
   for (const week of weeks) {
-    if (sessionIndex >= sessions.length) break;
-    const { assignments: weeklyAssignments, placed } = assignSessionsAcrossDates(
-      sessions.slice(sessionIndex),
+    if (sessionIndex >= stageState.pendingSessions.length) break;
+    const placements = spreadDatesWithSecondPass(
       week.dates,
-      week.capacity
+      Math.min(week.capacity, stageState.pendingSessions.length - sessionIndex)
     );
-    assignments.push(...weeklyAssignments);
-    sessionIndex += placed;
-  }
-
-  return {
-    placed: assignments,
-    unplaced: sessions.slice(sessionIndex),
-  };
-}
-
-export function getSmartFillCoverageRange(project = getActiveProject(), actor = state.actor, startDate = state.ui.smartStart) {
-  if (!project) {
-    const today = getTodayString();
-    return { start: today, end: today };
-  }
-
-  const relevantSessions = getEditableSessions(project, actor);
-  const dated = relevantSessions.filter((session) => session.date).map((session) => session.date);
-  const phaseDates = [];
-
-  for (const phaseKey of getEditablePhaseKeys(project, actor)) {
-    const window = getWindowForPhase(project, phaseKey);
-    const phaseStart = getSmartFillSearchStart(startDate, window.min);
-    const phaseEnd = window.max || phaseStart;
-    if (phaseStart <= phaseEnd) {
-      phaseDates.push(phaseStart, phaseEnd);
+    for (const dateString of placements) {
+      const session = stageState.pendingSessions[sessionIndex];
+      if (!session) break;
+      assignments.push([session, dateString]);
+      sessionIndex += 1;
     }
   }
 
-  const allDates = [...dated, ...phaseDates].filter(Boolean).sort();
-  const today = getTodayString();
   return {
-    start: allDates[0] || today,
-    end: allDates[allDates.length - 1] || today,
+    assignments,
+    unplaced: stageState.pendingSessions.slice(sessionIndex),
   };
 }
 
-export function getSmartAvailabilityState(project = getActiveProject(), actor = state.actor) {
-  if (!project) {
-    return { ready: false, reason: "no_project" };
+function assignStageDates(phaseKey, stageState, stageDates) {
+  if (!stageState.pendingSessions.length || !stageDates.length) {
+    return {
+      assignments: [],
+      unplaced: [...stageState.pendingSessions],
+    };
   }
 
-  const requiredRange = getSmartFillCoverageRange(project, actor);
-  const availability = state.calendarAvailability;
-  if (availability.status !== "ready") {
-    return { ready: false, reason: availability.status === "error" ? "error" : "not_loaded", requiredRange };
+  if (phaseKey === "implementation") {
+    return assignImplementationStage(stageState, stageDates);
   }
-  if (availability.projectId !== project.id) {
-    return { ready: false, reason: "project_mismatch", requiredRange };
-  }
-  if (availability.rangeStart > requiredRange.start || availability.rangeEnd < requiredRange.end) {
-    return { ready: false, reason: "range_mismatch", requiredRange };
-  }
+
+  return assignSetupOrHypercareStage(stageState, stageDates);
+}
+
+function setStageRange(stage, stageDates, fixedDates = []) {
+  const previousStart = stage.rangeStart || "";
+  const previousEnd = stage.rangeEnd || "";
+  const allDates = [...stageDates, ...fixedDates].filter(Boolean).sort();
+  stage.rangeStart = allDates[0] || "";
+  stage.rangeEnd = allDates.at(-1) || "";
+  return stage.rangeStart !== previousStart || stage.rangeEnd !== previousEnd;
+}
+
+function getSmartFillPhaseBoundary(project, phaseKey, previousPhaseLastDate, actor) {
+  const phaseWindow = getSmartFillWindowForPhase(project, phaseKey, previousPhaseLastDate);
+  const editableSessions = getEditableSessions(project, actor).filter(
+    (session) => session.phase === phaseKey && session.key !== GO_LIVE_SESSION_KEY
+  );
+
   return {
-    ready: true,
-    reason: "",
-    requiredRange,
+    ...phaseWindow,
+    editableSessions,
   };
+}
+
+function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, result) {
+  const phaseState = getSmartFillPhaseBoundary(project, phaseKey, previousPhaseLastDate, actor);
+  const stageStates = buildStageStates(project, phaseKey, actor);
+  const allocatableStages = stageStates.filter((stageState) => !stageState.isGoLive);
+  const stageCounts = allocateSequentialCounts(allocatableStages, phaseState.dates.length);
+
+  let dateOffset = 0;
+  let lastStageBoundary = previousPhaseLastDate;
+
+  for (const stageState of stageStates) {
+    const { stage, isGoLive } = stageState;
+
+    if (isGoLive) {
+      const previousStart = stage.rangeStart || "";
+      const previousEnd = stage.rangeEnd || "";
+      stage.rangeStart = project.goLiveDate || "";
+      stage.rangeEnd = project.goLiveDate || "";
+      if (stage.rangeStart !== previousStart || stage.rangeEnd !== previousEnd) {
+        result.rangeCount += 1;
+      }
+      continue;
+    }
+
+    const dateCount = stageCounts.get(stage.key) || 0;
+    const rawStageDates = phaseState.dates.slice(dateOffset, dateOffset + dateCount);
+    dateOffset += dateCount;
+    const stageDates = rawStageDates.filter((dateString) => !lastStageBoundary || dateString > lastStageBoundary);
+    const distribution = assignStageDates(phaseKey, stageState, stageDates);
+
+    if (setStageRange(stage, stageDates, stageState.fixedDates)) {
+      result.rangeCount += 1;
+    }
+
+    for (const [session, dateString] of distribution.assignments) {
+      applySessionDate(session, dateString);
+      result.datedCount += 1;
+    }
+
+    if (distribution.unplaced.length) {
+      result.unplacedSessionIds.push(...distribution.unplaced.map((session) => session.id));
+      result.unplacedCount += distribution.unplaced.length;
+    }
+
+    lastStageBoundary = maxDate(lastStageBoundary, stage.rangeEnd || "", getLatestSessionDate(stage.sessions));
+  }
+
+  return maxDate(previousPhaseLastDate, getLatestSessionDate(getPhaseSessions(project, phaseKey)));
 }
 
 function getDateEvents(dateString) {
@@ -364,18 +565,20 @@ function getTimedIntervalsForDate(project, actor, dateString, currentSessionId =
 }
 
 function findOpenSlot(duration, intervals, preferredHalf) {
-  const halfRanges =
+  const ranges =
     preferredHalf === "pm"
       ? [
           [HALF_DAY_BOUNDARY_MINUTES, WORK_END_MINUTES],
           [WORK_START_MINUTES, HALF_DAY_BOUNDARY_MINUTES],
+          [WORK_START_MINUTES, WORK_END_MINUTES],
         ]
       : [
           [WORK_START_MINUTES, HALF_DAY_BOUNDARY_MINUTES],
           [HALF_DAY_BOUNDARY_MINUTES, WORK_END_MINUTES],
+          [WORK_START_MINUTES, WORK_END_MINUTES],
         ];
 
-  for (const [rangeStart, rangeEnd] of halfRanges) {
+  for (const [rangeStart, rangeEnd] of ranges) {
     for (let minutes = rangeStart; minutes + duration <= rangeEnd; minutes += SLOT_INCREMENT_MINUTES) {
       const candidateEnd = minutes + duration;
       const overlaps = intervals.some((interval) => minutes < interval.end && candidateEnd > interval.start);
@@ -407,14 +610,63 @@ function validateDraft(draft) {
 }
 
 function ensureSettingsDraft(project) {
-  state.ui.settings.draft = cloneProject(project);
-  state.ui.settings.draft.newSession = {
+  const draft = cloneProject(project);
+  draft.goLiveSuggestedDate = "";
+  draft.goLiveRecommendedWeeks = 0;
+  draft.goLiveWarning = "";
+  draft.goLiveManuallySet = false;
+  refreshGoLiveSuggestion(draft, { forceAutofill: false });
+  draft.goLiveManuallySet = Boolean(draft.goLiveDate && draft.goLiveDate !== draft.goLiveSuggestedDate);
+  draft.newSession = {
     phase: "implementation",
+    stageKey: getPhaseStages(draft, "implementation")[0]?.key || "",
+    newStageLabel: "",
     owner: "is",
     name: "",
     duration: 90,
     type: "external",
   };
+  state.ui.settings.draft = draft;
+}
+
+function syncProjectDraftAfterSessionMutation(draft) {
+  ensureBuilderStage(draft, "customSession");
+  ensureBuilderStage(draft, "newSession");
+  refreshGoLiveSuggestion(draft, { forceAutofill: false });
+}
+
+function updateDraftWorkingDays(draft, day) {
+  const next = new Set(Array.isArray(draft.workingDays) ? draft.workingDays : DEFAULT_WORKING_DAYS);
+  if (next.has(day)) {
+    next.delete(day);
+  } else {
+    next.add(day);
+  }
+  draft.workingDays = [...next].sort((left, right) => left - right);
+  if (!draft.workingDays.length) {
+    draft.workingDays = [...DEFAULT_WORKING_DAYS];
+  }
+  refreshGoLiveSuggestion(draft, { forceAutofill: false });
+}
+
+function addDraftSession(draft, sessionInput, builderKey) {
+  addCustomSession(draft, {
+    key: "",
+    bodyKey: "",
+    name: sessionInput.name.trim(),
+    duration: Number(sessionInput.duration) || 90,
+    phase: sessionInput.phase,
+    stageKey: sessionInput.stageKey === NEW_STAGE_VALUE ? "" : sessionInput.stageKey,
+    newStageLabel: sessionInput.newStageLabel || "",
+    owner: sessionInput.owner || (sessionInput.phase === "implementation" ? "is" : "pm"),
+    type: sessionInput.type || "external",
+  });
+
+  draft[builderKey].name = "";
+  draft[builderKey].duration = 90;
+  draft[builderKey].newStageLabel = "";
+  ensureBuilderStage(draft, builderKey);
+  refreshGoLiveSuggestion(draft, { forceAutofill: false });
 }
 
 export function openOnboarding() {
@@ -439,72 +691,92 @@ export function prevOnboardingStep() {
 }
 
 export function updateOnboardingField(field, value) {
-  if (!state.ui.onboarding.draft) return;
+  const draft = state.ui.onboarding.draft;
+  if (!draft) return;
 
   if (field === "projectType") {
-    state.ui.onboarding.draft.projectType = value;
-    state.ui.onboarding.draft.sessions = getTemplateSessions(value);
+    const next = createOnboardingDraft(value);
+    next.clientName = draft.clientName;
+    next.pmName = draft.pmName;
+    next.pmEmail = draft.pmEmail;
+    next.isName = draft.isName;
+    next.isEmail = draft.isEmail;
+    next.implementationStart = draft.implementationStart;
+    next.goLiveDate = draft.goLiveDate;
+    next.hypercareDuration = draft.hypercareDuration;
+    next.smartFillPreference = draft.smartFillPreference;
+    next.workingDays = [...draft.workingDays];
+    next.invitees = draft.invitees;
+    next.location = draft.location;
+    next.goLiveManuallySet = draft.goLiveManuallySet;
+    refreshGoLiveSuggestion(next, { forceAutofill: false });
+    state.ui.onboarding.draft = next;
     return;
   }
 
   if (field === "invitees") {
-    state.ui.onboarding.draft.invitees = value;
+    draft.invitees = value;
+    return;
+  }
+
+  if (field === "goLiveDate") {
+    draft.goLiveDate = value;
+    draft.goLiveManuallySet = Boolean(value);
+    refreshGoLiveSuggestion(draft, { forceAutofill: false });
     return;
   }
 
   if (field.startsWith("customSession.")) {
     const key = field.split(".")[1];
-    state.ui.onboarding.draft.customSession[key] = key === "duration" ? Number(value) || 90 : value;
+    draft.customSession[key] = key === "duration" ? Number(value) || 90 : value;
+    if (key === "phase") {
+      draft.customSession.owner = value === "implementation" ? "is" : "pm";
+      ensureBuilderStage(draft, "customSession");
+    }
+    if (key === "stageKey" && value !== NEW_STAGE_VALUE) {
+      draft.customSession.newStageLabel = "";
+    }
     return;
   }
 
-  state.ui.onboarding.draft[field] = value;
+  draft[field] = value;
+  if (field === "implementationStart") {
+    refreshGoLiveSuggestion(draft, { forceAutofill: false });
+  }
+}
+
+export function toggleOnboardingWorkingDay(day) {
+  const draft = state.ui.onboarding.draft;
+  if (!draft) return;
+  updateDraftWorkingDays(draft, day);
 }
 
 export function addOnboardingSession() {
   const draft = state.ui.onboarding.draft;
   if (!draft) return;
 
-  const { name, duration, phase, owner, type } = draft.customSession;
-  if (!name.trim()) {
+  if (!draft.customSession.name.trim()) {
     toast("Add a session name first");
     return;
   }
 
-  draft.sessions.push({
-    key: "",
-    bodyKey: "",
-    name: name.trim(),
-    duration: Number(duration) || 90,
-    phase,
-    owner,
-    type,
-    order: draft.sessions.length,
-  });
-
-  draft.customSession.name = "";
-  draft.customSession.duration = 90;
+  addDraftSession(draft, draft.customSession, "customSession");
 }
 
-export function removeOnboardingSession(index) {
+export function removeOnboardingSession(sessionId) {
   const draft = state.ui.onboarding.draft;
   if (!draft) return;
-  draft.sessions.splice(index, 1);
-  draft.sessions.forEach((session, sessionIndex) => {
-    session.order = sessionIndex;
-  });
+  if (findSession(draft, sessionId)?.session?.lockedDate) return;
+  removeSession(draft, sessionId);
+  syncProjectDraftAfterSessionMutation(draft);
 }
 
-export function moveOnboardingSession(index, direction) {
+export function moveOnboardingSession(sessionId, direction) {
   const draft = state.ui.onboarding.draft;
   if (!draft) return;
-  const target = index + direction;
-  if (target < 0 || target >= draft.sessions.length) return;
-  const [session] = draft.sessions.splice(index, 1);
-  draft.sessions.splice(target, 0, session);
-  draft.sessions.forEach((item, sessionIndex) => {
-    item.order = sessionIndex;
-  });
+  if (findSession(draft, sessionId)?.session?.lockedDate) return;
+  moveSession(draft, sessionId, direction);
+  syncProjectDraftAfterSessionMutation(draft);
 }
 
 export function createProjectFromOnboarding() {
@@ -519,11 +791,7 @@ export function createProjectFromOnboarding() {
 
   const project = createProjectFromDraft(draft);
   upsertProject(project);
-  setActiveProject(project.id);
-  setActorMode("pm", "pm");
-  setScreen("workspace");
-  setCalendarStartFromProject(project);
-  resetSmartFillPreference(project);
+  openProject(project.id, { actor: "pm", mode: "pm" });
   closeOnboarding();
   clearProjectError();
   return project;
@@ -536,7 +804,7 @@ export function openProject(projectId, { actor = "pm", mode = actor } = {}) {
   setActorMode(actor, mode);
   setScreen("workspace");
   setCalendarStartFromProject(project);
-  resetSmartFillPreference(project);
+  resetSmartFillDefaults(project);
   return project;
 }
 
@@ -561,56 +829,68 @@ export function updateSettingsField(field, value) {
   const draft = state.ui.settings.draft;
   if (!draft) return;
 
-  if (field.startsWith("newSession.")) {
-    const key = field.split(".")[1];
-    draft.newSession[key] = key === "duration" ? Number(value) || 90 : value;
-    if (key === "phase" && !draft.newSession.owner) {
-      draft.newSession.owner = value === "implementation" ? "is" : "pm";
-    }
-    return;
-  }
-
   if (field === "invitees") {
     draft.invitees = value;
     return;
   }
 
+  if (field === "goLiveDate") {
+    draft.goLiveDate = value;
+    draft.goLiveManuallySet = Boolean(value);
+    refreshGoLiveSuggestion(draft, { forceAutofill: false });
+    return;
+  }
+
+  if (field.startsWith("newSession.")) {
+    const key = field.split(".")[1];
+    draft.newSession[key] = key === "duration" ? Number(value) || 90 : value;
+    if (key === "phase") {
+      draft.newSession.owner = value === "implementation" ? "is" : "pm";
+      ensureBuilderStage(draft, "newSession");
+    }
+    if (key === "stageKey" && value !== NEW_STAGE_VALUE) {
+      draft.newSession.newStageLabel = "";
+    }
+    return;
+  }
+
   draft[field] = value;
+  if (field === "implementationStart" || field === "projectType") {
+    refreshGoLiveSuggestion(draft, { forceAutofill: false });
+  }
+}
+
+export function toggleSettingsWorkingDay(day) {
+  const draft = state.ui.settings.draft;
+  if (!draft) return;
+  updateDraftWorkingDays(draft, day);
 }
 
 export function addSettingsSession() {
   const draft = state.ui.settings.draft;
   if (!draft) return;
-  const next = draft.newSession;
-  if (!next.name.trim()) {
+  if (!draft.newSession.name.trim()) {
     toast("Add a session name first");
     return;
   }
 
-  addCustomSession(draft, {
-    key: "",
-    bodyKey: "",
-    name: next.name.trim(),
-    duration: Number(next.duration) || 90,
-    phase: next.phase,
-    owner: next.owner || (next.phase === "implementation" ? "is" : "pm"),
-    type: next.type || "external",
-  });
-
-  draft.newSession.name = "";
-  draft.newSession.duration = 90;
+  addDraftSession(draft, draft.newSession, "newSession");
 }
 
 export function removeSettingsSession(sessionId) {
   const draft = state.ui.settings.draft;
   if (!draft) return;
+  if (findSession(draft, sessionId)?.session?.lockedDate) return;
   removeSession(draft, sessionId);
+  syncProjectDraftAfterSessionMutation(draft);
 }
 
 export function moveSettingsSession(sessionId, direction) {
   const draft = state.ui.settings.draft;
   if (!draft) return;
+  if (findSession(draft, sessionId)?.session?.lockedDate) return;
   moveSession(draft, sessionId, direction);
+  syncProjectDraftAfterSessionMutation(draft);
 }
 
 export function saveSettingsDraft() {
@@ -671,8 +951,14 @@ export function setSessionDate(sessionId, value) {
 
   const found = findSession(project, sessionId);
   if (!found || !canEditSession(project, found.session, state.actor)) return false;
+
   if (!ensureFutureDate(value)) {
     toast("Cannot schedule in the past");
+    return false;
+  }
+
+  if (found.session.lockedDate && value && value !== found.session.date) {
+    toast("This session date is managed by the system", 4000);
     return false;
   }
 
@@ -702,7 +988,7 @@ export function setSessionTime(sessionId, value) {
   if (!project) return false;
 
   const found = findSession(project, sessionId);
-  if (!found || !canEditSession(project, found.session, state.actor)) return false;
+  if (!found || !canEditSession(project, found.session, state.actor) || found.session.lockedTime) return false;
   if (!found.session.date) {
     toast("Set a date first");
     return false;
@@ -739,7 +1025,7 @@ export function unscheduleSession(sessionId) {
   if (!project) return false;
 
   const found = findSession(project, sessionId);
-  if (!found || !canEditSession(project, found.session, state.actor)) return false;
+  if (!found || !canEditSession(project, found.session, state.actor) || found.session.lockedDate) return false;
   clearSessionScheduling(found.session, { preserveGraphEventId: false });
   touchProject(project);
   project.status = deriveProjectStatus(project);
@@ -749,6 +1035,7 @@ export function unscheduleSession(sessionId) {
 export function removeActiveSession(sessionId) {
   const project = getCurrentProjectOrToast();
   if (!project || state.actor !== "pm") return false;
+  if (findSession(project, sessionId)?.session?.lockedDate) return false;
   removeSession(project, sessionId);
   return true;
 }
@@ -756,6 +1043,7 @@ export function removeActiveSession(sessionId) {
 export function moveActiveSession(sessionId, direction) {
   const project = getCurrentProjectOrToast();
   if (!project || state.actor !== "pm") return false;
+  if (findSession(project, sessionId)?.session?.lockedDate) return false;
   moveSession(project, sessionId, direction);
   return true;
 }
@@ -784,6 +1072,56 @@ export function setDayPreset(days) {
   state.ui.activeDays = new Set(days);
 }
 
+export function getSmartFillCoverageRange(project = getActiveProject(), actor = state.actor, startDate = state.ui.smartStart) {
+  if (!project) {
+    const today = getTodayString();
+    return { start: today, end: today };
+  }
+
+  const relevantSessions = getEditableSessions(project, actor);
+  const dated = relevantSessions.filter((session) => session.date).map((session) => session.date);
+  const phaseDates = [];
+
+  for (const phaseKey of getEditablePhaseKeys(project, actor)) {
+    const window = getWindowForPhase(project, phaseKey);
+    const phaseStart = getSmartFillSearchStart(startDate, window.min);
+    const phaseEnd = window.max || phaseStart;
+    if (phaseStart <= phaseEnd) {
+      phaseDates.push(phaseStart, phaseEnd);
+    }
+  }
+
+  const allDates = [...dated, ...phaseDates].filter(Boolean).sort();
+  const today = getTodayString();
+  return {
+    start: allDates[0] || today,
+    end: allDates[allDates.length - 1] || today,
+  };
+}
+
+export function getSmartAvailabilityState(project = getActiveProject(), actor = state.actor) {
+  if (!project) {
+    return { ready: false, reason: "no_project" };
+  }
+
+  const requiredRange = getSmartFillCoverageRange(project, actor);
+  const availability = state.calendarAvailability;
+  if (availability.status !== "ready") {
+    return { ready: false, reason: availability.status === "error" ? "error" : "not_loaded", requiredRange };
+  }
+  if (availability.projectId !== project.id) {
+    return { ready: false, reason: "project_mismatch", requiredRange };
+  }
+  if (availability.rangeStart > requiredRange.start || availability.rangeEnd < requiredRange.end) {
+    return { ready: false, reason: "range_mismatch", requiredRange };
+  }
+  return {
+    ready: true,
+    reason: "",
+    requiredRange,
+  };
+}
+
 export function applySmartFill() {
   const project = getCurrentProjectOrToast();
   if (!project) return null;
@@ -805,25 +1143,12 @@ export function applySmartFill() {
     pass2SkipReason: "",
     unplacedSessionIds: [],
     availabilitySessionIds: [],
+    rangeCount: 0,
   };
 
-  const undatedSessions = getEditableSessions(project, state.actor)
-    .filter((session) => !session.date)
-    .sort(compareSessions);
-
+  let previousPhaseLastDate = "";
   for (const phaseKey of PHASE_ORDER) {
-    const phaseSessions = undatedSessions.filter((session) => session.phase === phaseKey);
-    if (!phaseSessions.length) continue;
-
-    const distribution = distributePhaseDates(project, phaseKey, phaseSessions, state.ui.smartStart);
-    for (const [session, dateString] of distribution.placed) {
-      applySessionDate(session, dateString);
-      result.datedCount += 1;
-    }
-    if (distribution.unplaced.length) {
-      result.unplacedSessionIds.push(...distribution.unplaced.map((session) => session.id));
-      result.unplacedCount += distribution.unplaced.length;
-    }
+    previousPhaseLastDate = runPhaseSmartFill(project, phaseKey, state.actor, previousPhaseLastDate, result);
   }
 
   const availabilityState = getSmartAvailabilityState(project, state.actor);
@@ -854,7 +1179,7 @@ export function applySmartFill() {
     result.availabilityCount = result.availabilitySessionIds.length;
   }
 
-  if (!result.datedCount && !result.timedCount && !result.availabilityCount && !result.unplacedCount) {
+  if (!result.datedCount && !result.timedCount && !result.availabilityCount && !result.unplacedCount && !result.rangeCount) {
     return result;
   }
 

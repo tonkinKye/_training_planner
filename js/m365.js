@@ -795,9 +795,9 @@ async function syncProjectToPartnerSentinel(project, partnerRole) {
 export async function createHandoffEvent(project = getActiveProject()) {
   if (!project) return null;
 
-  const { url, length } = buildDeepLinkUrl(project);
-  if (length > DEEP_LINK_LIMIT) {
-    throw new Error(`Deep link payload exceeds the ${DEEP_LINK_LIMIT}-character limit.`);
+  const { url, length, warn } = buildDeepLinkUrl(project);
+  if (warn) {
+    toast(`Deep link may be too long for some clients (${length}/${DEEP_LINK_LIMIT})`, 5000);
   }
 
   const eventPayload = buildHandoffEvent(project, url);
@@ -860,25 +860,23 @@ export async function applyDeepLinkProject(payload) {
     invitees: payload.a,
     status: payload.st,
     phases: {
-      setup: { owner: "pm", sessions: [] },
+      setup: { owner: "pm", stages: [] },
       implementation: {
         owner: "is",
-        sessions: (payload.impl || []).map((session, index) => ({
-          id: session.i,
-          key: session.k,
-          bodyKey: session.b || session.k,
-          name: session.n || session.k || "Implementation Session",
-          duration: session.d,
-          type: session.t || "external",
-          phase: "implementation",
-          owner: "is",
-          date: session.dt || "",
-          time: session.tm || "",
-          graphEventId: session.g || "",
-          order: index,
+        stages: (payload.impl || []).map((stage, stageIndex) => ({
+          key: stage.key,
+          label: stage.label,
+          order: stageIndex,
+          sessions: (stage.sessions || []).map((session, sessionIndex) => ({
+            ...session,
+            phase: "implementation",
+            owner: "is",
+            stageKey: stage.key,
+            order: Number.isFinite(session.order) ? Number(session.order) : sessionIndex,
+          })),
         })),
       },
-      hypercare: { owner: "pm", sessions: [] },
+      hypercare: { owner: "pm", stages: [] },
     },
   });
 

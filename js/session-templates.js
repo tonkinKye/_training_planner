@@ -19,6 +19,7 @@ const SESSION_BODIES = {
   plugins_accounting: "Training on plugins and accounting-adjacent workflows, including integration touchpoints and reporting impact.",
   workflow: "Workflow design and refinement session based on agreed implementation requirements.",
   go_live_prep: "Go-live preparation session covering cutover readiness, responsibilities, and opening-day plan.",
+  go_live: "Go-live session covering cutover execution, ownership, and live operational support for the opening day.",
   pm_handover: "Internal PM handover into hypercare covering remaining risks, support posture, and ownership.",
   training_support: "Post go-live support session to resolve issues, reinforce workflows, and close knowledge gaps.",
   support_handover: "Internal support handover confirming transition into ongoing support ownership.",
@@ -30,99 +31,176 @@ const INTERNAL_BODY_KEYS = new Set([
   "pm_handover",
 ]);
 
-function makeTemplateSession(key, name, duration, phase, owner, bodyKey = key) {
+export const GO_LIVE_SESSION_KEY = "go_live";
+
+function makeTemplateSession(key, name, duration, owner, bodyKey = key) {
   return {
     key,
     bodyKey,
     name,
     duration,
-    phase,
     owner,
     type: INTERNAL_BODY_KEYS.has(bodyKey) ? "internal" : "external",
   };
 }
 
-const MANUFACTURING = [
-  makeTemplateSession("sales_handover", "Sales Handover", 30, "setup", "pm"),
-  makeTemplateSession("installation", "Installation", 60, "setup", "pm"),
-  makeTemplateSession("kick_off_call", "Kick-Off Call", 90, "setup", "pm"),
-  makeTemplateSession("workflow_discovery", "Workflow Discovery", 90, "setup", "pm"),
-  makeTemplateSession("data_support_1", "Data Support 1", 30, "setup", "pm"),
-  makeTemplateSession("data_support_2", "Data Support 2", 30, "setup", "pm"),
-  makeTemplateSession("data_import_session", "Data Import Session", 90, "setup", "pm"),
-  makeTemplateSession("implementation_readiness", "Implementation Readiness", 30, "setup", "pm"),
-  makeTemplateSession("implementation_handover", "Imp. Handover", 30, "setup", "pm"),
-  makeTemplateSession("materials_inventory", "Materials & Inventory", 90, "implementation", "is"),
-  makeTemplateSession("templates", "Templates", 240, "implementation", "is"),
-  makeTemplateSession("purchasing_fulfilment", "Purchasing & Fulfilment", 90, "implementation", "is"),
-  makeTemplateSession("recap_qa_1", "Recap QA", 30, "implementation", "is", "recap_qa"),
-  makeTemplateSession("sales_fulfilment", "Sales & Fulfilment", 90, "implementation", "is"),
-  makeTemplateSession("bill_of_materials", "Bill of Materials", 60, "implementation", "is"),
-  makeTemplateSession("recap_qa_2", "Recap QA", 30, "implementation", "is", "recap_qa"),
-  makeTemplateSession("manufacturing", "Manufacturing", 90, "implementation", "is"),
-  makeTemplateSession("advanced_mobile", "Fishbowl Advanced Mobile", 90, "implementation", "is"),
-  makeTemplateSession("recap_qa_3", "Recap QA", 30, "implementation", "is", "recap_qa"),
-  makeTemplateSession("plugins_accounting", "Plugins & Accounting", 90, "implementation", "is"),
-  makeTemplateSession("workflow", "Workflow", 90, "implementation", "is"),
-  makeTemplateSession("go_live_prep", "Go Live Prep", 90, "implementation", "is"),
-  makeTemplateSession("pm_handover", "PM Handover", 30, "hypercare", "pm"),
-  makeTemplateSession("training_support_1", "Training Support 1", 60, "hypercare", "pm", "training_support"),
-  makeTemplateSession("training_support_2", "Training Support 2", 60, "hypercare", "pm", "training_support"),
-  makeTemplateSession("training_support_3", "Training Support 3", 60, "hypercare", "pm", "training_support"),
-  makeTemplateSession("training_support_4", "Training Support 4", 60, "hypercare", "pm", "training_support"),
-  makeTemplateSession("support_handover", "Support Handover", 15, "hypercare", "pm"),
-];
+function makeStage(key, label, sessions) {
+  return {
+    key,
+    label,
+    sessions,
+  };
+}
 
-const WAREHOUSING = [
-  makeTemplateSession("sales_handover", "Sales Handover", 30, "setup", "pm"),
-  makeTemplateSession("installation", "Installation", 60, "setup", "pm"),
-  makeTemplateSession("kick_off_call", "Kick-Off Call", 90, "setup", "pm"),
-  makeTemplateSession("workflow_discovery", "Workflow Discovery", 90, "setup", "pm"),
-  makeTemplateSession("data_support_1", "Data Support 1", 30, "setup", "pm"),
-  makeTemplateSession("data_support_2", "Data Support 2", 30, "setup", "pm"),
-  makeTemplateSession("data_import_session", "Data Import Session", 90, "setup", "pm"),
-  makeTemplateSession("implementation_readiness", "Implementation Readiness", 30, "setup", "pm"),
-  makeTemplateSession("implementation_handover", "Imp. Handover", 30, "setup", "pm"),
-  makeTemplateSession("materials_inventory", "Materials & Inventory", 90, "implementation", "is"),
-  makeTemplateSession("templates", "Templates", 240, "implementation", "is"),
-  makeTemplateSession("purchasing_fulfilment", "Purchasing & Fulfilment", 90, "implementation", "is"),
-  makeTemplateSession("recap_qa_1", "Recap QA", 30, "implementation", "is", "recap_qa"),
-  makeTemplateSession("sales_fulfilment", "Sales & Fulfilment", 90, "implementation", "is"),
-  makeTemplateSession("bill_of_materials", "Bill of Materials", 30, "implementation", "is"),
-  makeTemplateSession("recap_qa_2", "Recap QA", 30, "implementation", "is", "recap_qa"),
-  makeTemplateSession("advanced_mobile", "Fishbowl Advanced Mobile", 90, "implementation", "is"),
-  makeTemplateSession("recap_qa_3", "Recap QA", 30, "implementation", "is", "recap_qa"),
-  makeTemplateSession("plugins_accounting", "Plugins & Accounting", 90, "implementation", "is"),
-  makeTemplateSession("workflow", "Workflow", 90, "implementation", "is"),
-  makeTemplateSession("go_live_prep", "Go Live Prep", 90, "implementation", "is"),
-  makeTemplateSession("pm_handover", "PM Handover", 30, "hypercare", "pm"),
-  makeTemplateSession("training_support_1", "Training Support 1", 60, "hypercare", "pm", "training_support"),
-  makeTemplateSession("training_support_2", "Training Support 2", 60, "hypercare", "pm", "training_support"),
-  makeTemplateSession("training_support_3", "Training Support 3", 60, "hypercare", "pm", "training_support"),
-  makeTemplateSession("support_handover", "Support Handover", 15, "hypercare", "pm"),
-];
+function makePhase(suggestedWeeksMin, suggestedWeeksMax, stages) {
+  return {
+    suggestedWeeksMin,
+    suggestedWeeksMax,
+    stages,
+  };
+}
+
+const MANUFACTURING = {
+  phases: {
+    setup: makePhase(2, 3, [
+      makeStage("kick_off_data_prep", "Kick-Off & Data Prep", [
+        makeTemplateSession("sales_handover", "Sales Handover", 30, "pm"),
+        makeTemplateSession("installation", "Installation", 60, "pm"),
+        makeTemplateSession("kick_off_call", "Kick-Off Call", 90, "pm"),
+        makeTemplateSession("workflow_discovery", "Workflow Discovery", 90, "pm"),
+        makeTemplateSession("data_support_1", "Data Support 1", 30, "pm"),
+        makeTemplateSession("data_support_2", "Data Support 2", 30, "pm"),
+        makeTemplateSession("data_import_session", "Data Import Session", 90, "pm"),
+        makeTemplateSession("implementation_readiness", "Implementation Readiness", 30, "pm"),
+        makeTemplateSession("implementation_handover", "Imp. Handover", 30, "pm"),
+      ]),
+    ]),
+    implementation: makePhase(6, 8, [
+      makeStage("training", "Training", [
+        makeTemplateSession("materials_inventory", "Materials & Inventory", 90, "is"),
+        makeTemplateSession("templates", "Templates", 240, "is"),
+        makeTemplateSession("purchasing_fulfilment", "Purchasing & Fulfilment", 90, "is"),
+        makeTemplateSession("recap_qa_1", "Recap QA", 30, "is", "recap_qa"),
+        makeTemplateSession("sales_fulfilment", "Sales & Fulfilment", 90, "is"),
+        makeTemplateSession("bill_of_materials", "Bill of Materials", 60, "is"),
+        makeTemplateSession("recap_qa_2", "Recap QA", 30, "is", "recap_qa"),
+        makeTemplateSession("manufacturing", "Manufacturing", 90, "is"),
+        makeTemplateSession("advanced_mobile", "Fishbowl Advanced Mobile", 90, "is", "advanced_mobile"),
+        makeTemplateSession("recap_qa_3", "Recap QA", 30, "is", "recap_qa"),
+        makeTemplateSession("plugins_accounting", "Plugins & Accounting", 90, "is"),
+        makeTemplateSession("workflow", "Workflow", 90, "is"),
+      ]),
+      makeStage("go_live_prep", "Go Live Prep", [
+        makeTemplateSession("go_live_prep", "Go Live Prep", 90, "is"),
+      ]),
+      makeStage("go_live", "Go-Live", [
+        makeTemplateSession(GO_LIVE_SESSION_KEY, "Go-Live", 120, "is"),
+      ]),
+    ]),
+    hypercare: makePhase(1, 2, [
+      makeStage("post_go_live", "Post Go-Live", [
+        makeTemplateSession("pm_handover", "PM Handover", 30, "pm"),
+        makeTemplateSession("training_support_1", "Training Support 1", 60, "pm", "training_support"),
+        makeTemplateSession("training_support_2", "Training Support 2", 60, "pm", "training_support"),
+        makeTemplateSession("training_support_3", "Training Support 3", 60, "pm", "training_support"),
+        makeTemplateSession("training_support_4", "Training Support 4", 60, "pm", "training_support"),
+        makeTemplateSession("support_handover", "Support Handover", 15, "pm"),
+      ]),
+    ]),
+  },
+};
+
+const WAREHOUSING = {
+  phases: {
+    setup: makePhase(2, 3, [
+      makeStage("kick_off_data_prep", "Kick-Off & Data Prep", [
+        makeTemplateSession("sales_handover", "Sales Handover", 30, "pm"),
+        makeTemplateSession("installation", "Installation", 60, "pm"),
+        makeTemplateSession("kick_off_call", "Kick-Off Call", 90, "pm"),
+        makeTemplateSession("workflow_discovery", "Workflow Discovery", 90, "pm"),
+        makeTemplateSession("data_support_1", "Data Support 1", 30, "pm"),
+        makeTemplateSession("data_support_2", "Data Support 2", 30, "pm"),
+        makeTemplateSession("data_import_session", "Data Import Session", 90, "pm"),
+        makeTemplateSession("implementation_readiness", "Implementation Readiness", 30, "pm"),
+        makeTemplateSession("implementation_handover", "Imp. Handover", 30, "pm"),
+      ]),
+    ]),
+    implementation: makePhase(6, 8, [
+      makeStage("training", "Training", [
+        makeTemplateSession("materials_inventory", "Materials & Inventory", 90, "is"),
+        makeTemplateSession("templates", "Templates", 180, "is"),
+        makeTemplateSession("purchasing_fulfilment", "Purchasing & Fulfilment", 90, "is"),
+        makeTemplateSession("recap_qa_1", "Recap QA", 30, "is", "recap_qa"),
+        makeTemplateSession("sales_fulfilment", "Sales & Fulfilment", 90, "is"),
+        makeTemplateSession("bill_of_materials", "Bill of Materials", 30, "is"),
+        makeTemplateSession("recap_qa_2", "Recap QA", 30, "is", "recap_qa"),
+        makeTemplateSession("advanced_mobile", "Fishbowl Advanced Mobile", 90, "is", "advanced_mobile"),
+        makeTemplateSession("recap_qa_3", "Recap QA", 30, "is", "recap_qa"),
+        makeTemplateSession("plugins_accounting", "Plugins & Accounting", 90, "is"),
+        makeTemplateSession("workflow", "Workflow", 90, "is"),
+      ]),
+      makeStage("go_live_prep", "Go Live Prep", [
+        makeTemplateSession("go_live_prep", "Go Live Prep", 90, "is"),
+      ]),
+      makeStage("go_live", "Go-Live", [
+        makeTemplateSession(GO_LIVE_SESSION_KEY, "Go-Live", 120, "is"),
+      ]),
+    ]),
+    hypercare: makePhase(1, 2, [
+      makeStage("post_go_live", "Post Go-Live", [
+        makeTemplateSession("pm_handover", "PM Handover", 30, "pm"),
+        makeTemplateSession("training_support_1", "Training Support 1", 60, "pm", "training_support"),
+        makeTemplateSession("training_support_2", "Training Support 2", 60, "pm", "training_support"),
+        makeTemplateSession("training_support_3", "Training Support 3", 60, "pm", "training_support"),
+        makeTemplateSession("support_handover", "Support Handover", 15, "pm"),
+      ]),
+    ]),
+  },
+};
+
+const CUSTOM = {
+  phases: {
+    setup: makePhase(null, null, []),
+    implementation: makePhase(null, null, []),
+    hypercare: makePhase(null, null, []),
+  },
+};
 
 export const PROJECT_TEMPLATES = {
   manufacturing: MANUFACTURING,
   warehousing: WAREHOUSING,
-  custom: [],
+  custom: CUSTOM,
 };
 
-export const GO_LIVE_ANCHOR = {
-  key: "go_live_anchor",
-  bodyKey: "go_live_anchor",
-  name: "Go-Live",
-  duration: 120,
-  owner: "pm",
-  type: "context",
-  phase: "implementation",
-};
+function cloneValue(value) {
+  return typeof structuredClone === "function"
+    ? structuredClone(value)
+    : JSON.parse(JSON.stringify(value));
+}
+
+export function getTemplateDefinition(projectType) {
+  return cloneValue(PROJECT_TEMPLATES[projectType] || PROJECT_TEMPLATES.custom);
+}
+
+export function getTemplatePhases(projectType) {
+  return getTemplateDefinition(projectType).phases;
+}
 
 export function getTemplateSessions(projectType) {
-  return (PROJECT_TEMPLATES[projectType] || []).map((session, index) => ({
-    ...session,
-    order: index,
-  }));
+  const template = getTemplateDefinition(projectType);
+  const phaseOrder = ["setup", "implementation", "hypercare"];
+  let order = 0;
+  return phaseOrder.flatMap((phaseKey) =>
+    (template.phases[phaseKey]?.stages || []).flatMap((stage) =>
+      stage.sessions.map((session) => ({
+        ...session,
+        phase: phaseKey,
+        stageKey: stage.key,
+        stageLabel: stage.label,
+        order: order++,
+      }))
+    )
+  );
 }
 
 export function getSessionBody(sessionKey, sessionName) {

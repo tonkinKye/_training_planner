@@ -5,8 +5,10 @@ import {
   getConflictReviewSessions,
   getEditableSessions,
   getPushableSessions,
+  getStageRangeForSession,
   getVisiblePhaseKeys,
   isDateWithinPhaseWindow,
+  isDateWithinStageRange,
 } from "./projects.js";
 import { parseDate, toDateStr } from "./utils.js";
 
@@ -39,12 +41,27 @@ function getTargetSessions(project, actor, scope) {
   return getAllSessions(project).filter((session) => visible.has(session.phase) || canEditSession(project, session, actor));
 }
 
-function buildWindowConflict(project, session) {
+function buildPhaseWindowConflict(project, session) {
   const label = session.phase === "implementation" ? "implementation window" : `${session.phase} window`;
   return {
-    id: `window:${session.id}`,
+    id: `window:phase:${session.id}`,
     subject: `Outside ${label}`,
     kind: "window",
+    windowScope: "phase",
+    blocking: true,
+    start: session.date && session.time ? `${session.date}T${session.time}:00` : session.date,
+    end: session.date && session.time ? `${session.date}T${session.time}:00` : session.date,
+  };
+}
+
+function buildStageWindowConflict(project, session) {
+  const range = getStageRangeForSession(project, session);
+  return {
+    id: `window:stage:${session.id}`,
+    subject: `Outside ${range.label || "Stage"} stage range`,
+    kind: "window",
+    windowScope: "stage",
+    blocking: false,
     start: session.date && session.time ? `${session.date}T${session.time}:00` : session.date,
     end: session.date && session.time ? `${session.date}T${session.time}:00` : session.date,
   };
@@ -55,9 +72,14 @@ function buildAvailabilityConflict(session) {
     id: `availability:${session.id}`,
     subject: "No free time found",
     kind: "availability",
+    blocking: true,
     start: session.date,
     end: session.date,
   };
+}
+
+function filterBlocking(conflicts, blockingOnly) {
+  return blockingOnly ? conflicts.filter((conflict) => conflict.blocking !== false) : conflicts;
 }
 
 export function summarizeConflictKinds(conflicts = []) {
@@ -90,7 +112,7 @@ export function summarizeConflictKinds(conflicts = []) {
   };
 }
 
-export function getConflicts({ project = getActiveProject(), actor = state.actor, scope = "editable" } = {}) {
+export function getConflicts({ project = getActiveProject(), actor = state.actor, scope = "editable", blockingOnly = false } = {}) {
   const conflicts = new Map();
   if (!project) return conflicts;
 
@@ -98,9 +120,13 @@ export function getConflicts({ project = getActiveProject(), actor = state.actor
   for (const session of sessions) {
     if (!session.date) continue;
 
-    const hits = [];
+    let hits = [];
     if (!isDateWithinPhaseWindow(project, session, session.date)) {
-      hits.push(buildWindowConflict(project, session));
+      hits.push(buildPhaseWindowConflict(project, session));
+    }
+
+    if (!isDateWithinStageRange(project, session, session.date)) {
+      hits.push(buildStageWindowConflict(project, session));
     }
 
     if (!session.time) {
@@ -115,11 +141,13 @@ export function getConflicts({ project = getActiveProject(), actor = state.actor
           hits.push({
             ...event,
             kind: event.kind || "calendar",
+            blocking: true,
           });
         }
       }
     }
 
+    hits = filterBlocking(hits, blockingOnly);
     if (hits.length) conflicts.set(session.id, hits);
   }
 
@@ -168,6 +196,7 @@ export function getConflictSummary(options = {}) {
   let windowSessions = 0;
   let calendarSessions = 0;
   let availabilitySessions = 0;
+
   for (const sessionId of conflicts.keys()) {
     const project = options.project || getActiveProject();
     const session = getAllSessions(project).find((candidate) => candidate.id === sessionId);

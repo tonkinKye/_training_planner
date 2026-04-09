@@ -7,7 +7,6 @@ import {
   getAllSessions,
   getCalendarOwnerName,
   getContextPhaseKeys,
-  getProjectAnchor,
   getVisiblePhaseKeys,
   PHASE_META,
 } from "./projects.js";
@@ -62,7 +61,7 @@ function heightPx(duration, startMinutes) {
 function buildConflictQueue() {
   const project = getActiveProject();
   if (!project) return [];
-  const conflicts = getConflicts({ project, actor: state.actor, scope: "review" });
+  const conflicts = getConflicts({ project, actor: state.actor, scope: "review", blockingOnly: true });
 
   return [...conflicts.keys()].sort((leftId, rightId) => {
     const left = findSession(project, leftId)?.session;
@@ -119,9 +118,10 @@ function getHeaderContext() {
   const activeSession = getReviewSession();
   const phaseKey = activeSession?.phase || (state.actor === "is" ? "implementation" : "setup");
   const ownerName = getCalendarOwnerName(project, phaseKey);
+  const stageLabel = activeSession ? findSession(project, activeSession.id)?.stage?.label || "" : "";
   return {
     title: `${PHASE_META[phaseKey]?.label || "Project"} Phase`,
-    subhead: `${ownerName}'s Calendar`,
+    subhead: `${ownerName}'s Calendar${stageLabel ? ` | ${stageLabel}` : ""}`,
   };
 }
 
@@ -167,25 +167,12 @@ function getSessionBlocksByDate(project) {
     if (!visible.has(session.phase) && !context.has(session.phase)) continue;
     const target = session.time ? timedByDate : untimedByDate;
     if (!target.has(session.date)) target.set(session.date, []);
+    const stage = findSession(project, session.id)?.stage || null;
     target.get(session.date).push({
       session,
-      editable: canEditSession(project, session, state.actor),
+      editable: canEditSession(project, session, state.actor) && !session.lockedDate,
       context: context.has(session.phase),
-    });
-  }
-
-  const anchor = getProjectAnchor(project);
-  if (state.actor === "is" && anchor.date) {
-    if (!timedByDate.has(anchor.date)) timedByDate.set(anchor.date, []);
-    timedByDate.get(anchor.date).push({
-      session: {
-        ...anchor,
-        id: anchor.key,
-        time: "09:00",
-      },
-      editable: false,
-      context: true,
-      anchor: true,
+      stageLabel: stage?.label || "",
     });
   }
 
@@ -207,7 +194,7 @@ function renderTimeColumn() {
 }
 
 function renderSessionBlock(project, block, conflicts) {
-  const { session, editable, context, anchor } = block;
+  const { session, editable, context, stageLabel } = block;
   const conflictHits = conflicts.get(session.id) || [];
   const conflictSummary = summarizeConflictKinds(conflictHits);
   const startMinutes = minutesFromTime(session.time);
@@ -219,7 +206,6 @@ function renderSessionBlock(project, block, conflicts) {
     `phase-${session.phase}`,
     editable ? "" : "read-only",
     context ? "context" : "",
-    anchor ? "anchor" : "",
     conflictHits.length ? "conflict" : "",
     conflictSummary.hasCalendar ? "calendar-conflict" : "",
     conflictSummary.hasWindow ? "window-conflict" : "",
@@ -232,14 +218,15 @@ function renderSessionBlock(project, block, conflicts) {
     editable ? `draggable="true" data-drag="dayview-session" data-id="${session.id}"` : ""
   } style="top:${topPx(startMinutes)}px;height:${height}px;" title="${esc(session.name)}&#10;${fmt12(
     session.time
-  )} | ${fmtDur(session.duration)}${conflictSummary.label ? ` | ${esc(conflictSummary.label)}` : ""}">
+  )} | ${fmtDur(session.duration)}${stageLabel ? ` | ${esc(stageLabel)}` : ""}${conflictSummary.label ? ` | ${esc(conflictSummary.label)}` : ""}">
     <strong>${esc(session.name)}</strong>
+    ${stageLabel ? `<small>${esc(stageLabel)}</small>` : ""}
     <span>${fmt12(session.time)}</span>
   </div>`;
 }
 
 function renderUntimedItem(project, block, conflicts) {
-  const { session, editable, context } = block;
+  const { session, editable, context, stageLabel } = block;
   const conflictHits = conflicts.get(session.id) || [];
   const conflictSummary = summarizeConflictKinds(conflictHits);
   const classes = [
@@ -256,8 +243,9 @@ function renderUntimedItem(project, block, conflicts) {
 
   return `<div class="${classes}" ${editable ? `draggable="true" data-drag="dayview-session" data-id="${session.id}"` : ""} title="${esc(
     session.name
-  )}${conflictSummary.label ? `&#10;${esc(conflictSummary.label)}` : ""}">
+  )}${stageLabel ? `&#10;${esc(stageLabel)}` : ""}${conflictSummary.label ? `&#10;${esc(conflictSummary.label)}` : ""}">
     <strong>${esc(session.name)}</strong>
+    ${stageLabel ? `<small>${esc(stageLabel)}</small>` : ""}
     <span>Time needed</span>
   </div>`;
 }
@@ -340,7 +328,12 @@ export function renderDayViewModal() {
   const weekStart = dayViewState.weekStart || mondayOf(new Date());
   const weekEnd = new Date(weekStart);
   weekEnd.setDate(weekEnd.getDate() + 6);
-  const conflicts = getConflicts({ project, actor: state.actor, scope: isReviewMode() ? "review" : "editable" });
+  const conflicts = getConflicts({
+    project,
+    actor: state.actor,
+    scope: isReviewMode() ? "review" : "editable",
+    blockingOnly: isReviewMode(),
+  });
   const sessionBlocks = getSessionBlocksByDate(project);
   const externalBlocks = getExternalEventsByDate(project);
 
@@ -420,7 +413,7 @@ export function shiftDayView(direction) {
 export function navigateConflict(direction) {
   const queue = buildConflictQueue();
   if (!queue.length) {
-    const dates = getConflictedDates({ actor: state.actor, scope: "review" });
+    const dates = getConflictedDates({ actor: state.actor, scope: "review", blockingOnly: true });
     if (!dates.length) {
       toast("No conflicts");
       return;
@@ -463,7 +456,7 @@ export async function confirmConflict() {
   const project = getActiveProject();
   if (!project) return false;
   const currentId = dayViewState.review.currentSessionId;
-  const conflicts = getConflicts({ project, actor: state.actor, scope: "review" });
+  const conflicts = getConflicts({ project, actor: state.actor, scope: "review", blockingOnly: true });
   if (conflicts.has(currentId)) {
     toast("This item still needs review for window, calendar, or availability conflicts.", 4000);
     return false;

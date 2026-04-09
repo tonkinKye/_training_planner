@@ -56,6 +56,8 @@ import {
   setSessionTime,
   setSmartStart,
   toggleActiveDay,
+  toggleOnboardingWorkingDay,
+  toggleSettingsWorkingDay,
   toggleSmart,
   unscheduleSession,
   updateOnboardingField,
@@ -93,6 +95,9 @@ async function handleDeepLinkIfPresent() {
   if (hasEmbeddedProject) {
     try {
       project = await applyDeepLinkProject(payload);
+      if (project?.id) {
+        project = openProject(project.id, { actor: "is", mode: "is" }) || project;
+      }
     } catch (error) {
       console.warn("Deep link payload apply failed, falling back to sentinel lookup:", error);
     }
@@ -280,11 +285,11 @@ async function actionHandlers(action, element) {
       rerender();
       return;
     case "removeOnboardingSession":
-      removeOnboardingSession(Number(element.dataset.index));
+      removeOnboardingSession(element.dataset.id);
       rerender();
       return;
     case "moveOnboardingSession":
-      moveOnboardingSession(Number(element.dataset.index), Number(element.dataset.dir));
+      moveOnboardingSession(element.dataset.id, Number(element.dataset.dir));
       rerender();
       return;
     case "addSettingsSession":
@@ -301,6 +306,14 @@ async function actionHandlers(action, element) {
       return;
     case "toggleSmart":
       toggleSmart();
+      rerender();
+      return;
+    case "toggleOnboardingWorkingDay":
+      toggleOnboardingWorkingDay(Number(element.dataset.day));
+      rerender();
+      return;
+    case "toggleSettingsWorkingDay":
+      toggleSettingsWorkingDay(Number(element.dataset.day));
       rerender();
       return;
     case "setSmartStart":
@@ -338,7 +351,7 @@ async function actionHandlers(action, element) {
           rerender();
           return;
         }
-        if (!result.datedCount && !result.timedCount && !result.availabilityCount) {
+        if (!result.datedCount && !result.timedCount && !result.availabilityCount && !result.unplacedCount && !result.rangeCount) {
           rerender();
           toast(buildSmartFillToast(result), 5000);
           return;
@@ -400,7 +413,7 @@ async function actionHandlers(action, element) {
     case "checkConflicts":
       await refreshProjectContext();
       rerender();
-      toast(getConflicts({ project: getActiveProject(), actor: state.actor, scope: "review" }).size ? "Conflicts found" : "No conflicts found", 3500);
+      toast(getConflicts({ project: getActiveProject(), actor: state.actor, scope: "review", blockingOnly: true }).size ? "Conflicts found" : "No conflicts found", 3500);
       return;
     case "reviewConflicts":
       await refreshProjectContext();

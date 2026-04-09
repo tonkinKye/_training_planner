@@ -5,7 +5,9 @@ import {
   canCommitSession,
   canEditSession,
   getActorDisplayName,
+  getAllSessions,
   getContextPhaseKeys,
+  getPhaseStages,
   getPhaseSummary,
   getProjectCardStatus,
   getProjectCounts,
@@ -39,6 +41,67 @@ function smartPreferenceLabel(value) {
   if (value === "am") return "AM";
   if (value === "pm") return "PM";
   return "No Preference";
+}
+
+function fmtWeekRange(minWeeks, maxWeeks) {
+  if (!minWeeks && !maxWeeks) return "";
+  if (minWeeks && maxWeeks && minWeeks !== maxWeeks) {
+    return `${minWeeks}-${maxWeeks} weeks`;
+  }
+  return `${minWeeks || maxWeeks} week${(minWeeks || maxWeeks) === 1 ? "" : "s"}`;
+}
+
+function fmtPhaseSpan(spanWeeks) {
+  if (!spanWeeks) return "Not scheduled";
+  return `${spanWeeks} week${spanWeeks === 1 ? "" : "s"}`;
+}
+
+function renderWorkingDaysChips(days, scope) {
+  const selected = new Set(days || []);
+  return `<div class="day-row">
+    ${[
+      ["M", 1],
+      ["T", 2],
+      ["W", 3],
+      ["T", 4],
+      ["F", 5],
+      ["S", 6],
+      ["S", 0],
+    ]
+      .map(
+        ([label, day]) =>
+          `<button class="day-chip${selected.has(day) ? " active" : ""}" data-action="toggle${scope}WorkingDay" data-day="${day}">${label}</button>`
+      )
+      .join("")}
+  </div>`;
+}
+
+function renderStageOptions(source, phaseKey, selectedStageKey) {
+  const stages = getPhaseStages(source, phaseKey);
+  const hasSelected = stages.some((stage) => stage.key === selectedStageKey);
+  const nextValue = selectedStageKey && hasSelected ? selectedStageKey : stages[0]?.key || "__new__";
+  return `${stages
+    .map((stage) => `<option value="${stage.key}"${nextValue === stage.key ? " selected" : ""}>${esc(stage.label)}</option>`)
+    .join("")}<option value="__new__"${nextValue === "__new__" ? " selected" : ""}>Create New Stage</option>`;
+}
+
+function renderSessionRowsForStages(source, phaseKey, moveAction, removeAction) {
+  return getPhaseStages(source, phaseKey)
+    .map((stage) => {
+      const sessions = stage.sessions || [];
+      if (!sessions.length) return "";
+      return `<div class="settings-phase">
+        <h4>${esc(stage.label)}</h4>
+        ${sessions
+          .map(
+            (session) => `<div class="settings-row"><div><strong>${esc(session.name)}</strong><small>${fmtDur(
+              session.duration
+            )} | ${session.owner === "is" ? "IS" : "PM"} | ${esc(session.type)}</small></div><div class="quick-row">${session.lockedDate ? '<span class="tag muted">System Managed</span>' : `<button class="btn-secondary btn-sm" data-action="${moveAction}" data-id="${session.id}" data-dir="-1">Up</button><button class="btn-secondary btn-sm" data-action="${moveAction}" data-id="${session.id}" data-dir="1">Down</button><button class="btn-danger-outline btn-sm" data-action="${removeAction}" data-id="${session.id}">Remove</button>`}</div></div>`
+          )
+          .join("")}
+      </div>`;
+    })
+    .join("");
 }
 
 function renderSmartPreferenceToggle(selectedValue, actionName = "setSmartPreference") {
@@ -127,7 +190,7 @@ function projectsScreen() {
 }
 
 function conflictButton(project) {
-  const summary = getConflictSummary({ project, actor: state.actor, scope: "review" });
+  const summary = getConflictSummary({ project, actor: state.actor, scope: "review", blockingOnly: true });
   return summary.sessions
     ? `<button class="btn-secondary" data-action="reviewConflicts">Review Conflicts (${summary.sessions})</button>`
     : '<button class="btn-secondary" data-action="checkConflicts">Check Conflicts</button>';
@@ -234,6 +297,8 @@ function editableConflictScope(project, session, context) {
 function sessionRow(project, session, context = false) {
   const editable = canEditSession(project, session, state.actor) && !context;
   const durationDisabled = editable && state.actor === "pm" ? "" : "disabled";
+  const dateDisabled = editable && !session.lockedDate ? "" : "disabled";
+  const timeDisabled = editable && !session.lockedTime ? "" : "disabled";
   return `<article class="session-row phase-${session.phase}${context ? " context" : ""}">
     <div class="session-bar"></div>
     <div class="session-body">
@@ -241,15 +306,15 @@ function sessionRow(project, session, context = false) {
         <div><h4>${esc(session.name)}</h4><div class="tag-row">${sessionBadges(project, session, context)}</div></div>
         <div class="row-actions">
           <button class="btn-secondary btn-sm" data-action="openDayView" data-date="${session.date || project.implementationStart || project.goLiveDate || toDateStr(new Date())}">Week</button>
-          ${editable && session.date ? `<button class="btn-secondary btn-sm" data-action="unscheduleSession" data-id="${session.id}">Unschedule</button>` : ""}
+          ${editable && session.date && !session.lockedDate ? `<button class="btn-secondary btn-sm" data-action="unscheduleSession" data-id="${session.id}">Unschedule</button>` : ""}
           ${canCommitSession(session, state.actor) && session.date && session.time ? `<button class="btn-secondary btn-sm" data-action="pushSession" data-id="${session.id}">${session.graphActioned ? "Update" : "Push"}</button>` : ""}
           ${session.type === "external" && session.date && session.time ? `<button class="btn-secondary btn-sm" data-action="openOutlook" data-id="${session.id}">Outlook</button>` : ""}
-          ${state.actor === "pm" && !context ? `<button class="btn-secondary btn-sm" data-action="moveSession" data-id="${session.id}" data-dir="-1">Up</button><button class="btn-secondary btn-sm" data-action="moveSession" data-id="${session.id}" data-dir="1">Down</button><button class="btn-danger-outline btn-sm" data-action="removeSession" data-id="${session.id}">Remove</button>` : ""}
+          ${state.actor === "pm" && editable ? `<button class="btn-secondary btn-sm" data-action="moveSession" data-id="${session.id}" data-dir="-1">Up</button><button class="btn-secondary btn-sm" data-action="moveSession" data-id="${session.id}" data-dir="1">Down</button><button class="btn-danger-outline btn-sm" data-action="removeSession" data-id="${session.id}">Remove</button>` : ""}
         </div>
       </div>
       <div class="field-row">
-        <label class="field compact"><span>Date</span><input type="date" value="${session.date || ""}" ${editable ? "" : "disabled"} data-action="setSessionDate" data-id="${session.id}"></label>
-        <label class="field compact"><span>Time</span><select ${editable ? "" : "disabled"} data-action="setSessionTime" data-id="${session.id}">${getTimeOptionsHTML(session.time || "")}</select></label>
+        <label class="field compact"><span>Date</span><input type="date" value="${session.date || ""}" ${dateDisabled} data-action="setSessionDate" data-id="${session.id}"></label>
+        <label class="field compact"><span>Time</span><select ${timeDisabled} data-action="setSessionTime" data-id="${session.id}">${getTimeOptionsHTML(session.time || "")}</select></label>
         <label class="field compact"><span>Duration</span><select ${durationDisabled} data-action="setSessionDuration" data-id="${session.id}">${DURATION_OPTIONS.map((m) => `<option value="${m}"${m === session.duration ? " selected" : ""}>${fmtDur(m)}</option>`).join("")}</select></label>
       </div>
     </div>
@@ -257,16 +322,23 @@ function sessionRow(project, session, context = false) {
 }
 
 function phaseSection(project, phaseKey, context = false) {
-  const sessions = project.phases[phaseKey]?.sessions || [];
-  if (!sessions.length) return "";
+  const stages = getPhaseStages(project, phaseKey).filter((stage) => (stage.sessions || []).length);
+  if (!stages.length) return "";
   const summary = getPhaseSummary(project, phaseKey);
   const owner = getActorDisplayName(project, PHASE_META[phaseKey].owner);
+  const suggested = fmtWeekRange(summary.suggestedWeeksMin, summary.suggestedWeeksMax);
   return `<section class="phase-group phase-${phaseKey}${context ? " context" : ""}">
     <header class="phase-head">
       <div><h3>${esc(PHASE_META[phaseKey].label)}</h3><p>${esc(owner)} | ${summary.scheduled} / ${summary.total} scheduled</p></div>
-      <div class="phase-range">${esc(fmtRange(summary.rangeStart, summary.rangeEnd))}</div>
+      <div class="phase-range"><strong>${esc(fmtPhaseSpan(summary.spanWeeks))}</strong>${suggested ? ` <span>${esc(suggested)}</span>` : ""}${summary.exceedsSuggestedMax ? ' <span class="tag warning">Over suggested</span>' : ""}</div>
     </header>
-    <div class="phase-list">${sessions.map((s) => sessionRow(project, s, context)).join("")}</div>
+    <div class="phase-list">${stages
+      .map(
+        (stage) => `<section class="stage-group"><header class="stage-head"><h4>${esc(stage.label)}</h4>${stage.rangeStart || stage.rangeEnd ? `<span class="stage-range">${esc(fmtRange(stage.rangeStart, stage.rangeEnd))}</span>` : ""}</header>${stage.sessions
+          .map((session) => sessionRow(project, session, context))
+          .join("")}</section>`
+      )
+      .join("")}</div>
   </section>`;
 }
 
@@ -292,14 +364,14 @@ function calendarPanel(project) {
   const mobile = window.innerWidth <= 860;
   const cols = mobile ? 5 : 7;
   const weeks = 6;
-  const unscheduled = PHASE_ORDER.flatMap((key) => project.phases[key].sessions).filter((s) => canEditSession(project, s, state.actor) && !s.date);
-  const conflictSummary = getConflictSummary({ project, actor: state.actor, scope: "review" });
+  const unscheduled = getAllSessions(project).filter((session) => canEditSession(project, session, state.actor) && !session.date);
+  const conflictSummary = getConflictSummary({ project, actor: state.actor, scope: "review", blockingOnly: true });
   const cells = [];
   for (let i = 0; i < cols * weeks; i += 1) {
     const date = new Date(state.calStart);
     date.setDate(date.getDate() + i);
     const dateString = toDateStr(date);
-    const sessions = PHASE_ORDER.flatMap((key) => project.phases[key].sessions).filter((s) => s.date === dateString);
+    const sessions = getAllSessions(project).filter((session) => session.date === dateString);
     const dayConflictKinds = sessions.reduce(
       (acc, session) => {
         const summary = summarizeConflictKinds(getSessionConflicts(session.id, { project, actor: state.actor, scope: "editable" }));
@@ -325,7 +397,7 @@ function calendarPanel(project) {
     <div class="panel-head"><div><h2>Calendar</h2><p>${conflictSummary.sessions ? `${conflictSummary.sessions} sessions need review${conflictSummary.label ? ` | ${esc(conflictSummary.label)}` : ""}` : "Drop sessions onto a day or open week view."}</p></div><button class="btn-secondary btn-sm mobile-only" data-action="switchMobileTab" data-tab="schedule">Schedule</button></div>
     <div class="unscheduled-strip"><strong>Unscheduled</strong><div class="unscheduled-list">${unscheduled.length ? unscheduled.map((s) => `<div class="unscheduled-chip phase-${s.phase}" draggable="true" data-drag="session" data-id="${s.id}">${esc(s.name)} <small>${fmtDur(s.duration)}</small></div>`).join("") : '<span class="muted">All editable sessions are scheduled.</span>'}</div></div>
     <div class="calendar-nav"><button class="btn-secondary btn-sm" data-action="calShift" data-dir="-1">Prev</button><button class="btn-secondary btn-sm" data-action="calToday">Today</button><button class="btn-secondary btn-sm" data-action="calShift" data-dir="1">Next</button></div>
-    <div class="calendar-scroll"><div class="calendar-grid" style="grid-template-columns:32px repeat(${cols},1fr);"><div class="week-spacer"></div>${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].slice(0, cols).map((d) => `<div class="cal-head">${d}</div>`).join("")}${Array.from({ length: weeks }).map((_, week) => `<div class="week-label">W${week + 1}</div>${cells.slice(week * cols, week * cols + cols).map((cell) => `<div class="cal-cell${cell.today ? " today" : ""}${cell.hasCalendarConflict ? " has-conflict" : ""}${cell.hasWindowConflict ? " has-window-conflict" : ""}${cell.hasAvailabilityConflict ? " has-availability-conflict" : ""}" data-drop data-date="${cell.dateString}"><button class="cal-date" data-action="openDayView" data-date="${cell.dateString}">${cell.date.getDate()}</button><div class="cal-events">${cell.sessions.map((s) => `<div class="cal-chip phase-${s.phase}${canEditSession(project, s, state.actor) ? "" : " context"}${!s.time && s.availabilityConflict === true ? " needs-time" : ""}" ${canEditSession(project, s, state.actor) ? `draggable="true" data-drag="session" data-id="${s.id}"` : ""}><span>${esc(s.name)}</span><small>${esc(fmtTimeLabel(s.time))}</small></div>`).join("")}</div></div>`).join("")}`).join("")}</div></div>
+    <div class="calendar-scroll"><div class="calendar-grid" style="grid-template-columns:32px repeat(${cols},1fr);"><div class="week-spacer"></div>${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].slice(0, cols).map((d) => `<div class="cal-head">${d}</div>`).join("")}${Array.from({ length: weeks }).map((_, week) => `<div class="week-label">W${week + 1}</div>${cells.slice(week * cols, week * cols + cols).map((cell) => `<div class="cal-cell${cell.today ? " today" : ""}${cell.hasCalendarConflict ? " has-conflict" : ""}${cell.hasWindowConflict ? " has-window-conflict" : ""}${cell.hasAvailabilityConflict ? " has-availability-conflict" : ""}" data-drop data-date="${cell.dateString}"><button class="cal-date" data-action="openDayView" data-date="${cell.dateString}">${cell.date.getDate()}</button><div class="cal-events">${cell.sessions.map((s) => `<div class="cal-chip phase-${s.phase}${canEditSession(project, s, state.actor) ? "" : " context"}${!s.time && s.availabilityConflict === true ? " needs-time" : ""}" ${canEditSession(project, s, state.actor) && !s.lockedDate ? `draggable="true" data-drag="session" data-id="${s.id}"` : ""}><span>${esc(s.name)}</span><small>${esc(fmtTimeLabel(s.time))}</small></div>`).join("")}</div></div>`).join("")}`).join("")}</div></div>
   </section>`;
 }
 
@@ -346,11 +418,11 @@ function onboardingStep() {
   const step = state.ui.onboarding.step;
   if (step === 0) return `<label class="field"><span>Client Name</span><input type="text" value="${esc(d.clientName)}" data-bind="onboarding.clientName"></label><label class="field"><span>Project Type</span><select data-bind="onboarding.projectType">${Object.entries(PROJECT_TYPE_META).map(([v, l]) => `<option value="${v}"${d.projectType === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>`;
   if (step === 1) return `<label class="field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="onboarding.pmName"></label><label class="field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="onboarding.pmEmail"></label><label class="field"><span>IS Search / Email</span><input type="text" value="${esc(state.ui.peopleQuery)}" data-bind="peopleQuery"></label><div class="quick-row"><button class="btn-secondary btn-sm" data-action="searchPeople">Search M365</button><span class="muted">People.Read may prompt for re-consent.</span></div>${state.ui.peopleMatches.length ? `<div class="people-list">${state.ui.peopleMatches.map((p) => `<button class="people-pill" data-action="selectPerson" data-name="${esc(p.name)}" data-email="${esc(p.email)}">${esc(p.name || p.email)} <small>${esc(p.email)}</small></button>`).join("")}</div>` : ""}<label class="field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="onboarding.isName"></label><label class="field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="onboarding.isEmail"></label>`;
-  if (step === 2) return `<label class="field"><span>Implementation Start</span><input type="date" value="${d.implementationStart}" data-bind="onboarding.implementationStart"></label><label class="field"><span>Go-Live Date</span><input type="date" value="${d.goLiveDate}" data-bind="onboarding.goLiveDate"></label><label class="field"><span>Hypercare</span><select data-bind="onboarding.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="field"><span>Smart Fill Default</span><select data-bind="onboarding.smartFillPreference"><option value="am"${d.smartFillPreference === "am" ? " selected" : ""}>AM</option><option value="none"${d.smartFillPreference === "none" ? " selected" : ""}>No Preference</option><option value="pm"${d.smartFillPreference === "pm" ? " selected" : ""}>PM</option></select></label>`;
+  if (step === 2) return `<div class="settings-grid"><label class="field"><span>Implementation Start</span><input type="date" value="${d.implementationStart}" data-bind="onboarding.implementationStart"></label><label class="field"><span>Go-Live Date</span><input type="date" value="${d.goLiveDate}" data-bind="onboarding.goLiveDate"></label><label class="field"><span>Hypercare</span><select data-bind="onboarding.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="field"><span>Smart Fill Default</span><select data-bind="onboarding.smartFillPreference"><option value="am"${d.smartFillPreference === "am" ? " selected" : ""}>AM</option><option value="none"${d.smartFillPreference === "none" ? " selected" : ""}>No Preference</option><option value="pm"${d.smartFillPreference === "pm" ? " selected" : ""}>PM</option></select></label><div class="field full"><span>Working Days</span>${renderWorkingDaysChips(d.workingDays, "Onboarding")}</div><div class="summary-card full"><p><strong>Suggested Go-Live:</strong> ${esc(fmtDate(d.goLiveSuggestedDate || d.goLiveDate || ""))}</p><p><strong>Recommended Duration:</strong> ${esc(fmtPhaseSpan(d.goLiveRecommendedWeeks))}</p>${d.goLiveWarning ? `<p class="warning-copy">${esc(d.goLiveWarning)}</p>` : '<p class="muted">Suggestion updates when implementation start or working days change.</p>'}</div></div>`;
   if (step === 3) return `<label class="field full"><span>Invitees</span><textarea rows="5" data-bind="onboarding.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea><small class="muted">Use commas or new lines to separate attendee email addresses.</small></label>`;
   if (step === 4) return `<label class="field"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="onboarding.location"><small class="muted">Enter a room name or Teams URL.</small></label>`;
-  if (step === 5) return `<div class="settings-session-list">${d.sessions.map((s, i) => `<div class="settings-row"><div><strong>${esc(s.name)}</strong><small>${esc(PHASE_META[s.phase].label)} | ${fmtDur(s.duration)} | ${s.owner === "is" ? "IS" : "PM"}</small></div><div class="quick-row"><button class="btn-secondary btn-sm" data-action="moveOnboardingSession" data-index="${i}" data-dir="-1">Up</button><button class="btn-secondary btn-sm" data-action="moveOnboardingSession" data-index="${i}" data-dir="1">Down</button><button class="btn-danger-outline btn-sm" data-action="removeOnboardingSession" data-index="${i}">Remove</button></div></div>`).join("")}</div><div class="builder-grid"><label class="field compact"><span>Name</span><input type="text" value="${esc(d.customSession.name)}" data-bind="onboarding.customSession.name"></label><label class="field compact"><span>Duration</span><input type="number" min="15" step="15" value="${d.customSession.duration}" data-bind="onboarding.customSession.duration"></label><label class="field compact"><span>Phase</span><select data-bind="onboarding.customSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.customSession.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="field compact"><span>Owner</span><select data-bind="onboarding.customSession.owner"><option value="pm"${d.customSession.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.customSession.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="field compact"><span>Type</span><select data-bind="onboarding.customSession.type"><option value="external"${d.customSession.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.customSession.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-primary" data-action="addOnboardingSession">Add Session</button></div>`;
-  return `<div class="summary-card"><h4>${esc(d.clientName || "New Project")}</h4><p>${esc(PROJECT_TYPE_META[d.projectType])} | ${esc(d.pmName || d.pmEmail)} -> ${esc(d.isName || d.isEmail)}</p><p>Implementation window: ${esc(fmtRange(d.implementationStart, d.goLiveDate))}</p><p>Smart Fill default: ${esc(smartPreferenceLabel(d.smartFillPreference))}</p><p>${d.sessions.length} sessions will be written to the sentinel.</p></div><details class="template-review"><summary>Template JSON</summary><pre>${esc(state.ui.onboarding.templateReviewJSON)}</pre></details>`;
+  if (step === 5) return `<div class="settings-session-list">${PHASE_ORDER.map((phaseKey) => renderSessionRowsForStages(d, phaseKey, "moveOnboardingSession", "removeOnboardingSession")).join("")}</div><div class="builder-grid"><label class="field compact"><span>Name</span><input type="text" value="${esc(d.customSession.name)}" data-bind="onboarding.customSession.name"></label><label class="field compact"><span>Duration</span><input type="number" min="15" step="15" value="${d.customSession.duration}" data-bind="onboarding.customSession.duration"></label><label class="field compact"><span>Phase</span><select data-bind="onboarding.customSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.customSession.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="field compact"><span>Stage</span><select data-bind="onboarding.customSession.stageKey">${renderStageOptions(d, d.customSession.phase, d.customSession.stageKey)}</select></label>${d.customSession.stageKey === "__new__" || !getPhaseStages(d, d.customSession.phase).length ? `<label class="field compact"><span>New Stage Label</span><input type="text" value="${esc(d.customSession.newStageLabel)}" data-bind="onboarding.customSession.newStageLabel"></label>` : ""}<label class="field compact"><span>Owner</span><select data-bind="onboarding.customSession.owner"><option value="pm"${d.customSession.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.customSession.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="field compact"><span>Type</span><select data-bind="onboarding.customSession.type"><option value="external"${d.customSession.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.customSession.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-primary" data-action="addOnboardingSession">Add Session</button></div>`;
+  return `<div class="summary-card"><h4>${esc(d.clientName || "New Project")}</h4><p>${esc(PROJECT_TYPE_META[d.projectType])} | ${esc(d.pmName || d.pmEmail)} -> ${esc(d.isName || d.isEmail)}</p><p>Implementation window: ${esc(fmtRange(d.implementationStart, d.goLiveDate))}</p><p>Smart Fill default: ${esc(smartPreferenceLabel(d.smartFillPreference))}</p><p>${getAllSessions(d).length} sessions will be written to the sentinel.</p></div><details class="template-review"><summary>Template JSON</summary><pre>${esc(state.ui.onboarding.templateReviewJSON)}</pre></details>`;
 }
 
 function onboardingModal() {
@@ -362,7 +434,7 @@ function onboardingModal() {
 function settingsModal() {
   const d = state.ui.settings.draft;
   if (!state.ui.settings.open || !d) return "";
-  return `<div class="modal-overlay open"><div class="modal wide"><div class="modal-head"><div><h3>Project Settings</h3><p>Edit metadata and sessions.</p></div><button class="btn-secondary btn-sm" data-action="closeSettings">Close</button></div><div class="settings-grid"><label class="field"><span>Client</span><input type="text" value="${esc(d.clientName)}" data-bind="settings.clientName"></label><label class="field"><span>Type</span><select data-bind="settings.projectType">${Object.entries(PROJECT_TYPE_META).map(([v, l]) => `<option value="${v}"${d.projectType === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label><label class="field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="settings.pmName"></label><label class="field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="settings.pmEmail"></label><label class="field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="settings.isName"></label><label class="field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="settings.isEmail"></label><label class="field"><span>Implementation Start</span><input type="date" value="${d.implementationStart}" data-bind="settings.implementationStart"></label><label class="field"><span>Go-Live</span><input type="date" value="${d.goLiveDate}" data-bind="settings.goLiveDate"></label><label class="field"><span>Hypercare</span><select data-bind="settings.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="field"><span>Smart Fill Default</span><select data-bind="settings.smartFillPreference"><option value="am"${d.smartFillPreference === "am" ? " selected" : ""}>AM</option><option value="none"${d.smartFillPreference === "none" ? " selected" : ""}>No Preference</option><option value="pm"${d.smartFillPreference === "pm" ? " selected" : ""}>PM</option></select></label><label class="field full"><span>Invitees</span><textarea rows="3" data-bind="settings.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea></label><label class="field full"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="settings.location"></label></div><div class="settings-session-list">${PHASE_ORDER.map((phaseKey) => `<div class="settings-phase"><h4>${esc(PHASE_META[phaseKey].label)}</h4>${(d.phases[phaseKey]?.sessions || []).map((s) => `<div class="settings-row"><div><strong>${esc(s.name)}</strong><small>${fmtDur(s.duration)} | ${s.owner === "is" ? "IS" : "PM"} | ${esc(s.type)}</small></div><div class="quick-row"><button class="btn-secondary btn-sm" data-action="moveSettingsSession" data-id="${s.id}" data-dir="-1">Up</button><button class="btn-secondary btn-sm" data-action="moveSettingsSession" data-id="${s.id}" data-dir="1">Down</button><button class="btn-danger-outline btn-sm" data-action="removeSettingsSession" data-id="${s.id}">Remove</button></div></div>`).join("")}</div>`).join("")}</div><div class="builder-grid"><label class="field compact"><span>Name</span><input type="text" value="${esc(d.newSession?.name || "")}" data-bind="settings.newSession.name"></label><label class="field compact"><span>Duration</span><input type="number" min="15" step="15" value="${d.newSession?.duration || 90}" data-bind="settings.newSession.duration"></label><label class="field compact"><span>Phase</span><select data-bind="settings.newSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.newSession?.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="field compact"><span>Owner</span><select data-bind="settings.newSession.owner"><option value="pm"${d.newSession?.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.newSession?.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="field compact"><span>Type</span><select data-bind="settings.newSession.type"><option value="external"${d.newSession?.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.newSession?.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-primary" data-action="addSettingsSession">Add Session</button></div><div class="modal-actions"><button class="btn-secondary" data-action="closeSettings">Cancel</button><button class="btn-primary" data-action="saveSettings">Save Project</button></div></div></div>`;
+  return `<div class="modal-overlay open"><div class="modal wide"><div class="modal-head"><div><h3>Project Settings</h3><p>Edit metadata and sessions.</p></div><button class="btn-secondary btn-sm" data-action="closeSettings">Close</button></div><div class="settings-grid"><label class="field"><span>Client</span><input type="text" value="${esc(d.clientName)}" data-bind="settings.clientName"></label><label class="field"><span>Type</span><select data-bind="settings.projectType">${Object.entries(PROJECT_TYPE_META).map(([v, l]) => `<option value="${v}"${d.projectType === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label><label class="field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="settings.pmName"></label><label class="field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="settings.pmEmail"></label><label class="field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="settings.isName"></label><label class="field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="settings.isEmail"></label><label class="field"><span>Implementation Start</span><input type="date" value="${d.implementationStart}" data-bind="settings.implementationStart"></label><label class="field"><span>Go-Live</span><input type="date" value="${d.goLiveDate}" data-bind="settings.goLiveDate"></label><label class="field"><span>Hypercare</span><select data-bind="settings.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="field"><span>Smart Fill Default</span><select data-bind="settings.smartFillPreference"><option value="am"${d.smartFillPreference === "am" ? " selected" : ""}>AM</option><option value="none"${d.smartFillPreference === "none" ? " selected" : ""}>No Preference</option><option value="pm"${d.smartFillPreference === "pm" ? " selected" : ""}>PM</option></select></label><div class="field full"><span>Working Days</span>${renderWorkingDaysChips(d.workingDays, "Settings")}</div><div class="summary-card full"><p><strong>Suggested Go-Live:</strong> ${esc(fmtDate(d.goLiveSuggestedDate || d.goLiveDate || ""))}</p><p><strong>Recommended Duration:</strong> ${esc(fmtPhaseSpan(d.goLiveRecommendedWeeks))}</p>${d.goLiveWarning ? `<p class="warning-copy">${esc(d.goLiveWarning)}</p>` : '<p class="muted">Suggestion updates when implementation start or working days change.</p>'}</div><label class="field full"><span>Invitees</span><textarea rows="3" data-bind="settings.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea></label><label class="field full"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="settings.location"></label></div><div class="settings-session-list">${PHASE_ORDER.map((phaseKey) => renderSessionRowsForStages(d, phaseKey, "moveSettingsSession", "removeSettingsSession")).join("")}</div><div class="builder-grid"><label class="field compact"><span>Name</span><input type="text" value="${esc(d.newSession?.name || "")}" data-bind="settings.newSession.name"></label><label class="field compact"><span>Duration</span><input type="number" min="15" step="15" value="${d.newSession?.duration || 90}" data-bind="settings.newSession.duration"></label><label class="field compact"><span>Phase</span><select data-bind="settings.newSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.newSession?.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="field compact"><span>Stage</span><select data-bind="settings.newSession.stageKey">${renderStageOptions(d, d.newSession?.phase || "implementation", d.newSession?.stageKey || "")}</select></label>${d.newSession?.stageKey === "__new__" || !getPhaseStages(d, d.newSession?.phase || "implementation").length ? `<label class="field compact"><span>New Stage Label</span><input type="text" value="${esc(d.newSession?.newStageLabel || "")}" data-bind="settings.newSession.newStageLabel"></label>` : ""}<label class="field compact"><span>Owner</span><select data-bind="settings.newSession.owner"><option value="pm"${d.newSession?.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.newSession?.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="field compact"><span>Type</span><select data-bind="settings.newSession.type"><option value="external"${d.newSession?.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.newSession?.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-primary" data-action="addSettingsSession">Add Session</button></div><div class="modal-actions"><button class="btn-secondary" data-action="closeSettings">Cancel</button><button class="btn-primary" data-action="saveSettings">Save Project</button></div></div></div>`;
 }
 
 function windowChangeDialog() {
