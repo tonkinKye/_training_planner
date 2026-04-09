@@ -20,6 +20,14 @@ function createSettingsState() {
   };
 }
 
+function createDeleteDialogState() {
+  return {
+    open: false,
+    projectId: "",
+    projectName: "",
+  };
+}
+
 function createShiftDialogState() {
   return {
     open: false,
@@ -89,6 +97,7 @@ export const state = {
     settings: createSettingsState(),
     windowChangeDialog: createWindowChangeDialogState(),
     shiftDialog: createShiftDialogState(),
+    deleteDialog: createDeleteDialogState(),
     peopleQuery: "",
     peopleMatches: [],
     peopleStatus: "idle",
@@ -232,6 +241,7 @@ export function resetUIState() {
   state.ui.settings = createSettingsState();
   state.ui.windowChangeDialog = createWindowChangeDialogState();
   state.ui.shiftDialog = createShiftDialogState();
+  state.ui.deleteDialog = createDeleteDialogState();
   state.ui.peopleQuery = "";
   state.ui.peopleMatches = [];
   state.ui.peopleStatus = "idle";

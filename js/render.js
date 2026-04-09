@@ -4,6 +4,7 @@ import { getActiveProject, state } from "./state.js";
 import {
   canCommitSession,
   canEditSession,
+  deriveProjectStatus,
   getActorDisplayName,
   getAllSessions,
   getContextPhaseKeys,
@@ -150,10 +151,12 @@ function authScreen() {
 
 function projectCard(project) {
   const counts = getProjectCounts(project);
+  const canDelete = deriveProjectStatus(project) === "scheduling";
   return `<button class="project-card" data-action="selectProject" data-id="${project.id}">
     <div class="card-top">
       <span class="pill type">${esc(PROJECT_TYPE_META[project.projectType] || "Project")}</span>
       <span class="pill status">${esc(getProjectCardStatus(project))}</span>
+      ${canDelete ? `<span class="card-delete" data-action="deleteProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled Project")}" title="Delete project">&times;</span>` : ""}
     </div>
     <h3>${esc(project.clientName || "Untitled Project")}</h3>
     <p>${esc(project.isName || project.isEmail || "IS not set")}</p>
@@ -414,7 +417,7 @@ function workspace(project) {
   return `<main class="screen workspace-screen">
     <div class="workspace-toolbar">
       <div class="toolbar-group">${conflictButton(project)}<button class="btn-primary" data-action="pushOwned">${state.actor === "is" ? "Commit to Calendar" : "Push All"}</button>${state.actor === "pm" && readyForHandoff(project) ? '<button class="btn-amber" data-action="handoffToIs">Hand Off to IS</button>' : ""}</div>
-      <div class="toolbar-group"><button class="btn-secondary" data-action="toggleSmart">${state.ui.smartOpen ? "Hide Smart Fill" : "Smart Fill"}</button>${state.actor === "pm" ? '<button class="btn-secondary" data-action="generateClientPlan">Client Plan</button>' : ""}<button class="btn-secondary" data-action="openSettings">Project Settings</button></div>
+      <div class="toolbar-group"><button class="btn-secondary" data-action="toggleSmart">${state.ui.smartOpen ? "Hide Smart Fill" : "Smart Fill"}</button>${state.actor === "pm" ? '<button class="btn-secondary" data-action="generateClientPlan">Client Plan</button>' : ""}<button class="btn-secondary" data-action="openSettings">Project Settings</button>${state.actor === "pm" && deriveProjectStatus(project) === "scheduling" ? `<button class="btn-danger-outline btn-sm" data-action="deleteProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled Project")}">Delete</button>` : ""}</div>
     </div>
     <div class="mobile-tabs"><button class="mobile-tab${state.ui.mobileTab === "schedule" ? " active" : ""}" data-action="switchMobileTab" data-tab="schedule">Schedule</button><button class="mobile-tab${state.ui.mobileTab === "calendar" ? " active" : ""}" data-action="switchMobileTab" data-tab="calendar">Calendar</button></div>
     <div class="workspace-grid">${sidebar(project)}${sessionPanel(project)}${calendarPanel(project)}</div>
@@ -458,6 +461,12 @@ function shiftDialog() {
   return `<div class="modal-overlay open"><div class="modal"><div class="modal-head"><div><h3>Shift Remaining Sessions?</h3><p>Move only this session, or shift all remaining sessions in this phase?</p></div></div><div class="modal-actions"><button class="btn-secondary" data-action="dismissShiftDialog">Move Only</button><button class="btn-primary" data-action="confirmShiftRemaining">Shift Remaining</button></div></div></div>`;
 }
 
+function deleteProjectDialog() {
+  const dialog = state.ui.deleteDialog;
+  if (!dialog.open) return "";
+  return `<div class="modal-overlay open"><div class="modal"><div class="modal-head"><div><h3>Delete Project</h3><p>Permanently delete <strong>${esc(dialog.projectName)}</strong>? This removes all sessions and cannot be undone.</p></div></div><div class="modal-actions"><button class="btn-secondary" data-action="dismissDeleteProject">Cancel</button><button class="btn-danger-outline" data-action="confirmDeleteProject">Delete Project</button></div></div></div>`;
+}
+
 function projectErrorModal() {
   if (!state.ui.projectError.open) return "";
   return `<div class="modal-overlay open"><div class="modal"><div class="modal-head"><div><h3>Could Not Load Projects</h3><p>${esc(state.ui.projectError.message)}</p></div><button class="btn-secondary btn-sm" data-action="dismissProjectError">Close</button></div><pre class="error-pre">${esc(state.ui.projectError.details || "No diagnostic detail available.")}</pre><div class="modal-actions"><button class="btn-secondary" data-action="dismissProjectError">Close</button><button class="btn-danger-outline" data-action="resetSentinel">Reset Sentinel</button></div></div></div>`;
@@ -468,5 +477,5 @@ export function render() {
   if (!app) return;
   const project = getActiveProject();
   const main = state.ui.screen === "auth" ? authScreen() : state.ui.screen === "workspace" && project ? workspace(project) : projectsScreen();
-  app.innerHTML = `${state.ui.screen === "auth" ? "" : topbar()}${main}${onboardingModal()}${settingsModal()}${windowChangeDialog()}${shiftDialog()}${projectErrorModal()}${renderDayViewModal()}<div class="toast" id="toast"></div>`;
+  app.innerHTML = `${state.ui.screen === "auth" ? "" : topbar()}${main}${onboardingModal()}${settingsModal()}${windowChangeDialog()}${shiftDialog()}${deleteProjectDialog()}${projectErrorModal()}${renderDayViewModal()}<div class="toast" id="toast"></div>`;
 }

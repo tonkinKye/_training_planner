@@ -66,7 +66,7 @@ import {
   updateSettingsField,
 } from "./scheduler.js";
 import { getAllSessions } from "./projects.js";
-import { clearProjectError, getActiveProject, setActorMode, setDeepLink, setProjectError, setScreen, state } from "./state.js";
+import { clearProjectError, getActiveProject, removeProject, setActorMode, setDeepLink, setProjectError, setScreen, state } from "./state.js";
 import { downloadBlob, pad, toast, toDateStr } from "./utils.js";
 
 function afterRender() {
@@ -292,6 +292,31 @@ async function actionHandlers(action, element) {
       return;
     case "dismissShiftDialog":
       dismissShiftDialog();
+      rerender();
+      return;
+    case "deleteProject":
+      state.ui.deleteDialog = {
+        open: true,
+        projectId: element.dataset.id || "",
+        projectName: element.dataset.name || "this project",
+      };
+      rerender();
+      return;
+    case "confirmDeleteProject": {
+      const deleteId = state.ui.deleteDialog.projectId;
+      state.ui.deleteDialog = { open: false, projectId: "", projectName: "" };
+      if (deleteId) {
+        removeProject(deleteId);
+        setScreen("projects");
+        await persistAndRender(true);
+        toast("Project deleted", 3000);
+      } else {
+        rerender();
+      }
+      return;
+    }
+    case "dismissDeleteProject":
+      state.ui.deleteDialog = { open: false, projectId: "", projectName: "" };
       rerender();
       return;
     case "addOnboardingSession":

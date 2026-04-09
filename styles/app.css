@@ -225,7 +225,20 @@ textarea { resize: vertical; }
 .project-card dl, .meta-list { margin: 0; display: grid; gap: 0.45rem; }
 .project-card dt, .meta-list dt { color: var(--muted); font-size: 0.78rem; }
 .project-card dd, .meta-list dd { margin: 0; }
-.card-top { display: flex; justify-content: space-between; gap: 0.5rem; align-items: center; }
+.card-top { display: flex; gap: 0.5rem; align-items: center; }
+.card-delete {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 99px;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+.card-delete:hover { background: var(--danger-tint); color: var(--danger); }
 .pill, .tag {
   display: inline-flex;
   align-items: center;
