@@ -1,501 +1,471 @@
-import { getConflicts, getConflictedDates } from "./conflicts.js";
-import { fetchCalendarEvents, pushToCalendar } from "./m365.js";
-import { state, getScheduleRow, getSession } from "./state.js";
-import { closeModal, parseDate, mondayOf, toDateStr, fmt12, fmtDur, esc, pad, toast } from "./utils.js";
+import { getConflictedDates, getConflicts, summarizeConflictKinds } from "./conflicts.js";
+import { pushOwnedSessions, fetchCalendarEvents } from "./m365.js";
+import { getActiveProject, state } from "./state.js";
+import {
+  canEditSession,
+  findSession,
+  getAllSessions,
+  getCalendarOwnerName,
+  getContextPhaseKeys,
+  getProjectAnchor,
+  getVisiblePhaseKeys,
+  PHASE_META,
+} from "./projects.js";
+import { esc, fmt12, fmtDur, mondayOf, pad, parseDate, toDateStr, toast } from "./utils.js";
 
 const SLOT_HEIGHT = 28;
-const SLOT_COUNT = 22;
-const HDR_HEIGHT = 32;
-const START_HOUR = 7;
-const START_MINUTES = START_HOUR * 60;
+const SLOT_COUNT = 24;
+const HEADER_HEIGHT = 32;
+const START_MINUTES = 6 * 60;
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-const conflictReview = {
-  queue: [],
-  currentSessionId: "",
-  currentIndex: -1,
-  pendingPushAll: false,
+const dayViewState = {
+  open: false,
+  weekStart: null,
+  review: {
+    queue: [],
+    currentSessionId: "",
+    currentIndex: -1,
+    pendingCommit: false,
+  },
 };
 
-let dvWeekStart = null;
+function isReviewMode() {
+  return Boolean(dayViewState.review.queue.length || dayViewState.review.currentSessionId);
+}
 
-function minutesFromTime(timeStr) {
-  const [h, m] = timeStr.split(":").map(Number);
-  return h * 60 + m;
+function clearReview() {
+  dayViewState.review = {
+    queue: [],
+    currentSessionId: "",
+    currentIndex: -1,
+    pendingCommit: false,
+  };
+}
+
+function minutesFromTime(timeValue) {
+  const [hours, minutes] = String(timeValue || "00:00").split(":").map(Number);
+  return (hours || 0) * 60 + (minutes || 0);
 }
 
 function topPx(minutes) {
-  return HDR_HEIGHT + Math.max(0, (minutes - START_MINUTES) / 30 * SLOT_HEIGHT);
+  return HEADER_HEIGHT + Math.max(0, ((minutes - START_MINUTES) / 30) * SLOT_HEIGHT);
 }
 
-function heightPx(durationMinutes, startMinutes) {
+function heightPx(duration, startMinutes) {
   const clampedStart = Math.max(startMinutes, START_MINUTES);
-  const clampedEnd = Math.min(startMinutes + durationMinutes, START_MINUTES + SLOT_COUNT * 30);
-  return Math.max(0, (clampedEnd - clampedStart) / 30 * SLOT_HEIGHT);
-}
-
-function isConflictReviewMode() {
-  return Boolean(
-    conflictReview.currentSessionId ||
-      conflictReview.queue.length ||
-      conflictReview.pendingPushAll
-  );
-}
-
-function clearConflictReview() {
-  conflictReview.queue = [];
-  conflictReview.currentSessionId = "";
-  conflictReview.currentIndex = -1;
-  conflictReview.pendingPushAll = false;
+  const clampedEnd = Math.min(startMinutes + duration, START_MINUTES + SLOT_COUNT * 30);
+  return Math.max(0, ((clampedEnd - clampedStart) / 30) * SLOT_HEIGHT);
 }
 
 function buildConflictQueue() {
-  const conflicts = getConflicts();
+  const project = getActiveProject();
+  if (!project) return [];
+  const conflicts = getConflicts({ project, actor: state.actor, scope: "pushable" });
 
-  return [...conflicts.keys()]
-    .sort((leftId, rightId) => {
-      const leftRow = getScheduleRow(leftId);
-      const rightRow = getScheduleRow(rightId);
-      const leftDate = leftRow?.date || "9999-12-31";
-      const rightDate = rightRow?.date || "9999-12-31";
-      if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
+  return [...conflicts.keys()].sort((leftId, rightId) => {
+    const left = findSession(project, leftId)?.session;
+    const right = findSession(project, rightId)?.session;
+    const leftDate = left?.date || "9999-12-31";
+    const rightDate = right?.date || "9999-12-31";
+    if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
 
-      const leftTime = leftRow?.time || "99:99";
-      const rightTime = rightRow?.time || "99:99";
-      if (leftTime !== rightTime) return leftTime.localeCompare(rightTime);
+    const leftTime = left?.time || "99:99";
+    const rightTime = right?.time || "99:99";
+    if (leftTime !== rightTime) return leftTime.localeCompare(rightTime);
 
-      return state.sessions.findIndex((session) => session.id === leftId) -
-        state.sessions.findIndex((session) => session.id === rightId);
-    });
+    return (left?.order || 0) - (right?.order || 0);
+  });
 }
 
-function syncConflictReviewQueue() {
+function syncReviewQueue() {
   const liveQueue = buildConflictQueue();
-  const liveIndex = liveQueue.indexOf(conflictReview.currentSessionId);
-
-  if (!conflictReview.currentSessionId) {
-    conflictReview.queue = liveQueue;
-    conflictReview.currentIndex = liveQueue.length ? 0 : -1;
+  if (!dayViewState.review.currentSessionId) {
+    dayViewState.review.queue = liveQueue;
+    dayViewState.review.currentIndex = liveQueue.length ? 0 : -1;
     return liveQueue;
   }
 
-  if (liveIndex >= 0) {
-    conflictReview.queue = liveQueue;
-    conflictReview.currentIndex = liveIndex;
-    return liveQueue;
-  }
-
-  const preservedIndex = Math.max(conflictReview.currentIndex, 0);
-  const preservedQueue = [...liveQueue];
-  preservedQueue.splice(
-    Math.min(preservedIndex, preservedQueue.length),
-    0,
-    conflictReview.currentSessionId
-  );
-
-  conflictReview.queue = preservedQueue;
-
+  const liveIndex = liveQueue.indexOf(dayViewState.review.currentSessionId);
+  dayViewState.review.queue = liveQueue;
+  dayViewState.review.currentIndex = liveIndex;
   return liveQueue;
 }
 
-function setCurrentConflict(sessionId) {
-  conflictReview.currentSessionId = sessionId || "";
-
-  if (!sessionId) {
-    conflictReview.currentIndex = -1;
-    return;
-  }
-
-  const queueIndex = conflictReview.queue.indexOf(sessionId);
-  conflictReview.currentIndex = queueIndex >= 0 ? queueIndex : Math.max(conflictReview.currentIndex, 0);
-
-  const row = getScheduleRow(sessionId);
-  if (row?.date) {
-    dvWeekStart = mondayOf(parseDate(row.date));
+function setCurrentReviewSession(sessionId) {
+  dayViewState.review.currentSessionId = sessionId || "";
+  dayViewState.review.currentIndex = dayViewState.review.queue.indexOf(sessionId);
+  const session = getActiveProject() ? findSession(getActiveProject(), sessionId)?.session : null;
+  if (session?.date) {
+    dayViewState.weekStart = mondayOf(parseDate(session.date));
   }
 }
 
-function formatReviewDate(row) {
-  if (!row?.date) return "unscheduled";
-
-  return parseDate(row.date).toLocaleDateString("en-AU", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
+function getReviewSession() {
+  const project = getActiveProject();
+  return project ? findSession(project, dayViewState.review.currentSessionId)?.session || null : null;
 }
 
-function updateDayViewControls(conflicts) {
-  const metaEl = document.getElementById("dvMeta");
-  const confirmBtn = document.getElementById("dvConfirmBtn");
-  if (!metaEl || !confirmBtn) return;
-
-  if (!isConflictReviewMode()) {
-    metaEl.textContent = "";
-    confirmBtn.hidden = true;
-    return;
+function getHeaderContext() {
+  const project = getActiveProject();
+  if (!project) {
+    return {
+      title: "Week View",
+      subhead: "",
+    };
   }
 
-  const session = getSession(conflictReview.currentSessionId);
-  const row = getScheduleRow(conflictReview.currentSessionId);
-  const currentStillConflicts = conflicts.has(conflictReview.currentSessionId);
-  const remaining = conflicts.size;
-
-  confirmBtn.hidden = false;
-  confirmBtn.textContent =
-    conflictReview.pendingPushAll && !currentStillConflicts && remaining === 0
-      ? "Confirm & Push All"
-      : "Confirm & Next";
-
-  if (!session) {
-    metaEl.textContent = remaining
-      ? `Conflict review: ${remaining} conflict${remaining > 1 ? "s" : ""} remaining.`
-      : "Conflict review complete.";
-    return;
-  }
-
-  const dateLabel = formatReviewDate(row);
-  const timeLabel = row?.time ? fmt12(row.time) : "not scheduled";
-  const progressLabel =
-    conflictReview.currentIndex >= 0 && conflictReview.queue.length
-      ? `Conflict ${conflictReview.currentIndex + 1} of ${conflictReview.queue.length}`
-      : "Resolved";
-
-  metaEl.textContent = currentStillConflicts
-    ? `${progressLabel}: ${session.name} on ${dateLabel} at ${timeLabel}. Adjust it, then confirm to continue.`
-    : `${session.name} is resolved${row?.date && row?.time ? ` on ${dateLabel} at ${timeLabel}` : ""}. Confirm to continue.`;
+  const activeSession = getReviewSession();
+  const phaseKey = activeSession?.phase || (state.actor === "is" ? "implementation" : "setup");
+  const ownerName = getCalendarOwnerName(project, phaseKey);
+  return {
+    title: `${PHASE_META[phaseKey]?.label || "Project"} Phase`,
+    subhead: `${ownerName}'s Calendar`,
+  };
 }
 
-function syncDayViewViewport({ focusActive = false, resetPosition = false } = {}) {
-  const scroll = document.getElementById("dvScroll");
-  if (!scroll) return;
-
-  window.requestAnimationFrame(() => {
-    if (focusActive) {
-      document
-        .querySelector(".dv-day-col.active-conflict")
-        ?.scrollIntoView({ block: "nearest", inline: "center" });
-
-      const activeSessionEl = document.querySelector(".dv-session.active-conflict");
-      if (activeSessionEl) {
-        const top = Number.parseFloat(activeSessionEl.style.top || "0");
-        scroll.scrollTop = Math.max(top - SLOT_HEIGHT * 2, 0);
-        return;
-      }
-    }
-
-    if (resetPosition) {
-      scroll.scrollLeft = 0;
-      scroll.scrollTop = SLOT_HEIGHT * 2;
-    }
-  });
+function getWeekDates() {
+  const start = dayViewState.weekStart || mondayOf(new Date());
+  const dates = [];
+  for (let index = 0; index < 7; index += 1) {
+    const date = new Date(start);
+    date.setDate(date.getDate() + index);
+    dates.push(toDateStr(date));
+  }
+  return dates;
 }
 
-function getWeekSessions(weekStart) {
-  const days = [];
-  for (let i = 0; i < DAY_NAMES.length; i++) {
-    const d = new Date(weekStart);
-    d.setDate(d.getDate() + i);
-    days.push(toDateStr(d));
-  }
-
-  const byDate = new Map(days.map((d) => [d, { sessions: [], calEvents: [] }]));
-
-  for (const session of state.sessions) {
-    const row = getScheduleRow(session.id);
-    if (!row?.date || !row?.time) continue;
-    if (byDate.has(row.date)) {
-      byDate.get(row.date).sessions.push({ session, row });
-    }
-  }
-
+function getExternalEventsByDate(project) {
+  const byDate = new Map();
   const pushedIds = new Set(
-    state.schedule.filter((r) => r.graphEventId).map((r) => r.graphEventId)
+    getAllSessions(project)
+      .map((session) => session.graphEventId)
+      .filter(Boolean)
   );
 
   for (const event of state.calendarEvents) {
     if (pushedIds.has(event.id)) continue;
-    const parsed = event.start ? new Date(event.start) : null;
-    const eventDate = parsed && !isNaN(parsed.getTime()) ? toDateStr(parsed) : null;
-    if (eventDate && byDate.has(eventDate)) {
-      byDate.get(eventDate).calEvents.push(event);
-    }
+    const start = event.start ? new Date(event.start) : null;
+    if (!start || Number.isNaN(start.getTime())) continue;
+    const date = toDateStr(start);
+    if (!byDate.has(date)) byDate.set(date, []);
+    byDate.get(date).push(event);
   }
 
-
-  return { days, byDate };
+  return byDate;
 }
 
-export function renderDayViewGrid(options = {}) {
-  const grid = document.getElementById("dvGrid");
-  const titleEl = document.getElementById("dvTitle");
-  if (!grid || !dvWeekStart) return;
+function getSessionBlocksByDate(project) {
+  const visible = new Set(getVisiblePhaseKeys(state.actor));
+  const context = new Set(getContextPhaseKeys(state.actor));
+  const byDate = new Map();
 
-  if (isConflictReviewMode()) {
-    syncConflictReviewQueue();
+  for (const session of getAllSessions(project)) {
+    if (!session.date || !session.time) continue;
+    if (!visible.has(session.phase) && !context.has(session.phase)) continue;
+    if (!byDate.has(session.date)) byDate.set(session.date, []);
+    byDate.get(session.date).push({
+      session,
+      editable: canEditSession(project, session, state.actor),
+      context: context.has(session.phase),
+    });
   }
 
-  const { days, byDate } = getWeekSessions(dvWeekStart);
-  const conflicts = getConflicts();
+  const anchor = getProjectAnchor(project);
+  if (state.actor === "is" && anchor.date) {
+    if (!byDate.has(anchor.date)) byDate.set(anchor.date, []);
+    byDate.get(anchor.date).push({
+      session: {
+        ...anchor,
+        id: anchor.key,
+        time: "09:00",
+      },
+      editable: false,
+      context: true,
+      anchor: true,
+    });
+  }
+
+  return byDate;
+}
+
+function renderTimeColumn() {
+  let html = '<div class="dv-time-col">';
+  for (let index = 0; index < SLOT_COUNT; index += 1) {
+    const minutes = START_MINUTES + index * 30;
+    const label = index % 2 === 0 ? fmt12(`${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`) : "";
+    html += `<div class="dv-time-label">${label}</div>`;
+  }
+  html += "</div>";
+  return html;
+}
+
+function renderSessionBlock(project, block, conflicts) {
+  const { session, editable, context, anchor } = block;
+  const conflictHits = conflicts.get(session.id) || [];
+  const conflictSummary = summarizeConflictKinds(conflictHits);
+  const startMinutes = minutesFromTime(session.time || "09:00");
+  const height = heightPx(session.duration, startMinutes);
+  if (!height) return "";
+
+  const classes = [
+    "dv-session",
+    `phase-${session.phase}`,
+    editable ? "" : "read-only",
+    context ? "context" : "",
+    anchor ? "anchor" : "",
+    conflictHits.length ? "conflict" : "",
+    conflictSummary.hasCalendar ? "calendar-conflict" : "",
+    conflictSummary.hasWindow ? "window-conflict" : "",
+    dayViewState.review.currentSessionId === session.id ? "active-conflict" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return `<div class="${classes}" ${
+    editable ? `draggable="true" data-drag="dayview-session" data-id="${session.id}"` : ""
+  } style="top:${topPx(startMinutes)}px;height:${height}px;" title="${esc(session.name)}&#10;${fmt12(
+    session.time || "09:00"
+  )} | ${fmtDur(session.duration)}${conflictSummary.label ? ` | ${esc(conflictSummary.label)}` : ""}">
+    <strong>${esc(session.name)}</strong>
+    <span>${fmt12(session.time || "09:00")}</span>
+  </div>`;
+}
+
+function renderExternalBlock(event, activeConflictIds) {
+  const start = new Date(event.start);
+  const end = new Date(event.end);
+  const duration = Math.max(30, (end.getTime() - start.getTime()) / 60000);
+  const startMinutes = start.getHours() * 60 + start.getMinutes();
+  const classes = ["dv-cal-event", activeConflictIds.has(event.id) ? "active-conflict" : ""]
+    .filter(Boolean)
+    .join(" ");
+
+  return `<div class="${classes}" style="top:${topPx(startMinutes)}px;height:${heightPx(
+    duration,
+    startMinutes
+  )}px;" title="${esc(event.subject || "Busy")}">${esc(event.subject || "Busy")}</div>`;
+}
+
+function renderDayColumn(project, dateString, index, sessionBlocks, externalEvents, conflicts) {
+  const date = parseDate(dateString);
   const today = toDateStr(new Date());
-  const activeRow = getScheduleRow(conflictReview.currentSessionId);
-  const activeDay = activeRow?.date || "";
-  const activeConflictEvents = new Set(
-    (conflicts.get(conflictReview.currentSessionId) || []).map((event) => event.id)
-  );
-
-  const endDate = new Date(dvWeekStart);
-  endDate.setDate(endDate.getDate() + 6);
-  if (titleEl) {
-    titleEl.textContent = `${dvWeekStart.toLocaleDateString("en-AU", {
-      day: "numeric",
-      month: "short",
-    })} \u2013 ${endDate.toLocaleDateString("en-AU", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    })}`;
+  const activeSession = getReviewSession();
+  const activeConflictIds = new Set((conflicts.get(dayViewState.review.currentSessionId) || []).map((event) => event.id));
+  const activeConflictSummary = summarizeConflictKinds(conflicts.get(dayViewState.review.currentSessionId) || []);
+  const isActiveDay = activeSession?.date === dateString;
+  let slots = "";
+  for (let slot = 0; slot < SLOT_COUNT; slot += 1) {
+    slots += '<div class="dv-slot"></div>';
   }
 
-  let timeColHTML = '<div class="dv-time-col">';
-  for (let i = 0; i < SLOT_COUNT; i++) {
-    const mins = START_MINUTES + i * 30;
-    const label = i % 2 === 0 ? fmt12(`${pad(Math.floor(mins / 60))}:${pad(mins % 60)}`) : "";
-    timeColHTML += `<div class="dv-time-label">${label}</div>`;
-  }
-  timeColHTML += "</div>";
+  const sessionsHTML = (sessionBlocks || [])
+    .sort((left, right) => minutesFromTime(left.session.time || "09:00") - minutesFromTime(right.session.time || "09:00"))
+    .map((block) => renderSessionBlock(project, block, conflicts))
+    .join("");
+  const externalHTML = (externalEvents || [])
+    .map((event) => renderExternalBlock(event, activeConflictIds))
+    .join("");
 
-  let dayColsHTML = "";
-  for (let di = 0; di < DAY_NAMES.length; di++) {
-    const dateStr = days[di];
-    const d = parseDate(dateStr);
-    const isToday = dateStr === today;
-    const data = byDate.get(dateStr);
-    const isActiveDay = activeDay === dateStr;
+  return `<div class="dv-day-col${isActiveDay ? " active-conflict" : ""}${isActiveDay && activeConflictSummary.hasCalendar ? " active-calendar-conflict" : ""}${isActiveDay && activeConflictSummary.hasWindow ? " active-window-conflict" : ""}" data-drop-dv data-date="${dateString}">
+    <div class="dv-day-hdr${dateString === today ? " today" : ""}${isActiveDay ? " active-conflict" : ""}${isActiveDay && activeConflictSummary.hasCalendar ? " active-calendar-conflict" : ""}${isActiveDay && activeConflictSummary.hasWindow ? " active-window-conflict" : ""}">
+      <span>${DAY_NAMES[index]}</span>
+      <strong>${date.getDate()}</strong>
+    </div>
+    ${slots}
+    ${externalHTML}
+    ${sessionsHTML}
+  </div>`;
+}
 
-    let slotsHTML = "";
-    for (let i = 0; i < SLOT_COUNT; i++) {
-      slotsHTML += '<div class="dv-slot"></div>';
-    }
+function renderReviewMeta(project, conflicts) {
+  if (!isReviewMode()) return "";
+  const session = getReviewSession();
+  if (!session) return `<div class="dv-review-meta">Conflict review complete.</div>`;
 
-    let eventsHTML = "";
+  const progress = dayViewState.review.currentIndex >= 0 ? `${dayViewState.review.currentIndex + 1} / ${dayViewState.review.queue.length}` : "";
+  const ownerName = getCalendarOwnerName(project, session.phase);
+  const currentConflicts = conflicts.get(session.id) || [];
+  const summary = summarizeConflictKinds(currentConflicts);
+  const label = currentConflicts.length
+    ? `Resolve ${session.name} in ${ownerName}'s calendar, then confirm to continue.${summary.label ? ` ${summary.label}.` : ""}`
+    : `${session.name} is clear. Confirm to continue.`;
+  return `<div class="dv-review-meta">${progress ? `<strong>${progress}</strong> | ` : ""}${esc(label)}</div>`;
+}
 
-    for (const { session, row } of data.sessions) {
-      const startMins = minutesFromTime(row.time);
-      const hasConflict = conflicts.has(session.id);
-      const isActiveSession = session.id === conflictReview.currentSessionId;
-      const top = topPx(startMins);
-      const height = heightPx(session.duration, startMins);
-      if (height <= 0) continue;
+export function renderDayViewModal() {
+  if (!dayViewState.open) return "";
 
-      const sessionClasses = [
-        "dv-session",
-        hasConflict ? "conflict" : "",
-        isActiveSession ? "active-conflict" : "",
-        isActiveSession && isConflictReviewMode() && !hasConflict ? "resolved" : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
+  const project = getActiveProject();
+  if (!project) return "";
 
-      eventsHTML += `<div class="${sessionClasses}"
-        draggable="true" data-drag="dv-event" data-id="${session.id}"
-        style="top:${top}px;height:${height}px;"
-        title="${esc(session.name)}&#10;${fmt12(row.time)} \u2013 ${fmtDur(session.duration)}">
-        <strong>${esc(session.name)}</strong>
-        <span>${fmt12(row.time)}</span>
-      </div>`;
-    }
-
-    for (const event of data.calEvents) {
-      const evStart = event.start ? new Date(event.start) : null;
-      const evEnd = event.end ? new Date(event.end) : null;
-      if (!evStart || !evEnd || isNaN(evStart.getTime()) || isNaN(evEnd.getTime())) continue;
-
-      const startMins = evStart.getHours() * 60 + evStart.getMinutes();
-      const durationMins = (evEnd - evStart) / 60000;
-      const top = topPx(startMins);
-      const height = heightPx(durationMins, startMins);
-      if (height <= 0) continue;
-
-      eventsHTML += `<div class="dv-cal-event${activeConflictEvents.has(event.id) ? " active-conflict" : ""}"
-        style="top:${top}px;height:${height}px;"
-        title="${esc(event.subject || "Busy")}">
-        ${esc(event.subject || "Busy")}
-      </div>`;
-    }
-
-    const hdrLabel = `${DAY_NAMES[di]} ${d.getDate()}`;
-    dayColsHTML += `<div class="dv-day-col${isActiveDay ? " active-conflict" : ""}" data-drop-dv data-date="${dateStr}">
-      <div class="dv-day-hdr${isToday ? " today" : ""}${isActiveDay ? " active-conflict" : ""}">${hdrLabel}</div>
-      ${slotsHTML}
-      ${eventsHTML}
-    </div>`;
+  if (isReviewMode()) {
+    syncReviewQueue();
   }
 
-  grid.innerHTML = timeColHTML + dayColsHTML;
-  updateDayViewControls(conflicts);
-  syncDayViewViewport(options);
+  const { title, subhead } = getHeaderContext();
+  const weekDates = getWeekDates();
+  const weekStart = dayViewState.weekStart || mondayOf(new Date());
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 6);
+  const conflicts = getConflicts({ project, actor: state.actor, scope: isReviewMode() ? "pushable" : "editable" });
+  const sessionBlocks = getSessionBlocksByDate(project);
+  const externalBlocks = getExternalEventsByDate(project);
+
+  return `<div class="modal-overlay open" id="dayViewModal">
+    <div class="modal dv-modal">
+      <div class="dv-header">
+        <div class="dv-header-copy">
+          <h3>${esc(title)}</h3>
+          <p>${esc(subhead)} | ${weekStart.toLocaleDateString("en-AU", {
+            day: "numeric",
+            month: "short",
+          })} - ${weekEnd.toLocaleDateString("en-AU", {
+            day: "numeric",
+            month: "short",
+            year: "numeric",
+          })}</p>
+        </div>
+        <div class="dv-nav">
+          <button class="btn-secondary btn-sm" data-action="shiftDayView" data-dir="-1">Prev Week</button>
+          <button class="btn-secondary btn-sm" data-action="shiftDayView" data-dir="1">Next Week</button>
+          <button class="btn-secondary btn-sm" data-action="navigateConflict" data-dir="-1">Prev Conflict</button>
+          <button class="btn-secondary btn-sm" data-action="navigateConflict" data-dir="1">Next Conflict</button>
+        </div>
+        <button class="btn-secondary btn-sm" data-action="closeDayView">Close</button>
+      </div>
+      ${renderReviewMeta(project, conflicts)}
+      <div class="dv-scroll" id="dvScroll">
+        <div class="dv-grid" id="dvGrid">
+          ${renderTimeColumn()}
+          ${weekDates
+            .map((dateString, index) =>
+              renderDayColumn(project, dateString, index, sessionBlocks.get(dateString), externalBlocks.get(dateString), conflicts)
+            )
+            .join("")}
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-secondary" data-action="closeDayView">Close</button>
+        ${
+          isReviewMode()
+            ? `<button class="btn-primary" data-action="confirmConflict">${
+                dayViewState.review.pendingCommit ? "Confirm & Continue" : "Confirm & Next"
+              }</button>`
+            : ""
+        }
+      </div>
+    </div>
+  </div>`;
 }
 
 export function openDayView(dateString) {
-  clearConflictReview();
-  dvWeekStart = mondayOf(parseDate(dateString));
-  document.getElementById("dayViewModal")?.classList.add("open");
-  renderDayViewGrid({ resetPosition: true });
+  dayViewState.open = true;
+  clearReview();
+  dayViewState.weekStart = mondayOf(parseDate(dateString));
 }
 
 export function closeDayView() {
-  closeModal("dayViewModal");
-  dvWeekStart = null;
-  clearConflictReview();
-  updateDayViewControls(new Map());
-}
-
-export function startConflictReview({ pendingPushAll = false, sessionId = "" } = {}) {
-  const queue = buildConflictQueue();
-  if (!queue.length) {
-    toast("No conflicts");
-    return false;
-  }
-
-  conflictReview.pendingPushAll = pendingPushAll;
-  conflictReview.queue = queue;
-  setCurrentConflict(queue.includes(sessionId) ? sessionId : queue[0]);
-
-  document.getElementById("dayViewModal")?.classList.add("open");
-  renderDayViewGrid({ focusActive: true });
-  return true;
+  dayViewState.open = false;
+  dayViewState.weekStart = null;
+  clearReview();
 }
 
 export function shiftDayView(direction) {
-  if (!dvWeekStart) return;
-  dvWeekStart.setDate(dvWeekStart.getDate() + direction * 7);
-  renderDayViewGrid();
+  const base = dayViewState.weekStart || mondayOf(new Date());
+  base.setDate(base.getDate() + direction * 7);
+  dayViewState.weekStart = mondayOf(base);
 }
 
 export function navigateConflict(direction) {
   const queue = buildConflictQueue();
   if (!queue.length) {
-    toast("No conflicts");
-    return;
-  }
-
-  if (isConflictReviewMode()) {
-    conflictReview.queue = queue;
-
-    let index = queue.indexOf(conflictReview.currentSessionId);
-    if (index < 0) index = direction > 0 ? -1 : 0;
-
-    const nextIndex = (index + direction + queue.length) % queue.length;
-    setCurrentConflict(queue[nextIndex]);
-    renderDayViewGrid({ focusActive: true });
-    return;
-  }
-
-  const dates = getConflictedDates();
-  const currentEnd = dvWeekStart ? toDateStr(new Date(dvWeekStart.getTime() + 6 * 86400000)) : "";
-  const currentStart = dvWeekStart ? toDateStr(dvWeekStart) : "";
-
-  let target = null;
-  if (direction > 0) {
-    target = dates.find((d) => d > currentEnd) || dates[0];
-  } else {
-    for (let i = dates.length - 1; i >= 0; i--) {
-      if (dates[i] < currentStart) { target = dates[i]; break; }
+    const dates = getConflictedDates({ actor: state.actor, scope: "editable" });
+    if (!dates.length) {
+      toast("No conflicts");
+      return;
     }
-    if (!target) target = dates[dates.length - 1];
+
+    const targetDate = direction > 0 ? dates[0] : dates[dates.length - 1];
+    dayViewState.open = true;
+    dayViewState.weekStart = mondayOf(parseDate(targetDate));
+    return;
   }
 
-  dvWeekStart = mondayOf(parseDate(target));
-  renderDayViewGrid();
+  dayViewState.review.queue = queue;
+  let currentIndex = queue.indexOf(dayViewState.review.currentSessionId);
+  if (currentIndex < 0) currentIndex = direction > 0 ? -1 : 0;
+  const nextIndex = (currentIndex + direction + queue.length) % queue.length;
+  setCurrentReviewSession(queue[nextIndex]);
+  dayViewState.open = true;
 }
 
-async function runPushAllScheduled() {
-  const scheduled = state.schedule.filter((r) => r.date && r.time);
-  if (!scheduled.length) {
-    toast("No sessions are scheduled");
-    return;
+export function startConflictReview({ pendingCommit = false } = {}) {
+  const queue = buildConflictQueue();
+  if (!queue.length) {
+    toast("No conflicts found");
+    return false;
   }
 
-  const total = scheduled.length;
-  let pushed = 0;
-
-  for (const row of scheduled) {
-    pushed++;
-    toast(`Pushing ${pushed} of ${total}\u2026`);
-    await pushToCalendar(row.sessionId);
-  }
-
-  await fetchCalendarEvents();
-  renderDayViewGrid();
-  toast(`${pushed} session${pushed > 1 ? "s" : ""} pushed to calendar`, 4000);
-}
-
-export async function pushAllScheduled() {
-  const scheduled = state.schedule.filter((row) => row.date && row.time);
-  if (!scheduled.length) {
-    toast("No sessions are scheduled");
-    return;
-  }
-
-  toast("Checking for conflicts\u2026");
-  await fetchCalendarEvents();
-
-  const conflicts = getConflicts();
-  if (conflicts.size) {
-    const dates = getConflictedDates();
-    toast(
-      `Resolve conflicts first \u2014 reviewing ${dates.length} conflicted day${dates.length > 1 ? "s" : ""}`,
-      5000
-    );
-    startConflictReview({ pendingPushAll: true });
-    return;
-  }
-
-  await runPushAllScheduled();
+  dayViewState.open = true;
+  dayViewState.review.queue = queue;
+  dayViewState.review.pendingCommit = pendingCommit;
+  setCurrentReviewSession(queue[0]);
+  return true;
 }
 
 export async function confirmConflict() {
-  if (!isConflictReviewMode() || !conflictReview.currentSessionId) {
+  if (!isReviewMode()) {
     toast("No conflict review is active");
-    return;
+    return false;
   }
 
-  const conflicts = getConflicts();
-  if (conflicts.has(conflictReview.currentSessionId)) {
-    syncConflictReviewQueue();
-    renderDayViewGrid({ focusActive: true });
-    toast("Conflict still overlaps an existing calendar event", 4000);
-    return;
+  const project = getActiveProject();
+  if (!project) return false;
+  const currentId = dayViewState.review.currentSessionId;
+  const conflicts = getConflicts({ project, actor: state.actor, scope: "pushable" });
+  if (conflicts.has(currentId)) {
+    toast("This item still conflicts with the calendar or its phase window.", 4000);
+    return false;
   }
 
-  const previousQueue = [...conflictReview.queue];
-  const currentIndex = conflictReview.currentIndex;
   const liveQueue = buildConflictQueue();
   if (liveQueue.length) {
-    const nextSessionId =
-      previousQueue.slice(currentIndex + 1).find((sessionId) => liveQueue.includes(sessionId)) ||
-      liveQueue[0];
-    conflictReview.queue = liveQueue;
-    setCurrentConflict(nextSessionId);
-    renderDayViewGrid({ focusActive: true });
-    return;
+    const currentIndex = liveQueue.indexOf(currentId);
+    const nextId = liveQueue[Math.min(currentIndex >= 0 ? currentIndex : 0, liveQueue.length - 1)] || liveQueue[0];
+    dayViewState.review.queue = liveQueue;
+    setCurrentReviewSession(nextId);
+    return true;
   }
 
-  const resumePushAll = conflictReview.pendingPushAll;
-  const currentWeek = dvWeekStart ? toDateStr(dvWeekStart) : "";
-  clearConflictReview();
+  const pendingCommit = dayViewState.review.pendingCommit;
+  clearReview();
 
-  if (resumePushAll) {
+  if (pendingCommit) {
     closeDayView();
-    toast("Conflicts resolved. Pushing scheduled sessions\u2026", 4000);
-    await runPushAllScheduled();
-    return;
+    const pushed = await pushOwnedSessions({ actor: state.actor });
+    if (pushed) {
+      toast(state.actor === "is" ? "Implementation committed to calendar" : "PM-owned sessions pushed to calendar", 4000);
+    }
+    return true;
   }
 
-  if (currentWeek) {
-    dvWeekStart = mondayOf(parseDate(currentWeek));
-  }
-  renderDayViewGrid();
   toast("All conflicts resolved", 3500);
+  return true;
+}
+
+export async function runPushWorkflow() {
+  const project = getActiveProject();
+  if (!project) return false;
+  await fetchCalendarEvents({ project });
+  const hasConflicts = buildConflictQueue().length > 0;
+  if (hasConflicts) {
+    startConflictReview({ pendingCommit: true });
+    return false;
+  }
+  const pushed = await pushOwnedSessions({ actor: state.actor });
+  if (pushed) {
+    toast(state.actor === "is" ? "Implementation committed to calendar" : "PM-owned sessions pushed to calendar", 4000);
+  }
+  return pushed > 0;
 }

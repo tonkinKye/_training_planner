@@ -1,236 +1,137 @@
-export const FISHBOWL_SESSIONS = [
-  { name: "Kick-Off Call", duration: 90 },
-  { name: "Data Prep", duration: 90 },
-  { name: "Data Import", duration: 90 },
-  { name: "Materials & Inventory Management", duration: 90 },
-  { name: "Purchasing & Receiving", duration: 90 },
-  { name: "Recap & Questions", duration: 45 },
-  { name: "Sales & Fulfilment", duration: 90 },
-  { name: "Bill of Materials", duration: 90 },
-  { name: "Recap & Questions", duration: 45 },
-  { name: "Production & Manufacturing", duration: 90 },
-  { name: "Fishbowl Advanced Mobile", duration: 90 },
-  { name: "Recap & Questions", duration: 45 },
-  { name: "Reports, Plugins & Dashboards", duration: 90 },
-  { name: "Workflow Creation", duration: 90 },
-  { name: "Go-Live Prep 1", duration: 90 },
-  { name: "Go-Live Prep 2", duration: 90 },
-  { name: "Go-Live", duration: 120 },
-  { name: "Support Handover", duration: 20 },
+const SESSION_BODIES = {
+  sales_handover: "Internal handover to confirm project scope, stakeholders, and responsibilities before customer-facing work begins.",
+  installation: "Installation and environment readiness session covering access, prerequisites, and deployment checks.",
+  kick_off_call: "Customer kickoff covering introductions, scope, implementation stages, responsibilities, and immediate next steps.",
+  workflow_discovery: "Discovery session focused on current workflows, business rules, and success criteria for configuration.",
+  data_support_1: "Data support checkpoint to review file readiness, mapping assumptions, and open data questions.",
+  data_support_2: "Second data support checkpoint to finalize file quality, edge cases, and import readiness.",
+  data_import_session: "Guided data import session covering load execution, validation, and re-import contingencies.",
+  implementation_readiness: "Readiness review to confirm implementation prerequisites, ownership, and handoff preparedness.",
+  implementation_handover: "Internal PM-to-IS handover covering delivery context, risks, and implementation plan.",
+  materials_inventory: "Training on materials and inventory structure, movements, controls, and core workflows.",
+  templates: "Extended configuration workshop for templates, forms, and setup patterns that require focused build time.",
+  purchasing_fulfilment: "Training on purchasing, receiving, and fulfilment flows including practical end-to-end walkthroughs.",
+  recap_qa: "Short recap and Q&A checkpoint to review progress, validate understanding, and clear blockers.",
+  sales_fulfilment: "Training on sales order and fulfilment workflows with real examples and expected outcomes.",
+  bill_of_materials: "Training on BOM setup, validation, and practical usage in day-to-day workflows.",
+  manufacturing: "Training on manufacturing workflow, execution, and process controls for production teams.",
+  advanced_mobile: "Training on Fishbowl Advanced Mobile setup, roles, and operational workflows on device.",
+  plugins_accounting: "Training on plugins and accounting-adjacent workflows, including integration touchpoints and reporting impact.",
+  workflow: "Workflow design and refinement session based on agreed implementation requirements.",
+  go_live_prep: "Go-live preparation session covering cutover readiness, responsibilities, and opening-day plan.",
+  pm_handover: "Internal PM handover into hypercare covering remaining risks, support posture, and ownership.",
+  training_support: "Post go-live support session to resolve issues, reinforce workflows, and close knowledge gaps.",
+  support_handover: "Internal support handover confirming transition into ongoing support ownership.",
+};
+
+const INTERNAL_BODY_KEYS = new Set([
+  "sales_handover",
+  "implementation_handover",
+  "pm_handover",
+]);
+
+function makeTemplateSession(key, name, duration, phase, owner, bodyKey = key) {
+  return {
+    key,
+    bodyKey,
+    name,
+    duration,
+    phase,
+    owner,
+    type: INTERNAL_BODY_KEYS.has(bodyKey) ? "internal" : "external",
+  };
+}
+
+const MANUFACTURING = [
+  makeTemplateSession("sales_handover", "Sales Handover", 30, "setup", "pm"),
+  makeTemplateSession("installation", "Installation", 60, "setup", "pm"),
+  makeTemplateSession("kick_off_call", "Kick-Off Call", 90, "setup", "pm"),
+  makeTemplateSession("workflow_discovery", "Workflow Discovery", 90, "setup", "pm"),
+  makeTemplateSession("data_support_1", "Data Support 1", 30, "setup", "pm"),
+  makeTemplateSession("data_support_2", "Data Support 2", 30, "setup", "pm"),
+  makeTemplateSession("data_import_session", "Data Import Session", 90, "setup", "pm"),
+  makeTemplateSession("implementation_readiness", "Implementation Readiness", 30, "setup", "pm"),
+  makeTemplateSession("implementation_handover", "Imp. Handover", 30, "setup", "pm"),
+  makeTemplateSession("materials_inventory", "Materials & Inventory", 90, "implementation", "is"),
+  makeTemplateSession("templates", "Templates", 240, "implementation", "is"),
+  makeTemplateSession("purchasing_fulfilment", "Purchasing & Fulfilment", 90, "implementation", "is"),
+  makeTemplateSession("recap_qa_1", "Recap QA", 30, "implementation", "is", "recap_qa"),
+  makeTemplateSession("sales_fulfilment", "Sales & Fulfilment", 90, "implementation", "is"),
+  makeTemplateSession("bill_of_materials", "Bill of Materials", 60, "implementation", "is"),
+  makeTemplateSession("recap_qa_2", "Recap QA", 30, "implementation", "is", "recap_qa"),
+  makeTemplateSession("manufacturing", "Manufacturing", 90, "implementation", "is"),
+  makeTemplateSession("advanced_mobile", "Fishbowl Advanced Mobile", 90, "implementation", "is"),
+  makeTemplateSession("recap_qa_3", "Recap QA", 30, "implementation", "is", "recap_qa"),
+  makeTemplateSession("plugins_accounting", "Plugins & Accounting", 90, "implementation", "is"),
+  makeTemplateSession("workflow", "Workflow", 90, "implementation", "is"),
+  makeTemplateSession("go_live_prep", "Go Live Prep", 90, "implementation", "is"),
+  makeTemplateSession("pm_handover", "PM Handover", 30, "hypercare", "pm"),
+  makeTemplateSession("training_support_1", "Training Support 1", 60, "hypercare", "pm", "training_support"),
+  makeTemplateSession("training_support_2", "Training Support 2", 60, "hypercare", "pm", "training_support"),
+  makeTemplateSession("training_support_3", "Training Support 3", 60, "hypercare", "pm", "training_support"),
+  makeTemplateSession("training_support_4", "Training Support 4", 60, "hypercare", "pm", "training_support"),
+  makeTemplateSession("support_handover", "Support Handover", 15, "hypercare", "pm"),
 ];
 
-export function getSessionBody(sessionName) {
-  const bodies = {
-    "Kick-Off Call": `Hi Team,
+const WAREHOUSING = [
+  makeTemplateSession("sales_handover", "Sales Handover", 30, "setup", "pm"),
+  makeTemplateSession("installation", "Installation", 60, "setup", "pm"),
+  makeTemplateSession("kick_off_call", "Kick-Off Call", 90, "setup", "pm"),
+  makeTemplateSession("workflow_discovery", "Workflow Discovery", 90, "setup", "pm"),
+  makeTemplateSession("data_support_1", "Data Support 1", 30, "setup", "pm"),
+  makeTemplateSession("data_support_2", "Data Support 2", 30, "setup", "pm"),
+  makeTemplateSession("data_import_session", "Data Import Session", 90, "setup", "pm"),
+  makeTemplateSession("implementation_readiness", "Implementation Readiness", 30, "setup", "pm"),
+  makeTemplateSession("implementation_handover", "Imp. Handover", 30, "setup", "pm"),
+  makeTemplateSession("materials_inventory", "Materials & Inventory", 90, "implementation", "is"),
+  makeTemplateSession("templates", "Templates", 240, "implementation", "is"),
+  makeTemplateSession("purchasing_fulfilment", "Purchasing & Fulfilment", 90, "implementation", "is"),
+  makeTemplateSession("recap_qa_1", "Recap QA", 30, "implementation", "is", "recap_qa"),
+  makeTemplateSession("sales_fulfilment", "Sales & Fulfilment", 90, "implementation", "is"),
+  makeTemplateSession("bill_of_materials", "Bill of Materials", 30, "implementation", "is"),
+  makeTemplateSession("recap_qa_2", "Recap QA", 30, "implementation", "is", "recap_qa"),
+  makeTemplateSession("advanced_mobile", "Fishbowl Advanced Mobile", 90, "implementation", "is"),
+  makeTemplateSession("recap_qa_3", "Recap QA", 30, "implementation", "is", "recap_qa"),
+  makeTemplateSession("plugins_accounting", "Plugins & Accounting", 90, "implementation", "is"),
+  makeTemplateSession("workflow", "Workflow", 90, "implementation", "is"),
+  makeTemplateSession("go_live_prep", "Go Live Prep", 90, "implementation", "is"),
+  makeTemplateSession("pm_handover", "PM Handover", 30, "hypercare", "pm"),
+  makeTemplateSession("training_support_1", "Training Support 1", 60, "hypercare", "pm", "training_support"),
+  makeTemplateSession("training_support_2", "Training Support 2", 60, "hypercare", "pm", "training_support"),
+  makeTemplateSession("training_support_3", "Training Support 3", 60, "hypercare", "pm", "training_support"),
+  makeTemplateSession("support_handover", "Support Handover", 15, "hypercare", "pm"),
+];
 
-Welcome to your Fishbowl Implementation Kick-Off session.
+export const PROJECT_TEMPLATES = {
+  manufacturing: MANUFACTURING,
+  warehousing: WAREHOUSING,
+  custom: [],
+};
 
-In this meeting, we'll cover:
-- Welcome & Introductions
-- Customer Support Overview
-- About Your Business
-- Implementation Project Overview & Stages
-- Logging In to Fishbowl
-- Datasheets & Requirements
-- Next Steps
+export const GO_LIVE_ANCHOR = {
+  key: "go_live_anchor",
+  bodyKey: "go_live_anchor",
+  name: "Go-Live",
+  duration: 120,
+  owner: "pm",
+  type: "context",
+  phase: "implementation",
+};
 
-Preparation:
-- Please ensure key stakeholders attend.
-- Have your current process notes and any existing data sheets ready if available.
+export function getTemplateSessions(projectType) {
+  return (PROJECT_TEMPLATES[projectType] || []).map((session, index) => ({
+    ...session,
+    order: index,
+  }));
+}
 
-Outcome:
-- Confirm scope, approach, responsibilities, and next steps.`,
-
-    "Data Prep": `Hi team,
-
-This session is Data Prep - we'll review your data, confirm mapping, and ensure files are ready for import.
-
-In this meeting, we'll cover:
-- Data readiness check
-- File structure & mapping review
-- Setup assumptions (UOMs, locations, tax codes)
-- Next Steps before Data Import
-
-Preparation:
-- Have the latest data files ready (Parts, Customers, Suppliers)
-- Confirm Locations / UOM structure`,
-
-    "Data Import": `Hi team,
-
-This session is the Data Import - importing core records into Fishbowl so training can start on a clean foundation.
-
-In this meeting, we'll cover:
-- Import Parts/Products, Customers, Suppliers (+ BOMs if applicable)
-- Validation spot-check
-- Re-import plan if needed
-- Next Steps
-
-Preparation:
-- Final data files ready`,
-
-    "Materials & Inventory Management": `Hi team,
-
-This session covers Materials & Inventory Management in Fishbowl.
-
-In this meeting, we'll cover:
-- Inventory structure (Parts vs Products)
-- Locations & bins
-- Part setup essentials (lead times, reorder points, vendors)
-- Inventory movements (adjustments, transfers, cycle counts)
-- Workflow test
-
-Preparation:
-- Confirm locations/bins list
-- Bring 5-10 example SKUs`,
-
-    "Purchasing & Receiving": `Hi team,
-
-This session covers Purchasing & Receiving in Fishbowl.
-
-In this meeting, we'll cover:
-- Creating Purchase Orders
-- Receiving stock (full + partial)
-- Key purchasing reports
-- Workflow test: PO > receive > confirm stock
-
-Preparation:
-- Have 1-2 real supplier examples ready`,
-
-    "Recap & Questions": `Hi team,
-
-This is a Recap & Q&A checkpoint. Please come prepared with any questions from previous sessions.
-
-We'll review progress, address blockers, and confirm next steps.`,
-
-    "Sales & Fulfilment": `Hi team,
-
-This session covers Sales & Fulfilment in Fishbowl.
-
-In this meeting, we'll cover:
-- Creating Sales Orders
-- Picking & packing workflow
-- Shipping confirmation
-- Key sales reports
-- Workflow test: Sales Order > pick/pack > ship
-
-Preparation:
-- Have 1-2 real customer examples ready`,
-
-    "Bill of Materials": `Hi team,
-
-This session covers Bill of Materials (BOM) in Fishbowl.
-
-In this meeting, we'll cover:
-- BOM fundamentals (finished good, components)
-- BOM setup best practices
-- Creating and validating BOMs
-- Workflow test: build 1-2 BOMs
-
-Preparation:
-- Bring 1-2 real products as BOM examples`,
-
-    "Production & Manufacturing": `Hi team,
-
-This session covers Production & Manufacturing in Fishbowl.
-
-In this meeting, we'll cover:
-- Work Order setup
-- Creating a Work Order from BOM
-- Finishing production
-- Workflow test: WO > issue > finish > confirm inventory
-
-Preparation:
-- Ensure at least 1 BOM is validated`,
-
-    "Fishbowl Advanced Mobile": `Hi team,
-
-This session covers Fishbowl Advanced Mobile.
-
-In this meeting, we'll cover:
-- Mobile overview (mobile vs desktop tasks)
-- User setup & permissions
-- Core workflows: receiving, picking, transfers, cycle counts
-- Workflow test
-
-Preparation:
-- Identify mobile users and roles
-- Confirm devices are available`,
-
-    "Reports, Plugins & Dashboards": `Hi team,
-
-This session covers Plugins and Reporting in Fishbowl.
-
-In this meeting, we'll cover:
-- Plugins/integrations in scope
-- Core reporting (inventory, purchasing, sales, production)
-- Saving report favourites
-- Workflow test: run key reports
-
-Preparation:
-- Bring your must-have reports list`,
-
-    "Workflow Creation": `Hi team,
-
-This session covers Workflow Creation in Fishbowl based on the training sessions held.
-
-We'll identify, build and test key workflows together.`,
-
-    "Go-Live Prep 1": `Hi team,
-
-This session is Go-Live Prep. We'll review the readiness checklist, confirm opening data requirements, and lock the cutover plan.
-
-In this meeting, we'll cover:
-- Go Live readiness checklist review
-- Opening data plan (stocktake, open POs/SOs/WOs)
-- Cutover plan and responsibilities
-- Risks & escalation plan
-- Next Steps
-
-Preparation:
-- Confirm stocktake method and timing
-- Ensure decision-maker can attend`,
-
-    "Go-Live Prep 2": `Hi team,
-
-This is our second Go-Live Prep - final checks and confirming everything is in place.
-
-Please bring any outstanding questions or blockers.`,
-
-    "Go-Live": `Hi team,
-
-This is the Go-Live session!
-
-In this meeting, we'll cover:
-- Final readiness confirmation
-- Apply opening data and final stock counts
-- First live transactions walkthrough
-- Reporting verification
-- Confirm support pathway
-
-Preparation:
-- Opening stock counts ready
-- Key users available
-- Decision-maker available for sign-off`,
-
-    "Support Handover": `Hi team,
-
-This session is the Support Handover call - confirming you're comfortable post go-live and know how to get help.
-
-In this meeting, we'll cover:
-- Post go-live check-in
-- Support pathway overview
-- How to log tickets efficiently
-- Remaining open actions`,
-  };
-
+export function getSessionBody(sessionKey, sessionName) {
   return (
-    bodies[sessionName] ||
-    `Hi team,
-
-This session covers ${sessionName}.
-
-Please come prepared and ensure your system access is working.
-
-Thanks,`
+    SESSION_BODIES[sessionKey] ||
+    `This session covers ${sessionName}.\n\nPlease come prepared with relevant examples, open questions, and any required system access.`
   );
+}
+
+export function getTemplateReviewJSON() {
+  return JSON.stringify(PROJECT_TEMPLATES, null, 2);
 }

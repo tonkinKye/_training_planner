@@ -1,37 +1,97 @@
-import { state, getSession, getScheduleRow } from "./state.js";
-import { parseDate } from "./utils.js";
+import { getActiveProject, state } from "./state.js";
+import {
+  canEditSession,
+  getAllSessions,
+  getEditableSessions,
+  getPushableSessions,
+  getVisiblePhaseKeys,
+  isDateWithinPhaseWindow,
+} from "./projects.js";
+import { parseDate, toDateStr } from "./utils.js";
 
-function sessionInterval(session, row) {
-  const [hours, minutes] = row.time.split(":").map(Number);
-  const start = parseDate(row.date);
-  start.setHours(hours, minutes, 0, 0);
+function sessionInterval(session) {
+  const [hours, minutes] = String(session.time || "").split(":").map(Number);
+  const start = parseDate(session.date);
+  start.setHours(hours || 0, minutes || 0, 0, 0);
   const end = new Date(start.getTime() + session.duration * 60000);
   return { start, end };
 }
 
-function calEventInterval(event) {
-  return { start: new Date(event.start), end: new Date(event.end) };
+function calendarInterval(event) {
+  return {
+    start: new Date(event.start),
+    end: new Date(event.end),
+  };
 }
 
-function overlaps(a, b) {
-  return a.start < b.end && b.start < a.end;
+function overlaps(left, right) {
+  return left.start < right.end && right.start < left.end;
 }
 
-export function getConflicts() {
+function getTargetSessions(project, actor, scope) {
+  if (!project) return [];
+  if (scope === "pushable") return getPushableSessions(project, actor);
+  if (scope === "editable") return getEditableSessions(project, actor);
+
+  const visible = new Set(getVisiblePhaseKeys(actor));
+  return getAllSessions(project).filter((session) => visible.has(session.phase) || canEditSession(project, session, actor));
+}
+
+function buildWindowConflict(project, session) {
+  const label = session.phase === "implementation" ? "implementation window" : `${session.phase} window`;
+  return {
+    id: `window:${session.id}`,
+    subject: `Outside ${label}`,
+    kind: "window",
+    start: session.date && session.time ? `${session.date}T${session.time}:00` : session.date,
+    end: session.date && session.time ? `${session.date}T${session.time}:00` : session.date,
+  };
+}
+
+export function summarizeConflictKinds(conflicts = []) {
+  const windowCount = conflicts.filter((conflict) => conflict.kind === "window").length;
+  const calendarCount = conflicts.filter((conflict) => conflict.kind !== "window").length;
+  const parts = [];
+
+  if (windowCount) {
+    parts.push("Outside window");
+  }
+  if (calendarCount) {
+    parts.push(calendarCount > 1 ? "Calendar conflicts" : "Calendar conflict");
+  }
+
+  return {
+    windowCount,
+    calendarCount,
+    hasWindow: windowCount > 0,
+    hasCalendar: calendarCount > 0,
+    windowLabel: windowCount ? "Outside window" : "",
+    calendarLabel: calendarCount ? (calendarCount > 1 ? "Calendar conflicts" : "Calendar conflict") : "",
+    label: parts.join(" + "),
+  };
+}
+
+export function getConflicts({ project = getActiveProject(), actor = state.actor, scope = "editable" } = {}) {
   const conflicts = new Map();
-  if (!state.calendarEvents.length) return conflicts;
+  if (!project) return conflicts;
 
-  for (const session of state.sessions) {
-    const row = getScheduleRow(session.id);
-    if (!row?.date || !row?.time) continue;
+  const sessions = getTargetSessions(project, actor, scope);
+  for (const session of sessions) {
+    if (!session.date || !session.time) continue;
 
-    const sessionRange = sessionInterval(session, row);
     const hits = [];
+    if (!isDateWithinPhaseWindow(project, session, session.date)) {
+      hits.push(buildWindowConflict(project, session));
+    }
 
+    const scheduledRange = sessionInterval(session);
     for (const event of state.calendarEvents) {
-      if (event.id === row.graphEventId) continue;
-      if (overlaps(sessionRange, calEventInterval(event))) {
-        hits.push(event);
+      if (event.id === session.graphEventId) continue;
+      if (overlaps(scheduledRange, calendarInterval(event))) {
+        hits.push({
+          ...event,
+          kind: event.kind || "calendar",
+        });
       }
     }
 
@@ -41,21 +101,83 @@ export function getConflicts() {
   return conflicts;
 }
 
-export function getConflictedDates() {
-  const byDate = getConflictsByDate();
-  return [...byDate.keys()].sort();
+export function getSessionConflicts(sessionId, options = {}) {
+  return getConflicts(options).get(sessionId) || [];
 }
 
-export function getConflictsByDate() {
+export function getConflictsByDate(options = {}) {
   const byDate = new Map();
-  const conflicts = getConflicts();
+  const conflicts = getConflicts(options);
+  const project = options.project || getActiveProject();
+  if (!project) return byDate;
 
-  for (const [sessionId, events] of conflicts) {
-    const row = getScheduleRow(sessionId);
-    if (!row?.date) continue;
-    if (!byDate.has(row.date)) byDate.set(row.date, []);
-    byDate.get(row.date).push(...events);
+  for (const [sessionId, events] of conflicts.entries()) {
+    const session = getAllSessions(project).find((candidate) => candidate.id === sessionId);
+    if (!session?.date) continue;
+    if (!byDate.has(session.date)) byDate.set(session.date, []);
+    byDate.get(session.date).push(...events);
   }
 
   return byDate;
+}
+
+export function getConflictedDates(options = {}) {
+  return [...getConflictsByDate(options).keys()].sort();
+}
+
+export function getCalendarConflictsForDate(dateString, options = {}) {
+  const project = options.project || getActiveProject();
+  const conflicts = getConflicts({ ...options, project });
+  const events = [];
+  for (const [sessionId, hits] of conflicts.entries()) {
+    const session = getAllSessions(project).find((candidate) => candidate.id === sessionId);
+    if (!session || session.date !== dateString) continue;
+    events.push(...hits);
+  }
+  return events;
+}
+
+export function getConflictSummary(options = {}) {
+  const conflicts = getConflicts(options);
+  const dates = new Set();
+  let windowSessions = 0;
+  let calendarSessions = 0;
+  for (const sessionId of conflicts.keys()) {
+    const project = options.project || getActiveProject();
+    const session = getAllSessions(project).find((candidate) => candidate.id === sessionId);
+    if (session?.date) dates.add(session.date);
+    const summary = summarizeConflictKinds(conflicts.get(sessionId) || []);
+    if (summary.hasWindow) windowSessions += 1;
+    if (summary.hasCalendar) calendarSessions += 1;
+  }
+
+  const parts = [];
+  if (windowSessions) {
+    parts.push(`${windowSessions} outside window`);
+  }
+  if (calendarSessions) {
+    parts.push(`${calendarSessions} calendar conflict${calendarSessions > 1 ? "s" : ""}`);
+  }
+
+  return {
+    sessions: conflicts.size,
+    dates: dates.size,
+    windowSessions,
+    calendarSessions,
+    label: parts.join(" | "),
+  };
+}
+
+export function isPastDateTime(dateString, timeString) {
+  if (!dateString || !timeString) return false;
+  const now = new Date();
+  const slot = parseDate(dateString);
+  const [hours, minutes] = timeString.split(":").map(Number);
+  slot.setHours(hours, minutes, 0, 0);
+  return slot < now;
+}
+
+export function normalizeEventDate(dateTimeString) {
+  const date = new Date(dateTimeString);
+  return Number.isNaN(date.getTime()) ? "" : toDateStr(date);
 }

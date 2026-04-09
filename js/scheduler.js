@@ -1,318 +1,512 @@
-import { PRODUCT_NAME } from "./config.js";
-import { FISHBOWL_SESSIONS } from "./session-templates.js";
 import {
-  calUID,
-  createScheduleRow,
-  getScheduleRow,
-  invalidateRowInviteState,
-  saveState,
+  clearProjectError,
+  getActiveProject,
+  setActiveProject,
+  setActorMode,
+  setScreen,
   state,
-  uid,
+  upsertProject,
 } from "./state.js";
-import { render, renderCal, renderChips, renderPool, refreshRow } from "./render.js";
-import { fmtDateShort, fmt12, isMobile, mondayOf, parseDate, toDateStr, toast } from "./utils.js";
+import {
+  addCustomSession,
+  canEditSession,
+  cloneProject,
+  createOnboardingDraft,
+  createProjectFromDraft,
+  deriveProjectStatus,
+  findSession,
+  getAllSessions,
+  getEditableSessions,
+  getProjectById,
+  getProjectDateRange,
+  getPushableSessions,
+  isDateWithinPhaseWindow,
+  moveSession,
+  normalizeProject,
+  projectHasImplementationReady,
+  removeSession,
+  touchProject,
+} from "./projects.js";
+import { getTemplateReviewJSON, getTemplateSessions } from "./session-templates.js";
+import { mondayOf, parseDate, toDateStr, toast } from "./utils.js";
 
-export function addSession() {
-  const name = document.getElementById("newName")?.value.trim() || "";
-  if (!name) {
-    toast("Enter a session name");
-    return;
+const DEFAULT_START_TIME = "09:00";
+
+function invalidateSessionInviteState(session, { preserveGraphEventId = true } = {}) {
+  session.graphActioned = false;
+  session.outlookActioned = false;
+  if (!preserveGraphEventId) {
+    session.graphEventId = "";
   }
-
-  const duration =
-    Number(document.getElementById("newDur")?.value) ||
-    Number(document.getElementById("globalDuration")?.value) ||
-    90;
-
-  const session = { id: uid(), name, duration, calUID: calUID(), seq: 0 };
-  state.sessions.push(session);
-  state.schedule.push(createScheduleRow(session.id));
-
-  document.getElementById("newName").value = "";
-  saveState();
-  render();
 }
 
-export function removeSession(sessionId) {
-  state.sessions = state.sessions.filter((session) => session.id !== sessionId);
-  state.schedule = state.schedule.filter((row) => row.sessionId !== sessionId);
-  saveState();
-  render();
+function getTodayString() {
+  return toDateStr(new Date());
 }
 
-export function loadExamples() {
-  for (const template of FISHBOWL_SESSIONS) {
-    const session = {
-      id: uid(),
-      name: template.name,
-      duration: template.duration,
-      calUID: calUID(),
-      seq: 0,
-    };
-    state.sessions.push(session);
-    state.schedule.push(createScheduleRow(session.id));
+function getCurrentProjectOrToast() {
+  const project = getActiveProject();
+  if (!project) {
+    toast("Select a project first");
+    return null;
   }
-
-  saveState();
-  render();
-  toast(`${PRODUCT_NAME} implementation sessions loaded`);
+  return project;
 }
 
-export function loadFromJSON() {
-  const raw = document.getElementById("jsonPaste")?.value.trim() || "";
-  if (!raw) {
-    toast("Paste JSON first");
-    return;
+function ensureFutureDate(value) {
+  return !value || value >= getTodayString();
+}
+
+function setCalendarStartFromProject(project) {
+  const range = getProjectDateRange(project);
+  state.calStart = mondayOf(parseDate(range.start || getTodayString()));
+}
+
+function createDraftFromAccount() {
+  const draft = createOnboardingDraft();
+  if (state.graphAccount) {
+    draft.pmName = state.graphAccount.name || "";
+    draft.pmEmail = state.graphAccount.username || "";
   }
+  return draft;
+}
 
-  try {
-    const items = JSON.parse(raw);
-    if (!Array.isArray(items)) throw new Error("Expected an array");
+function nextValidDate(cursor, project, session) {
+  const windowMin = session.phase === "setup" ? "" : "";
+  const today = getTodayString();
+  let probe = parseDate(cursor < today ? today : cursor);
 
-    const defaultDuration = Number(document.getElementById("globalDuration")?.value) || 90;
-    for (const item of items) {
-      if (!item?.name) continue;
-      const session = {
-        id: uid(),
-        name: String(item.name),
-        duration: Number(item.duration) || defaultDuration,
-        calUID: calUID(),
-        seq: 0,
-      };
-      state.sessions.push(session);
-      state.schedule.push(createScheduleRow(session.id));
+  while (probe.getFullYear() < 2100) {
+    const dateString = toDateStr(probe);
+    const day = probe.getDay();
+    if (state.ui.activeDays.has(day) && isDateWithinPhaseWindow(project, session, dateString)) {
+      return dateString;
     }
-
-    document.getElementById("jsonPaste").value = "";
-    saveState();
-    render();
-    toast("Sessions loaded");
-  } catch (error) {
-    console.error("Session JSON load failed:", error);
-    toast("Invalid JSON");
+    probe.setDate(probe.getDate() + 1);
   }
+
+  return "";
 }
 
-export function setDate(sessionId, value) {
-  const row = getScheduleRow(sessionId);
-  if (!row) return;
+function validateDraft(draft) {
+  if (!draft.clientName.trim()) return "Client name is required";
+  if (!draft.pmEmail.trim()) return "PM email is required";
+  if (!draft.isEmail.trim()) return "IS email is required";
+  if (!draft.implementationStart) return "Implementation start date is required";
+  if (!draft.goLiveDate) return "Go-Live date is required";
+  if (draft.goLiveDate <= draft.implementationStart) {
+    return "Go-Live date must be after the implementation start date";
+  }
+  return "";
+}
 
-  if (value && value < toDateStr(new Date())) {
-    toast("Cannot schedule in the past");
-    const input = document.querySelector(`[data-action="setDate"][data-id="${sessionId}"]`);
-    if (input) input.value = row.date;
+function ensureSettingsDraft(project) {
+  state.ui.settings.draft = cloneProject(project);
+  state.ui.settings.draft.newSession = {
+    phase: "implementation",
+    owner: "is",
+    name: "",
+    duration: 90,
+    type: "external",
+  };
+}
+
+export function openOnboarding() {
+  state.ui.onboarding.open = true;
+  state.ui.onboarding.step = 0;
+  state.ui.onboarding.draft = createDraftFromAccount();
+  state.ui.onboarding.templateReviewJSON = getTemplateReviewJSON();
+}
+
+export function closeOnboarding() {
+  state.ui.onboarding.open = false;
+  state.ui.onboarding.step = 0;
+  state.ui.onboarding.draft = null;
+}
+
+export function nextOnboardingStep() {
+  state.ui.onboarding.step = Math.min(state.ui.onboarding.step + 1, 6);
+}
+
+export function prevOnboardingStep() {
+  state.ui.onboarding.step = Math.max(state.ui.onboarding.step - 1, 0);
+}
+
+export function updateOnboardingField(field, value) {
+  if (!state.ui.onboarding.draft) return;
+
+  if (field === "projectType") {
+    state.ui.onboarding.draft.projectType = value;
+    state.ui.onboarding.draft.sessions = getTemplateSessions(value);
     return;
+  }
+
+  if (field === "invitees") {
+    state.ui.onboarding.draft.invitees = value;
+    return;
+  }
+
+  if (field.startsWith("customSession.")) {
+    const key = field.split(".")[1];
+    state.ui.onboarding.draft.customSession[key] = key === "duration" ? Number(value) || 90 : value;
+    return;
+  }
+
+  state.ui.onboarding.draft[field] = value;
+}
+
+export function addOnboardingSession() {
+  const draft = state.ui.onboarding.draft;
+  if (!draft) return;
+
+  const { name, duration, phase, owner, type } = draft.customSession;
+  if (!name.trim()) {
+    toast("Add a session name first");
+    return;
+  }
+
+  draft.sessions.push({
+    key: "",
+    bodyKey: "",
+    name: name.trim(),
+    duration: Number(duration) || 90,
+    phase,
+    owner,
+    type,
+    order: draft.sessions.length,
+  });
+
+  draft.customSession.name = "";
+  draft.customSession.duration = 90;
+}
+
+export function removeOnboardingSession(index) {
+  const draft = state.ui.onboarding.draft;
+  if (!draft) return;
+  draft.sessions.splice(index, 1);
+  draft.sessions.forEach((session, sessionIndex) => {
+    session.order = sessionIndex;
+  });
+}
+
+export function moveOnboardingSession(index, direction) {
+  const draft = state.ui.onboarding.draft;
+  if (!draft) return;
+  const target = index + direction;
+  if (target < 0 || target >= draft.sessions.length) return;
+  const [session] = draft.sessions.splice(index, 1);
+  draft.sessions.splice(target, 0, session);
+  draft.sessions.forEach((item, sessionIndex) => {
+    item.order = sessionIndex;
+  });
+}
+
+export function createProjectFromOnboarding() {
+  const draft = state.ui.onboarding.draft;
+  if (!draft) return null;
+
+  const error = validateDraft(draft);
+  if (error) {
+    toast(error, 4000);
+    return null;
+  }
+
+  const project = createProjectFromDraft(draft);
+  upsertProject(project);
+  setActiveProject(project.id);
+  setActorMode("pm", "pm");
+  setScreen("workspace");
+  setCalendarStartFromProject(project);
+  closeOnboarding();
+  clearProjectError();
+  return project;
+}
+
+export function openProject(projectId, { actor = "pm", mode = actor } = {}) {
+  const project = getProjectById(state.projects, projectId);
+  if (!project) return null;
+  setActiveProject(project.id);
+  setActorMode(actor, mode);
+  setScreen("workspace");
+  setCalendarStartFromProject(project);
+  return project;
+}
+
+export function backToProjects() {
+  setScreen("projects");
+  state.ui.sidebarOpen = false;
+}
+
+export function openSettings() {
+  const project = getCurrentProjectOrToast();
+  if (!project) return;
+  state.ui.settings.open = true;
+  ensureSettingsDraft(project);
+}
+
+export function closeSettings() {
+  state.ui.settings.open = false;
+  state.ui.settings.draft = null;
+}
+
+export function updateSettingsField(field, value) {
+  const draft = state.ui.settings.draft;
+  if (!draft) return;
+
+  if (field.startsWith("newSession.")) {
+    const key = field.split(".")[1];
+    draft.newSession[key] = key === "duration" ? Number(value) || 90 : value;
+    if (key === "phase" && !draft.newSession.owner) {
+      draft.newSession.owner = value === "implementation" ? "is" : "pm";
+    }
+    return;
+  }
+
+  if (field === "invitees") {
+    draft.invitees = value;
+    return;
+  }
+
+  draft[field] = value;
+}
+
+export function addSettingsSession() {
+  const draft = state.ui.settings.draft;
+  if (!draft) return;
+  const next = draft.newSession;
+  if (!next.name.trim()) {
+    toast("Add a session name first");
+    return;
+  }
+
+  addCustomSession(draft, {
+    key: "",
+    bodyKey: "",
+    name: next.name.trim(),
+    duration: Number(next.duration) || 90,
+    phase: next.phase,
+    owner: next.owner || (next.phase === "implementation" ? "is" : "pm"),
+    type: next.type || "external",
+  });
+
+  draft.newSession.name = "";
+  draft.newSession.duration = 90;
+}
+
+export function removeSettingsSession(sessionId) {
+  const draft = state.ui.settings.draft;
+  if (!draft) return;
+  removeSession(draft, sessionId);
+}
+
+export function moveSettingsSession(sessionId, direction) {
+  const draft = state.ui.settings.draft;
+  if (!draft) return;
+  moveSession(draft, sessionId, direction);
+}
+
+export function saveSettingsDraft() {
+  const project = getCurrentProjectOrToast();
+  const draft = state.ui.settings.draft;
+  if (!project || !draft) return null;
+
+  const validated = normalizeProject({
+    ...project,
+    ...draft,
+  });
+  upsertProject(validated);
+  setActiveProject(validated.id);
+  closeSettings();
+  return validated;
+}
+
+export function setSessionDate(sessionId, value) {
+  const project = getCurrentProjectOrToast();
+  if (!project) return false;
+
+  const found = findSession(project, sessionId);
+  if (!found || !canEditSession(project, found.session, state.actor)) return false;
+  if (!ensureFutureDate(value)) {
+    toast("Cannot schedule in the past");
+    return false;
+  }
+
+  if (value && !isDateWithinPhaseWindow(project, found.session, value)) {
+    toast("That date falls outside the phase window", 4000);
+    return false;
   }
 
   const nextValue = value || "";
-  const priorDate = row.date;
-  const priorTime = row.time;
+  if (found.session.date === nextValue) return true;
 
-  row.date = nextValue;
+  found.session.date = nextValue;
   if (!nextValue) {
-    row.time = "";
-  } else if (!row.time) {
-    row.time = document.getElementById("globalTime")?.value || "09:00";
+    found.session.time = "";
+    invalidateSessionInviteState(found.session, { preserveGraphEventId: false });
+  } else {
+    if (!found.session.time) {
+      found.session.time = DEFAULT_START_TIME;
+    }
+    invalidateSessionInviteState(found.session);
   }
 
-  if (priorDate !== row.date || priorTime !== row.time) {
-    invalidateRowInviteState(row);
+  touchProject(project);
+  project.status = deriveProjectStatus(project);
+  return true;
+}
+
+export function setSessionTime(sessionId, value) {
+  const project = getCurrentProjectOrToast();
+  if (!project) return false;
+
+  const found = findSession(project, sessionId);
+  if (!found || !canEditSession(project, found.session, state.actor)) return false;
+  if (!found.session.date) {
+    toast("Set a date first");
+    return false;
   }
 
-  saveState();
-  renderPool();
-  refreshRow(sessionId);
-  renderCal();
+  if (found.session.time === value) return true;
+  found.session.time = value || "";
+  invalidateSessionInviteState(found.session);
+  touchProject(project);
+  return true;
 }
 
-export function setTime(sessionId, value) {
-  const row = getScheduleRow(sessionId);
-  if (!row) return;
+export function setSessionDuration(sessionId, value) {
+  const project = getCurrentProjectOrToast();
+  if (!project) return false;
 
-  if (row.time === value) return;
-  row.time = value || "";
-  invalidateRowInviteState(row);
-  saveState();
-  refreshRow(sessionId);
-  renderCal();
+  const found = findSession(project, sessionId);
+  if (!found || !canEditSession(project, found.session, state.actor)) return false;
+
+  const nextDuration = Number(value) || found.session.duration;
+  if (found.session.duration === nextDuration) return true;
+  found.session.duration = nextDuration;
+  invalidateSessionInviteState(found.session);
+  touchProject(project);
+  return true;
 }
 
-export function setDuration(sessionId, value) {
-  const session = state.sessions.find((item) => item.id === sessionId);
-  const row = getScheduleRow(sessionId);
-  if (!session || !row) return;
+export function unscheduleSession(sessionId) {
+  const project = getCurrentProjectOrToast();
+  if (!project) return false;
 
-  const nextDuration = Number(value) || session.duration;
-  if (session.duration === nextDuration) return;
-
-  // Invalidate invite state — graphEventId is preserved so the next push
-  // will PATCH (update the end time) rather than create a duplicate event.
-  session.duration = nextDuration;
-  invalidateRowInviteState(row);
-  saveState();
-  renderChips();
-  refreshRow(sessionId);
-  renderCal();
+  const found = findSession(project, sessionId);
+  if (!found || !canEditSession(project, found.session, state.actor)) return false;
+  found.session.date = "";
+  found.session.time = "";
+  invalidateSessionInviteState(found.session, { preserveGraphEventId: false });
+  touchProject(project);
+  project.status = deriveProjectStatus(project);
+  return true;
 }
 
-export function unschedule(sessionId) {
-  const row = getScheduleRow(sessionId);
-  if (!row) return;
+export function removeActiveSession(sessionId) {
+  const project = getCurrentProjectOrToast();
+  if (!project || state.actor !== "pm") return false;
+  removeSession(project, sessionId);
+  return true;
+}
 
-  row.date = "";
-  row.time = "";
-  invalidateRowInviteState(row);
-  saveState();
-  renderPool();
-  refreshRow(sessionId);
-  renderCal();
+export function moveActiveSession(sessionId, direction) {
+  const project = getCurrentProjectOrToast();
+  if (!project || state.actor !== "pm") return false;
+  moveSession(project, sessionId, direction);
+  return true;
 }
 
 export function toggleSmart() {
-  state.smartOpen = !state.smartOpen;
-  document.getElementById("smartPanel")?.classList.toggle("open", state.smartOpen);
+  state.ui.smartOpen = !state.ui.smartOpen;
 }
 
-export function toggleActiveDay(day, buttonElement) {
-  if (state.activeDays.has(day)) {
-    state.activeDays.delete(day);
-    buttonElement.classList.remove("on");
+export function setSmartStart(value) {
+  state.ui.smartStart = value || "";
+}
+
+export function toggleActiveDay(day) {
+  if (state.ui.activeDays.has(day)) {
+    state.ui.activeDays.delete(day);
   } else {
-    state.activeDays.add(day);
-    buttonElement.classList.add("on");
+    state.ui.activeDays.add(day);
   }
 }
 
 export function setDayPreset(days) {
-  state.activeDays = new Set(days);
-  document
-    .querySelectorAll(".dt")
-    .forEach((button) => button.classList.toggle("on", state.activeDays.has(Number(button.dataset.day))));
+  state.ui.activeDays = new Set(days);
 }
 
 export function applySmartFill() {
-  const startValue = document.getElementById("smartStart")?.value || "";
-  if (!startValue) {
+  const project = getCurrentProjectOrToast();
+  if (!project) return false;
+  if (!state.ui.smartStart) {
     toast("Pick a start date");
-    return;
+    return false;
   }
-
-  if (!state.activeDays.size) {
+  if (!state.ui.activeDays.size) {
     toast("Select at least one day");
-    return;
+    return false;
   }
 
-  const defaultTime = document.getElementById("globalTime")?.value || "09:00";
-  let cursor = parseDate(startValue);
-  let updatedCount = 0;
+  let cursor = state.ui.smartStart;
+  let updated = 0;
+  const sessions = getEditableSessions(project, state.actor)
+    .filter((session) => !session.date)
+    .sort((left, right) => {
+      if (left.phase !== right.phase) {
+        const phaseOrder = ["setup", "implementation", "hypercare"];
+        return phaseOrder.indexOf(left.phase) - phaseOrder.indexOf(right.phase);
+      }
+      return left.order - right.order;
+    });
 
-  for (const row of state.schedule) {
-    if (row.date) continue;
+  for (const session of sessions) {
+    const nextDate = nextValidDate(cursor, project, session);
+    if (!nextDate) continue;
+    session.date = nextDate;
+    session.time = session.time || DEFAULT_START_TIME;
+    invalidateSessionInviteState(session);
+    updated += 1;
 
-    while (!state.activeDays.has(cursor.getDay())) cursor.setDate(cursor.getDate() + 1);
-    row.date = toDateStr(cursor);
-    if (!row.time) row.time = defaultTime;
-    invalidateRowInviteState(row);
-    updatedCount += 1;
-
-    cursor.setDate(cursor.getDate() + 1);
-    while (!state.activeDays.has(cursor.getDay())) cursor.setDate(cursor.getDate() + 1);
+    const nextCursor = parseDate(nextDate);
+    nextCursor.setDate(nextCursor.getDate() + 1);
+    cursor = toDateStr(nextCursor);
   }
 
-  saveState();
-  render();
-
-  if (updatedCount) {
-    const dates = state.schedule.filter((r) => r.date).map((r) => r.date).sort();
-    const rangeHint = dates.length >= 2 ? ` (${fmtDateShort(dates[0])} \u2013 ${fmtDateShort(dates[dates.length - 1])})` : "";
-    toast(`Filled ${updatedCount} session${updatedCount > 1 ? "s" : ""}${rangeHint}`, 4000);
-  } else {
-    toast("All sessions already have dates");
+  if (!updated) {
+    toast("No additional sessions could be placed within the phase windows", 4000);
+    return false;
   }
+
+  touchProject(project);
+  project.status = deriveProjectStatus(project);
+  toast(`Placed ${updated} session${updated > 1 ? "s" : ""}`, 3500);
+  return true;
 }
 
-export function clearDates() {
-  const scheduled = state.schedule.filter((row) => row.date).length;
-  if (scheduled && !window.confirm(`Clear dates from ${scheduled} scheduled session${scheduled > 1 ? "s" : ""}?`)) {
-    return;
-  }
-
-  for (const row of state.schedule) {
-    row.date = "";
-    row.time = "";
-    invalidateRowInviteState(row, { preserveGraphEventId: false });
-  }
-
-  saveState();
-  render();
-  toast("Dates cleared");
-}
-
-export function applyAllTimes() {
-  const timeValue = document.getElementById("globalTime")?.value || "09:00";
-  for (const row of state.schedule) {
-    if (row.time !== timeValue) {
-      row.time = timeValue;
-      invalidateRowInviteState(row);
-    }
-  }
-
-  saveState();
-  render();
-  toast(`Start time ${fmt12(timeValue)} applied to all sessions`);
-}
-
-export function sortByDate() {
-  const withDate = state.schedule.filter((row) => row.date).sort((a, b) => a.date.localeCompare(b.date));
-  const withoutDate = state.schedule.filter((row) => !row.date);
-  const orderedRows = [...withDate, ...withoutDate];
-
-  const reordered = orderedRows.map((row) => state.sessions.find((session) => session.id === row.sessionId));
-  const lost = reordered.filter((s) => !s).length;
-  if (lost) console.warn(`sortByDate: ${lost} schedule row(s) had no matching session and were dropped.`);
-  state.sessions = reordered.filter(Boolean);
-  state.schedule = orderedRows;
-
-  saveState();
-  render();
-}
-
-export function dropOnDate(dateString) {
-  if (!state.dragData) return;
-
-  if (dateString < toDateStr(new Date())) {
-    toast("Cannot schedule in the past");
-    state.dragData = null;
-    return;
-  }
-
-  const row = getScheduleRow(state.dragData.sessionId);
-  state.dragData = null;
-  if (!row) return;
-
-  const priorDate = row.date;
-  const priorTime = row.time;
-  row.date = dateString;
-  if (!row.time) row.time = document.getElementById("globalTime")?.value || "09:00";
-
-  if (priorDate !== row.date || priorTime !== row.time) {
-    invalidateRowInviteState(row);
-  }
-
-  saveState();
-  renderPool();
-  renderCal();
-  refreshRow(row.sessionId);
+export function dropOnDate(sessionId, dateString) {
+  return setSessionDate(sessionId, dateString);
 }
 
 export function calShift(direction) {
-  if (!state.calStart) state.calStart = mondayOf(new Date());
-  const weeks = isMobile() ? 6 : 8;
-  state.calStart.setDate(state.calStart.getDate() + direction * weeks * 7);
-  renderCal();
+  if (!state.calStart) {
+    state.calStart = mondayOf(new Date());
+  }
+  state.calStart = mondayOf(new Date(state.calStart.getTime() + direction * 7 * 86400000));
 }
 
 export function calToday() {
   state.calStart = mondayOf(new Date());
-  renderCal();
+}
+
+export function readyForHandoff(project = getActiveProject()) {
+  return Boolean(project && projectHasImplementationReady(project));
+}
+
+export function pushableCount(project = getActiveProject(), actor = state.actor) {
+  return getPushableSessions(project, actor).length;
+}
+
+export function visibleSessions(project = getActiveProject()) {
+  return getAllSessions(project || {});
 }

@@ -1,384 +1,496 @@
-import { closeModal, getTimeOptionsHTML, mondayOf, pad, toast } from "./utils.js";
 import { getConflicts } from "./conflicts.js";
 import {
   closeDayView,
   confirmConflict,
-  openDayView,
-  shiftDayView,
   navigateConflict,
-  pushAllScheduled,
-  renderDayViewGrid,
+  openDayView,
+  runPushWorkflow,
+  shiftDayView,
   startConflictReview,
 } from "./dayview.js";
-import { bootstrapMsal, fetchCalendarEvents, pushToCalendar, toggleAuth } from "./m365.js";
+import { decodeProjectParam } from "./deeplink.js";
 import { openOutlook } from "./invites.js";
-import { render, renderCal } from "./render.js";
 import {
-  addSession,
-  applyAllTimes,
+  bootstrapMsal,
+  createHandoffEvent,
+  fetchCalendarEvents,
+  loadProjectsFromSentinel,
+  persistActiveProjects,
+  pushSessionToCalendar,
+  resetSentinel,
+  searchPeople,
+  toggleAuth,
+} from "./m365.js";
+import { render } from "./render.js";
+import {
+  addOnboardingSession,
+  addSettingsSession,
   applySmartFill,
+  backToProjects,
   calShift,
   calToday,
-  clearDates,
+  closeOnboarding,
+  closeSettings,
+  createProjectFromOnboarding,
   dropOnDate,
-  loadExamples,
-  loadFromJSON,
-  removeSession,
-  setDate,
+  moveActiveSession,
+  moveOnboardingSession,
+  moveSettingsSession,
+  nextOnboardingStep,
+  openOnboarding,
+  openProject,
+  openSettings,
+  prevOnboardingStep,
+  removeActiveSession,
+  removeOnboardingSession,
+  removeSettingsSession,
+  saveSettingsDraft,
   setDayPreset,
-  setDuration,
-  setTime,
-  sortByDate,
+  setSessionDate,
+  setSessionDuration,
+  setSessionTime,
+  setSmartStart,
   toggleActiveDay,
   toggleSmart,
-  unschedule,
+  unscheduleSession,
+  updateOnboardingField,
+  updateSettingsField,
 } from "./scheduler.js";
-import {
-  doImport,
-  exportSchedule,
-  invalidateAllInviteState,
-  openImportModal,
-  restoreStorage,
-  saveState,
-  state,
-} from "./state.js";
+import { clearProjectError, getActiveProject, setActorMode, setDeepLink, setProjectError, setScreen, state } from "./state.js";
+import { pad, toast, toDateStr } from "./utils.js";
 
-let mobileActiveTab = "schedule";
-let resizeTimer = null;
-
-function buildTimeSelect(id, selectedValue) {
-  const select = document.getElementById(id);
-  if (!select) return;
-  select.innerHTML = getTimeOptionsHTML(selectedValue);
+function afterRender() {
+  if (document.getElementById("dayViewModal")) {
+    document.querySelector(".dv-day-col.active-conflict")?.scrollIntoView({ inline: "center", block: "nearest" });
+  }
 }
 
-function syncNewSessionDurationWithGlobal() {
-  const globalDuration = document.getElementById("globalDuration");
-  const newDuration = document.getElementById("newDur");
-  if (!globalDuration || !newDuration) return;
-  newDuration.value = globalDuration.value || "90";
+function rerender() {
+  render();
+  afterRender();
 }
 
-function initDayToggles() {
-  document.querySelectorAll(".dt").forEach((button) => {
-    const day = Number(button.dataset.day);
-    if (state.activeDays.has(day)) button.classList.add("on");
-    button.addEventListener("click", () => toggleActiveDay(day, button));
-  });
+async function persistAndRender(shouldPersist = true) {
+  if (shouldPersist) {
+    await persistActiveProjects();
+  }
+  rerender();
 }
 
-function handleFormChange(id) {
-  const inviteAffectingFields = new Set([
-    "globalLocation",
-    "globalOrganiser",
-    "globalEmail",
-    "globalInvitees",
-    "globalClient",
-  ]);
-
-  if (id === "globalDuration") {
-    syncNewSessionDurationWithGlobal();
-    saveState();
+async function handleDeepLinkIfPresent() {
+  if (!state.deepLink.payload || !state.graphAccount) return;
+  const project = openProject(state.deepLink.payload.id, { actor: "is", mode: "is" });
+  if (!project) {
+    setScreen("projects");
+    setProjectError(
+      "Could not load the handoff project.",
+      `Project ${state.deepLink.payload.id} was not found in this calendar sentinel.`
+    );
     return;
   }
-
-  // globalTime does not invalidate invite state — it only affects future
-  // auto-population of new rows, not existing per-row times. Use "Apply
-  // Time to All" (applyAllTimes) to change existing rows, which does
-  // invalidate.
-  if (inviteAffectingFields.has(id)) {
-    invalidateAllInviteState();
-  }
-
-  saveState();
-  render();
+  clearProjectError();
+  await fetchCalendarEvents({ project });
 }
 
-function bindListeners() {
-  [
-    "globalTime",
-    "globalDuration",
-    "globalLocation",
-    "globalOrganiser",
-    "globalEmail",
-    "globalInvitees",
-    "globalClient",
-  ].forEach((id) => {
-    document.getElementById(id)?.addEventListener("change", () => handleFormChange(id));
-  });
-
-  document.getElementById("newName")?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") addSession();
-  });
-
-  document.querySelectorAll(".modal-overlay").forEach((element) => {
-    element.addEventListener("click", (event) => {
-      if (event.target !== element) return;
-      if (element.id === "dayViewModal") {
-        closeDayView();
-        return;
-      }
-      element.classList.remove("open");
-    });
-  });
-
-  document.querySelector(".sidebar")?.addEventListener("click", (event) => {
-    if (
-      window.innerWidth <= 768 &&
-      (event.target.classList.contains("btn-primary") || event.target.classList.contains("btn-outline"))
-    ) {
-      window.setTimeout(closeSidebar, 300);
-    }
-  });
-
-  window.addEventListener("resize", () => {
-    clearTimeout(resizeTimer);
-    resizeTimer = window.setTimeout(() => renderCal(), 200);
-  });
+async function refreshProjectContext() {
+  const project = getActiveProject();
+  if (!project) return;
+  await fetchCalendarEvents({ project });
 }
 
-export function openSidebar() {
-  document.querySelector(".sidebar")?.classList.add("open");
-  document.getElementById("drawerOverlay")?.classList.add("open");
-  document.body.style.overflow = "hidden";
-}
-
-export function closeSidebar() {
-  document.querySelector(".sidebar")?.classList.remove("open");
-  document.getElementById("drawerOverlay")?.classList.remove("open");
-  document.body.style.overflow = "";
-}
-
-export function switchMobileTab(tab) {
-  mobileActiveTab = tab;
-  document.querySelectorAll(".mobile-tab").forEach((button, index) => {
-    button.classList.toggle(
-      "active",
-      (index === 0 && tab === "schedule") || (index === 1 && tab === "calendar")
-    );
-  });
-
-  const panel = document.querySelector(".panel");
-  const calPanel = document.querySelector(".cal-panel");
-  if (!panel || !calPanel) return;
-
-  if (tab === "schedule") {
-    panel.classList.remove("mob-hidden");
-    calPanel.classList.add("mob-hidden");
-  } else {
-    panel.classList.add("mob-hidden");
-    calPanel.classList.remove("mob-hidden");
-    renderCal();
-  }
-}
-
-function setupEventDelegation() {
-  const clickActions = {
-    addSession: () => addSession(),
-    applyAllTimes: () => applyAllTimes(),
-    applySmartFill: () => applySmartFill(),
-    calToday: () => calToday(),
-    clearDates: () => clearDates(),
-    closeSidebar: () => closeSidebar(),
-    doImport: () => { if (doImport()) render(); },
-    exportSchedule: () => exportSchedule(),
-    loadExamples: () => loadExamples(),
-    loadFromJSON: () => loadFromJSON(),
-    openImportModal: () => openImportModal(),
-    openSidebar: () => openSidebar(),
-    sortByDate: () => sortByDate(),
-    toggleAuth: () => toggleAuth(),
-    toggleSmart: () => toggleSmart(),
-    checkConflicts: async () => {
-      toast("Fetching calendar\u2026");
-      await fetchCalendarEvents();
-      render();
-      const conflicts = getConflicts();
-      const count = conflicts.size;
-      if (count) {
-        toast(`${count} session${count > 1 ? "s" : ""} with conflicts`, 4000);
-      } else {
-        toast("No conflicts found", 4000);
-      }
-    },
-    reviewConflicts: () => {
-      startConflictReview();
-    },
-
-    removeSession: (el) => {
-      removeSession(el.dataset.id);
-      renderDayViewGrid();
-    },
-    pushToCalendar: (el) => pushToCalendar(el.dataset.id),
-    openOutlook: (el) => openOutlook(el.dataset.id),
-    unschedule: (el) => {
-      unschedule(el.dataset.id);
-      renderDayViewGrid({ focusActive: true });
-    },
-
-    openDayView: (el) => openDayView(el.dataset.date),
-    closeDayView: () => closeDayView(),
-    shiftDayView: (el) => shiftDayView(Number(el.dataset.dir)),
-    navigateConflict: (el) => navigateConflict(Number(el.dataset.dir)),
-    confirmConflict: () => confirmConflict(),
-    pushAllScheduled: () => pushAllScheduled(),
-
-    calShift: (el) => calShift(Number(el.dataset.dir)),
-    closeModal: (el) => closeModal(el.dataset.modal),
-    switchMobileTab: (el) => switchMobileTab(el.dataset.tab),
-    setDayPreset: (el) => setDayPreset(el.dataset.days.split(",").map(Number)),
+function readBindingTarget(binding) {
+  const [scope, ...rest] = binding.split(".");
+  return {
+    scope,
+    field: rest.join("."),
   };
-
-  document.addEventListener("click", (e) => {
-    const el = e.target.closest("[data-action]");
-    if (!el) return;
-    const handler = clickActions[el.dataset.action];
-    if (!handler) {
-      console.warn("Unknown data-action:", el.dataset.action);
-      return;
-    }
-    try {
-      const result = handler(el);
-      if (result instanceof Promise) result.catch((err) => console.error(`Async action "${el.dataset.action}" failed:`, err));
-    } catch (err) {
-      console.error(`Action "${el.dataset.action}" failed:`, err);
-    }
-  });
-
-  document.addEventListener("change", (e) => {
-    const el = e.target.closest("[data-action]");
-    if (!el) return;
-    const { action, id } = el.dataset;
-    if (action === "setDate") {
-      setDate(id, el.value);
-      renderDayViewGrid({ focusActive: true });
-    } else if (action === "setTime") {
-      setTime(id, el.value);
-      renderDayViewGrid({ focusActive: true });
-    } else if (action === "setDuration") {
-      setDuration(id, el.value);
-      renderDayViewGrid({ focusActive: true });
-    }
-  });
-
-  document.addEventListener("dragstart", (e) => {
-    const el = e.target.closest("[data-drag]");
-    if (!el) return;
-    el.classList.add("dragging");
-    e.dataTransfer.effectAllowed = "move";
-    state.dragData = { type: el.dataset.drag, sessionId: el.dataset.id };
-  });
-
-  document.addEventListener("dragend", (e) => {
-    const el = e.target.closest("[data-drag]");
-    if (el) el.classList.remove("dragging");
-    state.dragData = null;
-    clearDvIndicator();
-  });
-
-  function dvSlotFromEvent(e, col) {
-    const rect = col.getBoundingClientRect();
-    const relY = e.clientY - rect.top - 32;
-    return Math.max(0, Math.min(21, Math.floor(relY / 28)));
-  }
-
-  function dvTimeFromSlot(slotIndex) {
-    const minutes = 420 + slotIndex * 30;
-    return `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
-  }
-
-  let activeDvIndicator = null;
-
-  function clearDvIndicator() {
-    if (activeDvIndicator) {
-      activeDvIndicator.remove();
-      activeDvIndicator = null;
-    }
-  }
-
-  document.addEventListener("dragover", (e) => {
-    const calEl = e.target.closest("[data-drop]");
-    if (calEl) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      calEl.classList.add("drag-over");
-      return;
-    }
-
-    const dvEl = e.target.closest("[data-drop-dv]");
-    if (dvEl) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      const slot = dvSlotFromEvent(e, dvEl);
-      const top = 32 + slot * 28;
-
-      if (!activeDvIndicator || activeDvIndicator.parentElement !== dvEl) {
-        clearDvIndicator();
-        activeDvIndicator = document.createElement("div");
-        activeDvIndicator.className = "dv-drop-indicator";
-        dvEl.appendChild(activeDvIndicator);
-      }
-      activeDvIndicator.style.top = `${top}px`;
-    }
-  });
-
-  document.addEventListener("dragleave", (e) => {
-    const calEl = e.target.closest("[data-drop]");
-    if (calEl) calEl.classList.remove("drag-over");
-
-    const dvEl = e.target.closest("[data-drop-dv]");
-    if (dvEl && !dvEl.contains(e.relatedTarget)) {
-      clearDvIndicator();
-    }
-  });
-
-  document.addEventListener("drop", (e) => {
-    clearDvIndicator();
-
-    const calDrop = e.target.closest("[data-drop]");
-    if (calDrop) {
-      e.preventDefault();
-      calDrop.classList.remove("drag-over");
-      dropOnDate(calDrop.dataset.date);
-      return;
-    }
-
-    const dvDrop = e.target.closest("[data-drop-dv]");
-    if (dvDrop && state.dragData) {
-      e.preventDefault();
-      const now = new Date();
-      const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-      const slotIndex = dvSlotFromEvent(e, dvDrop);
-      const time = dvTimeFromSlot(slotIndex);
-      if (dvDrop.dataset.date < today || (dvDrop.dataset.date === today && time < `${pad(now.getHours())}:${pad(now.getMinutes())}`)) {
-        toast("Cannot schedule in the past");
-        state.dragData = null;
-        return;
-      }
-      const sessionId = state.dragData.sessionId;
-      state.dragData = null;
-      setDate(sessionId, dvDrop.dataset.date);
-      setTime(sessionId, time);
-      renderDayViewGrid({ focusActive: true });
-    }
-  });
-
 }
 
-function init() {
-  buildTimeSelect("globalTime", "09:00");
-  initDayToggles();
-  restoreStorage();
-  syncNewSessionDurationWithGlobal();
-  bindListeners();
-  setupEventDelegation();
-  state.calStart = mondayOf(new Date());
-  render();
-  bootstrapMsal();
-
-  if (window.innerWidth <= 768 && mobileActiveTab !== "calendar") {
-    switchMobileTab("schedule");
+function applyBinding(binding, value) {
+  const { scope, field } = readBindingTarget(binding);
+  if (scope === "onboarding") {
+    updateOnboardingField(field, value);
+    rerender();
+    return;
   }
+  if (scope === "settings") {
+    updateSettingsField(field, value);
+    rerender();
+    return;
+  }
+  if (scope === "peopleQuery") {
+    state.ui.peopleQuery = value;
+    return;
+  }
+}
+
+function dayViewSlotFromEvent(event, column) {
+  const rect = column.getBoundingClientRect();
+  const relativeY = event.clientY - rect.top - 32;
+  return Math.max(0, Math.min(23, Math.floor(relativeY / 28)));
+}
+
+function timeFromSlot(slotIndex) {
+  const minutes = 360 + slotIndex * 30;
+  return `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
+}
+
+async function actionHandlers(action, element) {
+  switch (action) {
+    case "toggleAuth":
+      await toggleAuth();
+      if (state.graphAccount) {
+        await handleDeepLinkIfPresent();
+      }
+      rerender();
+      return;
+    case "openOnboarding":
+      openOnboarding();
+      rerender();
+      return;
+    case "closeOnboarding":
+      closeOnboarding();
+      rerender();
+      return;
+    case "nextOnboarding":
+      nextOnboardingStep();
+      rerender();
+      return;
+    case "prevOnboarding":
+      prevOnboardingStep();
+      rerender();
+      return;
+    case "createProject": {
+      const project = createProjectFromOnboarding();
+      if (!project) {
+        rerender();
+        return;
+      }
+      await persistAndRender(true);
+      await fetchCalendarEvents({ project });
+      rerender();
+      return;
+    }
+    case "selectProject": {
+      const project = openProject(element.dataset.id);
+      rerender();
+      if (project) {
+        await fetchCalendarEvents({ project });
+        rerender();
+      }
+      return;
+    }
+    case "backToProjects":
+      backToProjects();
+      rerender();
+      return;
+    case "openSettings":
+      openSettings();
+      rerender();
+      return;
+    case "closeSettings":
+      closeSettings();
+      rerender();
+      return;
+    case "saveSettings": {
+      const project = saveSettingsDraft();
+      if (project) {
+        await persistAndRender(true);
+        await fetchCalendarEvents({ project });
+      } else {
+        rerender();
+      }
+      return;
+    }
+    case "addOnboardingSession":
+      addOnboardingSession();
+      rerender();
+      return;
+    case "removeOnboardingSession":
+      removeOnboardingSession(Number(element.dataset.index));
+      rerender();
+      return;
+    case "moveOnboardingSession":
+      moveOnboardingSession(Number(element.dataset.index), Number(element.dataset.dir));
+      rerender();
+      return;
+    case "addSettingsSession":
+      addSettingsSession();
+      rerender();
+      return;
+    case "removeSettingsSession":
+      removeSettingsSession(element.dataset.id);
+      rerender();
+      return;
+    case "moveSettingsSession":
+      moveSettingsSession(element.dataset.id, Number(element.dataset.dir));
+      rerender();
+      return;
+    case "toggleSmart":
+      toggleSmart();
+      rerender();
+      return;
+    case "setSmartStart":
+      setSmartStart(element.value);
+      return;
+    case "toggleActiveDay":
+      toggleActiveDay(Number(element.dataset.day));
+      rerender();
+      return;
+    case "setDayPreset":
+      setDayPreset(element.dataset.days.split(",").map(Number));
+      rerender();
+      return;
+    case "applySmartFill":
+      if (applySmartFill()) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      return;
+    case "setSessionDate":
+      if (setSessionDate(element.dataset.id, element.value)) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      return;
+    case "setSessionTime":
+      if (setSessionTime(element.dataset.id, element.value)) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      return;
+    case "setSessionDuration":
+      if (setSessionDuration(element.dataset.id, element.value)) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      return;
+    case "unscheduleSession":
+      if (unscheduleSession(element.dataset.id)) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      return;
+    case "removeSession":
+      if (removeActiveSession(element.dataset.id)) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      return;
+    case "moveSession":
+      if (moveActiveSession(element.dataset.id, Number(element.dataset.dir))) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      return;
+    case "calShift":
+      calShift(Number(element.dataset.dir));
+      rerender();
+      return;
+    case "calToday":
+      calToday();
+      rerender();
+      return;
+    case "checkConflicts":
+      await refreshProjectContext();
+      rerender();
+      toast(getConflicts({ project: getActiveProject(), actor: state.actor, scope: "pushable" }).size ? "Conflicts found" : "No conflicts found", 3500);
+      return;
+    case "reviewConflicts":
+      await refreshProjectContext();
+      startConflictReview();
+      rerender();
+      return;
+    case "openDayView":
+      openDayView(element.dataset.date || toDateStr(new Date()));
+      rerender();
+      return;
+    case "closeDayView":
+      closeDayView();
+      rerender();
+      return;
+    case "shiftDayView":
+      shiftDayView(Number(element.dataset.dir));
+      rerender();
+      return;
+    case "navigateConflict":
+      navigateConflict(Number(element.dataset.dir));
+      rerender();
+      return;
+    case "confirmConflict":
+      await confirmConflict();
+      rerender();
+      return;
+    case "pushOwned":
+      await refreshProjectContext();
+      await runPushWorkflow();
+      rerender();
+      return;
+    case "pushSession":
+      await pushSessionToCalendar(element.dataset.id);
+      rerender();
+      return;
+    case "openOutlook": {
+      const opened = await openOutlook(element.dataset.id);
+      if (opened) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      return;
+    }
+    case "handoffToIs":
+      try {
+        await createHandoffEvent();
+        rerender();
+        toast("Handoff created", 3500);
+      } catch (error) {
+        console.error("Handoff failed:", error);
+        toast(error.message || String(error), 5000);
+      }
+      return;
+    case "copyHandoffLink":
+      if (!state.ui.lastHandoff.url) return;
+      await navigator.clipboard?.writeText(state.ui.lastHandoff.url);
+      toast("Handoff link copied", 3000);
+      return;
+    case "searchPeople":
+      await searchPeople(state.ui.peopleQuery);
+      rerender();
+      return;
+    case "selectPerson":
+      updateOnboardingField("isName", element.dataset.name || "");
+      updateOnboardingField("isEmail", element.dataset.email || "");
+      state.ui.peopleQuery = element.dataset.email || "";
+      rerender();
+      return;
+    case "switchMobileTab":
+      state.ui.mobileTab = element.dataset.tab;
+      rerender();
+      return;
+    case "resetSentinel":
+      await resetSentinel();
+      rerender();
+      return;
+    case "dismissProjectError":
+      clearProjectError();
+      rerender();
+      return;
+    default:
+      break;
+  }
+}
+
+function bindEvents() {
+  document.addEventListener("click", async (event) => {
+    const element = event.target.closest("[data-action]");
+    if (!element) return;
+    event.preventDefault();
+    try {
+      await actionHandlers(element.dataset.action, element);
+    } catch (error) {
+      console.error(`Action ${element.dataset.action} failed:`, error);
+      toast(error.message || String(error), 5000);
+    }
+  });
+
+  document.addEventListener("change", (event) => {
+    const bound = event.target.closest("[data-bind]");
+    if (bound) {
+      applyBinding(bound.dataset.bind, bound.value);
+      return;
+    }
+
+    const actionable = event.target.closest("[data-action]");
+    if (actionable && ["setSmartStart", "setSessionDate", "setSessionTime", "setSessionDuration"].includes(actionable.dataset.action)) {
+      actionHandlers(actionable.dataset.action, actionable).catch((error) => {
+        console.error(`Change action ${actionable.dataset.action} failed:`, error);
+        toast(error.message || String(error), 5000);
+      });
+    }
+  });
+
+  document.addEventListener("dragstart", (event) => {
+    const element = event.target.closest("[data-drag]");
+    if (!element) return;
+    state.dragData = {
+      sessionId: element.dataset.id,
+      type: element.dataset.drag,
+    };
+    element.classList.add("dragging");
+  });
+
+  document.addEventListener("dragend", (event) => {
+    event.target.closest("[data-drag]")?.classList.remove("dragging");
+    state.dragData = null;
+  });
+
+  document.addEventListener("dragover", (event) => {
+    const dropTarget = event.target.closest("[data-drop],[data-drop-dv]");
+    if (!dropTarget || !state.dragData) return;
+    event.preventDefault();
+  });
+
+  document.addEventListener("drop", async (event) => {
+    if (!state.dragData) return;
+    const calendarDrop = event.target.closest("[data-drop]");
+    if (calendarDrop) {
+      event.preventDefault();
+      if (dropOnDate(state.dragData.sessionId, calendarDrop.dataset.date)) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      state.dragData = null;
+      return;
+    }
+
+    const dayViewDrop = event.target.closest("[data-drop-dv]");
+    if (dayViewDrop) {
+      event.preventDefault();
+      const slot = dayViewSlotFromEvent(event, dayViewDrop);
+      const time = timeFromSlot(slot);
+      const date = dayViewDrop.dataset.date;
+      const setDateOk = setSessionDate(state.dragData.sessionId, date);
+      const setTimeOk = setDateOk && setSessionTime(state.dragData.sessionId, time);
+      if (setDateOk && setTimeOk) {
+        await persistAndRender(true);
+      } else {
+        rerender();
+      }
+      state.dragData = null;
+    }
+  });
+}
+
+async function init() {
+  const deepLink = new URL(window.location.href).searchParams.get("project");
+  if (deepLink) {
+    try {
+      setDeepLink(deepLink, decodeProjectParam(deepLink));
+      setActorMode("is", "is");
+    } catch (error) {
+      console.error("Deep link decode failed:", error);
+      toast("The handoff link could not be decoded.", 5000);
+    }
+  }
+
+  bindEvents();
+  rerender();
+  await bootstrapMsal();
+  if (state.graphAccount) {
+    await loadProjectsFromSentinel();
+    await handleDeepLinkIfPresent();
+    await refreshProjectContext();
+  }
+  rerender();
 }
 
 init();

@@ -1,325 +1,333 @@
-import { getConflicts, getConflictedDates, getConflictsByDate } from "./conflicts.js";
-import { state, getScheduleRow } from "./state.js";
+import { getConflictSummary, getSessionConflicts, summarizeConflictKinds } from "./conflicts.js";
+import { renderDayViewModal } from "./dayview.js";
+import { getActiveProject, state } from "./state.js";
 import {
-  esc,
-  fmt12,
-  fmtDateShort,
-  fmtDur,
-  getTimeOptionsHTML,
-  isMobile,
-  mondayOf,
-  toDateStr,
-} from "./utils.js";
+  canCommitSession,
+  canEditSession,
+  getActorDisplayName,
+  getContextPhaseKeys,
+  getPhaseSummary,
+  getProjectCardStatus,
+  getProjectCounts,
+  getProjectDateRange,
+  getVisiblePhaseKeys,
+  PHASE_META,
+  PHASE_ORDER,
+  PROJECT_TYPE_META,
+} from "./projects.js";
+import { readyForHandoff } from "./scheduler.js";
+import { esc, fmt12, fmtDur, getTimeOptionsHTML, mondayOf, parseDate, toDateStr } from "./utils.js";
 
-function getScheduleMap() {
-  return new Map(state.schedule.map((row) => [row.sessionId, row]));
+const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
+
+function fmtDate(value) {
+  if (!value) return "Not set";
+  return parseDate(value).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
 }
 
-function getEventCollections(defaultTime) {
-  const scheduleMap = getScheduleMap();
-  const eventsByDate = new Map();
+function fmtRange(start, end) {
+  if (!start && !end) return "Not scheduled";
+  if (!end || start === end) return fmtDate(start);
+  return `${fmtDate(start)} - ${fmtDate(end)}`;
+}
 
-  for (const session of state.sessions) {
-    const row = scheduleMap.get(session.id);
-    if (!row?.date) continue;
+function topbar() {
+  const name = state.graphAccount?.name || state.graphAccount?.username || "Microsoft 365";
+  return `<header class="topbar">
+    <div class="brand"><span class="brand-mark">TP</span><div><strong>Training Planner</strong><small>${state.actor === "is" ? "IS View" : "PM View"}</small></div></div>
+    <div class="topbar-actions">
+      ${state.ui.screen === "workspace" && state.actor === "pm" ? '<button class="btn-secondary" data-action="backToProjects">Projects</button>' : ""}
+      <button class="btn-secondary" data-action="toggleAuth">${esc(name)} | Sign Out</button>
+    </div>
+  </header>`;
+}
 
-    if (!eventsByDate.has(row.date)) eventsByDate.set(row.date, []);
-    eventsByDate.get(row.date).push({
-      session,
-      row,
-      time: row.time || defaultTime,
+function authScreen() {
+  return `<main class="screen auth-screen">
+    <section class="hero-card">
+      <div class="eyebrow">Work / School M365 Only</div>
+      <h1>Project scheduling with PM to IS handoff.</h1>
+      <p>Sign in to load the current sentinel, manage projects, and push calendar events directly through Microsoft Graph.</p>
+      <ul class="hero-list">
+        <li>Sentinel events are the storage layer.</li>
+        <li>MSAL may use sessionStorage; app data does not.</li>
+        <li>Implementation is handed off by deep link when needed.</li>
+      </ul>
+      <button class="btn-primary btn-lg" data-action="toggleAuth">Sign In With Microsoft 365</button>
+      ${state.authError ? `<div class="inline-alert danger">${esc(state.authError)}</div>` : ""}
+    </section>
+  </main>`;
+}
+
+function projectCard(project) {
+  const counts = getProjectCounts(project);
+  return `<button class="project-card" data-action="selectProject" data-id="${project.id}">
+    <div class="card-top">
+      <span class="pill type">${esc(PROJECT_TYPE_META[project.projectType] || "Project")}</span>
+      <span class="pill status">${esc(getProjectCardStatus(project))}</span>
+    </div>
+    <h3>${esc(project.clientName || "Untitled Project")}</h3>
+    <p>${esc(project.isName || project.isEmail || "IS not set")}</p>
+    <dl>
+      <div><dt>Go-Live</dt><dd>${esc(fmtDate(project.goLiveDate))}</dd></div>
+      <div><dt>Sessions</dt><dd>${counts.scheduled} / ${counts.total}</dd></div>
+    </dl>
+  </button>`;
+}
+
+function projectsScreen() {
+  return `<main class="screen projects-screen">
+    <section class="screen-head">
+      <div>
+        <div class="eyebrow">Sentinel-backed Project Index</div>
+        <h1>Projects</h1>
+      </div>
+      <button class="btn-primary" data-action="openOnboarding">New Project</button>
+    </section>
+    ${
+      state.sentinel.malformed
+        ? `<section class="inline-alert danger split">
+            <div><strong>Could not load projects.</strong><div>${esc(state.sentinel.error || "Malformed sentinel payload.")}</div></div>
+            <button class="btn-danger-outline" data-action="resetSentinel">Reset Sentinel</button>
+          </section>`
+        : ""
+    }
+    ${
+      state.projects.length
+        ? `<section class="project-grid">${state.projects.map(projectCard).join("")}</section>`
+        : `<section class="empty-card"><h2>No projects yet</h2><p>Create a project to seed the sentinel and open the scheduler.</p><button class="btn-primary" data-action="openOnboarding">Create Project</button></section>`
+    }
+  </main>`;
+}
+
+function conflictButton(project) {
+  const summary = getConflictSummary({ project, actor: state.actor, scope: "pushable" });
+  return summary.sessions
+    ? `<button class="btn-secondary" data-action="reviewConflicts">Review Conflicts (${summary.sessions})</button>`
+    : '<button class="btn-secondary" data-action="checkConflicts">Check Conflicts</button>';
+}
+
+function renderConflictTags(conflicts) {
+  const summary = summarizeConflictKinds(conflicts);
+  return [
+    summary.hasWindow ? `<span class="tag warning">${summary.windowLabel}</span>` : "",
+    summary.hasCalendar ? `<span class="tag danger">${summary.calendarLabel}</span>` : "",
+  ]
+    .filter(Boolean)
+    .join("");
+}
+
+function sidebar(project) {
+  const range = getProjectDateRange(project);
+  return `<aside class="sidebar">
+    <section class="side-card">
+      <div class="card-top">
+        <span class="pill type">${esc(PROJECT_TYPE_META[project.projectType])}</span>
+        <span class="pill status">${esc(getProjectCardStatus(project))}</span>
+      </div>
+      <h2>${esc(project.clientName)}</h2>
+      <dl class="meta-list">
+        <div><dt>PM</dt><dd>${esc(project.pmName || project.pmEmail || "Not set")}</dd></div>
+        <div><dt>IS</dt><dd>${esc(project.isName || project.isEmail || "Not set")}</dd></div>
+        <div><dt>Implementation</dt><dd>${esc(fmtRange(project.implementationStart, project.goLiveDate ? toDateStr(new Date(parseDate(project.goLiveDate).getTime() - 86400000)) : ""))}</dd></div>
+        <div><dt>Go-Live</dt><dd>${esc(fmtDate(project.goLiveDate))}</dd></div>
+        <div><dt>Range</dt><dd>${esc(fmtRange(range.start, range.end))}</dd></div>
+        <div><dt>Location</dt><dd>${esc(project.location || "TBC")}</dd></div>
+      </dl>
+      ${
+        state.ui.lastHandoff.url
+          ? `<div class="side-note"><strong>Latest handoff</strong><div>${state.ui.lastHandoff.length} chars</div><button class="btn-secondary btn-sm" data-action="copyHandoffLink">Copy Link</button></div>`
+          : ""
+      }
+    </section>
+    <section class="side-card">
+      <div class="side-head"><h3>Smart Fill</h3><button class="btn-secondary btn-sm" data-action="toggleSmart">${state.ui.smartOpen ? "Hide" : "Show"}</button></div>
+      ${
+        state.ui.smartOpen
+          ? `<label class="field"><span>Start from</span><input type="date" value="${state.ui.smartStart}" data-action="setSmartStart"></label>
+             <div class="field"><span>Days</span><div class="day-row">
+               ${[
+                 ["M", 1],
+                 ["T", 2],
+                 ["W", 3],
+                 ["T", 4],
+                 ["F", 5],
+                 ["S", 6],
+                 ["S", 0],
+               ]
+                 .map(
+                   ([label, day]) =>
+                     `<button class="day-chip${state.ui.activeDays.has(day) ? " active" : ""}" data-action="toggleActiveDay" data-day="${day}">${label}</button>`
+                 )
+                 .join("")}
+             </div></div>
+             <div class="quick-row">
+               <button class="btn-secondary btn-sm" data-action="setDayPreset" data-days="1,2,3,4,5">Weekdays</button>
+               <button class="btn-secondary btn-sm" data-action="setDayPreset" data-days="1,3,5">M/W/F</button>
+               <button class="btn-secondary btn-sm" data-action="setDayPreset" data-days="2,4">T/Th</button>
+             </div>
+             <button class="btn-primary" data-action="applySmartFill">Apply Smart Fill</button>`
+          : '<p class="muted">Phase-aware Smart Fill respects setup, implementation, and hypercare windows.</p>'
+      }
+    </section>
+  </aside>`;
+}
+
+function sessionBadges(project, session, context) {
+  const scope = canCommitSession(session, state.actor) ? "pushable" : "editable";
+  const conflicts = getSessionConflicts(session.id, { project, actor: state.actor, scope });
+  return [
+    `<span class="tag">${session.owner === "is" ? "IS" : "PM"}</span>`,
+    `<span class="tag">${esc(PHASE_META[session.phase].label)}</span>`,
+    `<span class="tag">${session.type === "internal" ? "Internal" : "External"}</span>`,
+    context ? '<span class="tag muted">Context</span>' : "",
+    renderConflictTags(conflicts),
+  ]
+    .filter(Boolean)
+    .join("");
+}
+
+function sessionRow(project, session, context = false) {
+  const editable = canEditSession(project, session, state.actor) && !context;
+  const durationDisabled = editable && state.actor === "pm" ? "" : "disabled";
+  return `<article class="session-row phase-${session.phase}${context ? " context" : ""}">
+    <div class="session-bar"></div>
+    <div class="session-body">
+      <div class="session-head">
+        <div><h4>${esc(session.name)}</h4><div class="tag-row">${sessionBadges(project, session, context)}</div></div>
+        <div class="row-actions">
+          <button class="btn-secondary btn-sm" data-action="openDayView" data-date="${session.date || project.implementationStart || project.goLiveDate || toDateStr(new Date())}">Week</button>
+          ${editable && session.date ? `<button class="btn-secondary btn-sm" data-action="unscheduleSession" data-id="${session.id}">Unschedule</button>` : ""}
+          ${canCommitSession(session, state.actor) && session.date && session.time ? `<button class="btn-secondary btn-sm" data-action="pushSession" data-id="${session.id}">${session.graphActioned ? "Update" : "Push"}</button>` : ""}
+          ${session.type === "external" && session.date && session.time ? `<button class="btn-secondary btn-sm" data-action="openOutlook" data-id="${session.id}">Outlook</button>` : ""}
+          ${state.actor === "pm" && !context ? `<button class="btn-secondary btn-sm" data-action="moveSession" data-id="${session.id}" data-dir="-1">Up</button><button class="btn-secondary btn-sm" data-action="moveSession" data-id="${session.id}" data-dir="1">Down</button><button class="btn-danger-outline btn-sm" data-action="removeSession" data-id="${session.id}">Remove</button>` : ""}
+        </div>
+      </div>
+      <div class="field-row">
+        <label class="field compact"><span>Date</span><input type="date" value="${session.date || ""}" ${editable ? "" : "disabled"} data-action="setSessionDate" data-id="${session.id}"></label>
+        <label class="field compact"><span>Time</span><select ${editable ? "" : "disabled"} data-action="setSessionTime" data-id="${session.id}">${getTimeOptionsHTML(session.time || "09:00")}</select></label>
+        <label class="field compact"><span>Duration</span><select ${durationDisabled} data-action="setSessionDuration" data-id="${session.id}">${DURATION_OPTIONS.map((m) => `<option value="${m}"${m === session.duration ? " selected" : ""}>${fmtDur(m)}</option>`).join("")}</select></label>
+      </div>
+    </div>
+  </article>`;
+}
+
+function phaseSection(project, phaseKey, context = false) {
+  const sessions = project.phases[phaseKey]?.sessions || [];
+  if (!sessions.length) return "";
+  const summary = getPhaseSummary(project, phaseKey);
+  const owner = getActorDisplayName(project, PHASE_META[phaseKey].owner);
+  return `<section class="phase-group phase-${phaseKey}${context ? " context" : ""}">
+    <header class="phase-head">
+      <div><h3>${esc(PHASE_META[phaseKey].label)}</h3><p>${esc(owner)} | ${summary.scheduled} / ${summary.total} scheduled</p></div>
+      <div class="phase-range">${esc(fmtRange(summary.rangeStart, summary.rangeEnd))}</div>
+    </header>
+    <div class="phase-list">${sessions.map((s) => sessionRow(project, s, context)).join("")}</div>
+  </section>`;
+}
+
+function sessionPanel(project) {
+  const visible = getVisiblePhaseKeys(state.actor);
+  const context = getContextPhaseKeys(state.actor);
+  return `<section class="panel schedule-panel${state.ui.mobileTab === "calendar" ? " mobile-hidden" : ""}">
+    <div class="panel-head"><div><h2>${esc(project.clientName)}</h2><p>${esc(PROJECT_TYPE_META[project.projectType])} | ${esc(getProjectCardStatus(project))}</p></div><button class="btn-secondary btn-sm mobile-only" data-action="switchMobileTab" data-tab="calendar">Calendar</button></div>
+    ${visible.map((phaseKey) => phaseSection(project, phaseKey)).join("")}
+    ${
+      state.actor === "is"
+        ? `<section class="phase-group read-only-context"><header class="phase-head"><div><h3>Read-only Context</h3><p>Setup and Hypercare remain visible for handoff context.</p></div></header>${context.map((phaseKey) => phaseSection(project, phaseKey, true)).join("")}</section>`
+        : ""
+    }
+  </section>`;
+}
+
+function calendarPanel(project) {
+  if (!state.calStart) {
+    const range = getProjectDateRange(project);
+    state.calStart = mondayOf(parseDate(range.start || toDateStr(new Date())));
+  }
+  const mobile = window.innerWidth <= 860;
+  const cols = mobile ? 5 : 7;
+  const weeks = 6;
+  const unscheduled = PHASE_ORDER.flatMap((key) => project.phases[key].sessions).filter((s) => canEditSession(project, s, state.actor) && !s.date);
+  const conflictSummary = getConflictSummary({ project, actor: state.actor, scope: "pushable" });
+  const cells = [];
+  for (let i = 0; i < cols * weeks; i += 1) {
+    const date = new Date(state.calStart);
+    date.setDate(date.getDate() + i);
+    const dateString = toDateStr(date);
+    const sessions = PHASE_ORDER.flatMap((key) => project.phases[key].sessions).filter((s) => s.date === dateString);
+    const dayConflictKinds = sessions.reduce(
+      (acc, session) => {
+        const summary = summarizeConflictKinds(getSessionConflicts(session.id, { project, actor: state.actor, scope: "editable" }));
+        return {
+          hasWindow: acc.hasWindow || summary.hasWindow,
+          hasCalendar: acc.hasCalendar || summary.hasCalendar,
+        };
+      },
+      { hasWindow: false, hasCalendar: false }
+    );
+    cells.push({
+      date,
+      dateString,
+      sessions,
+      today: dateString === toDateStr(new Date()),
+      hasWindowConflict: dayConflictKinds.hasWindow,
+      hasCalendarConflict: dayConflictKinds.hasCalendar,
     });
   }
-
-  return { scheduleMap, eventsByDate };
+  return `<section class="panel calendar-panel${state.ui.mobileTab === "schedule" ? " mobile-hidden" : ""}">
+    <div class="panel-head"><div><h2>Calendar</h2><p>${conflictSummary.sessions ? `${conflictSummary.sessions} sessions need review${conflictSummary.label ? ` | ${esc(conflictSummary.label)}` : ""}` : "Drop sessions onto a day or open week view."}</p></div><button class="btn-secondary btn-sm mobile-only" data-action="switchMobileTab" data-tab="schedule">Schedule</button></div>
+    <div class="unscheduled-strip"><strong>Unscheduled</strong><div class="unscheduled-list">${unscheduled.length ? unscheduled.map((s) => `<div class="unscheduled-chip phase-${s.phase}" draggable="true" data-drag="session" data-id="${s.id}">${esc(s.name)} <small>${fmtDur(s.duration)}</small></div>`).join("") : '<span class="muted">All editable sessions are scheduled.</span>'}</div></div>
+    <div class="calendar-nav"><button class="btn-secondary btn-sm" data-action="calShift" data-dir="-1">Prev</button><button class="btn-secondary btn-sm" data-action="calToday">Today</button><button class="btn-secondary btn-sm" data-action="calShift" data-dir="1">Next</button></div>
+    <div class="calendar-scroll"><div class="calendar-grid" style="grid-template-columns:32px repeat(${cols},1fr);"><div class="week-spacer"></div>${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].slice(0, cols).map((d) => `<div class="cal-head">${d}</div>`).join("")}${Array.from({ length: weeks }).map((_, week) => `<div class="week-label">W${week + 1}</div>${cells.slice(week * cols, week * cols + cols).map((cell) => `<div class="cal-cell${cell.today ? " today" : ""}${cell.hasCalendarConflict ? " has-conflict" : ""}${cell.hasWindowConflict ? " has-window-conflict" : ""}" data-drop data-date="${cell.dateString}"><button class="cal-date" data-action="openDayView" data-date="${cell.dateString}">${cell.date.getDate()}</button><div class="cal-events">${cell.sessions.map((s) => `<div class="cal-chip phase-${s.phase}${canEditSession(project, s, state.actor) ? "" : " context"}" ${canEditSession(project, s, state.actor) ? `draggable="true" data-drag="session" data-id="${s.id}"` : ""}><span>${esc(s.name)}</span><small>${esc(fmt12(s.time || "09:00"))}</small></div>`).join("")}</div></div>`).join("")}`).join("")}</div></div>
+  </section>`;
 }
 
-export function actionHTML(session, row) {
-  const hasSchedule = Boolean(row.date && row.time);
-
-  let conflictWarn = "";
-  if (state.calendarEvents.length && hasSchedule) {
-    const conflicts = getConflicts();
-    const hits = conflicts.get(session.id);
-    if (hits?.length) {
-      const label = hits.length === 1 ? "1 conflict" : `${hits.length} conflicts`;
-      const titles = hits.map((e) => e.subject).join(", ");
-      conflictWarn = `<span class="conflict-warn" title="${esc(titles)}">&#x26A0; ${label}</span>`;
-    }
-  }
-
-  let graphButton = "";
-  if (state.graphAccount) {
-    const graphClasses = `lbtn lbtn-graph${row.graphActioned ? " actioned" : ""}`;
-    const graphLabel = row.graphActioned
-      ? "✓ In Calendar"
-      : row.graphEventId
-        ? "📅 Update Calendar"
-        : "📅 Push to Calendar";
-
-    graphButton = `<button class="${graphClasses}" data-action="pushToCalendar" data-id="${session.id}" ${
-      hasSchedule ? "" : "disabled"
-    } title="Create or update this event directly in your M365 calendar">${graphLabel}</button>`;
-  }
-
-  const outlookClasses = `lbtn lbtn-ol${row.outlookActioned ? " actioned" : ""}`;
-  const outlookLabel = row.outlookActioned ? "✓ Opened" : "📧 Outlook Web";
-  const outlookTitle = row.outlookActioned
-    ? "Outlook Web compose was opened. Review and send the invite in Outlook."
-    : "Open a new meeting invite in Outlook Web";
-
-  const outlookButton = `<button class="${outlookClasses}" data-action="openOutlook" data-id="${session.id}" ${
-    hasSchedule ? "" : "disabled"
-  } title="${outlookTitle}">${outlookLabel}</button>`;
-
-  return conflictWarn + graphButton + outlookButton;
+function workspace(project) {
+  return `<main class="screen workspace-screen">
+    <div class="workspace-toolbar">
+      <div class="toolbar-group">${conflictButton(project)}<button class="btn-primary" data-action="pushOwned">${state.actor === "is" ? "Commit to Calendar" : "Push All"}</button>${state.actor === "pm" && readyForHandoff(project) ? '<button class="btn-amber" data-action="handoffToIs">Hand Off to IS</button>' : ""}</div>
+      <div class="toolbar-group"><button class="btn-secondary" data-action="toggleSmart">${state.ui.smartOpen ? "Hide Smart Fill" : "Smart Fill"}</button><button class="btn-secondary" data-action="openSettings">Project Settings</button></div>
+    </div>
+    <div class="mobile-tabs"><button class="mobile-tab${state.ui.mobileTab === "schedule" ? " active" : ""}" data-action="switchMobileTab" data-tab="schedule">Schedule</button><button class="mobile-tab${state.ui.mobileTab === "calendar" ? " active" : ""}" data-action="switchMobileTab" data-tab="calendar">Calendar</button></div>
+    <div class="workspace-grid">${sidebar(project)}${sessionPanel(project)}${calendarPanel(project)}</div>
+  </main>`;
 }
 
-export function updateStatus() {
-  const total = state.sessions.length;
-  const scheduled = state.schedule.filter((row) => row.date && row.time).length;
-  const totalElement = document.getElementById("stTotal");
-  const scheduledElement = document.getElementById("stSched");
-
-  if (totalElement) {
-    totalElement.textContent = `${total} session${total !== 1 ? "s" : ""}, ${scheduled} scheduled`;
-  }
-
-  if (scheduledElement) {
-    scheduledElement.textContent = `${scheduled} / ${total} scheduled`;
-  }
+function onboardingStep() {
+  const d = state.ui.onboarding.draft;
+  if (!d) return "";
+  const step = state.ui.onboarding.step;
+  if (step === 0) return `<label class="field"><span>Client Name</span><input type="text" value="${esc(d.clientName)}" data-bind="onboarding.clientName"></label><label class="field"><span>Project Type</span><select data-bind="onboarding.projectType">${Object.entries(PROJECT_TYPE_META).map(([v, l]) => `<option value="${v}"${d.projectType === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>`;
+  if (step === 1) return `<label class="field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="onboarding.pmName"></label><label class="field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="onboarding.pmEmail"></label><label class="field"><span>IS Search / Email</span><input type="text" value="${esc(state.ui.peopleQuery)}" data-bind="peopleQuery"></label><div class="quick-row"><button class="btn-secondary btn-sm" data-action="searchPeople">Search M365</button><span class="muted">People.Read may prompt for re-consent.</span></div>${state.ui.peopleMatches.length ? `<div class="people-list">${state.ui.peopleMatches.map((p) => `<button class="people-pill" data-action="selectPerson" data-name="${esc(p.name)}" data-email="${esc(p.email)}">${esc(p.name || p.email)} <small>${esc(p.email)}</small></button>`).join("")}</div>` : ""}<label class="field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="onboarding.isName"></label><label class="field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="onboarding.isEmail"></label>`;
+  if (step === 2) return `<label class="field"><span>Implementation Start</span><input type="date" value="${d.implementationStart}" data-bind="onboarding.implementationStart"></label><label class="field"><span>Go-Live Date</span><input type="date" value="${d.goLiveDate}" data-bind="onboarding.goLiveDate"></label><label class="field"><span>Hypercare</span><select data-bind="onboarding.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label>`;
+  if (step === 3) return `<label class="field full"><span>Invitees</span><textarea rows="5" data-bind="onboarding.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea><small class="muted">Use commas or new lines to separate attendee email addresses.</small></label>`;
+  if (step === 4) return `<label class="field"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="onboarding.location"><small class="muted">Enter a room name or Teams URL.</small></label>`;
+  if (step === 5) return `<div class="settings-session-list">${d.sessions.map((s, i) => `<div class="settings-row"><div><strong>${esc(s.name)}</strong><small>${esc(PHASE_META[s.phase].label)} | ${fmtDur(s.duration)} | ${s.owner === "is" ? "IS" : "PM"}</small></div><div class="quick-row"><button class="btn-secondary btn-sm" data-action="moveOnboardingSession" data-index="${i}" data-dir="-1">Up</button><button class="btn-secondary btn-sm" data-action="moveOnboardingSession" data-index="${i}" data-dir="1">Down</button><button class="btn-danger-outline btn-sm" data-action="removeOnboardingSession" data-index="${i}">Remove</button></div></div>`).join("")}</div><div class="builder-grid"><label class="field compact"><span>Name</span><input type="text" value="${esc(d.customSession.name)}" data-bind="onboarding.customSession.name"></label><label class="field compact"><span>Duration</span><input type="number" min="15" step="15" value="${d.customSession.duration}" data-bind="onboarding.customSession.duration"></label><label class="field compact"><span>Phase</span><select data-bind="onboarding.customSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.customSession.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="field compact"><span>Owner</span><select data-bind="onboarding.customSession.owner"><option value="pm"${d.customSession.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.customSession.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="field compact"><span>Type</span><select data-bind="onboarding.customSession.type"><option value="external"${d.customSession.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.customSession.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-primary" data-action="addOnboardingSession">Add Session</button></div>`;
+  return `<div class="summary-card"><h4>${esc(d.clientName || "New Project")}</h4><p>${esc(PROJECT_TYPE_META[d.projectType])} | ${esc(d.pmName || d.pmEmail)} -> ${esc(d.isName || d.isEmail)}</p><p>Implementation window: ${esc(fmtRange(d.implementationStart, d.goLiveDate))}</p><p>${d.sessions.length} sessions will be written to the sentinel.</p></div><details class="template-review"><summary>Template JSON</summary><pre>${esc(state.ui.onboarding.templateReviewJSON)}</pre></details>`;
 }
 
-export function renderChips() {
-  const element = document.getElementById("sessionChips");
-  const countElement = document.getElementById("sessCount");
-  if (!element || !countElement) return;
-
-  countElement.textContent = state.sessions.length ? `(${state.sessions.length})` : "";
-
-  if (!state.sessions.length) {
-    element.innerHTML = '<div style="font-size:.72rem;color:var(--text-dim);">No sessions yet</div>';
-    return;
-  }
-
-  element.innerHTML = state.sessions
-    .map(
-      (session, index) => `
-    <div class="s-chip">
-      <span class="s-chip-num">${index + 1}</span>
-      <span class="s-chip-name" title="${esc(session.name)}">${esc(session.name)}</span>
-      <span class="s-chip-dur">${fmtDur(session.duration)}</span>
-      <button class="s-chip-del" data-action="removeSession" data-id="${session.id}">✕</button>
-    </div>`
-    )
-    .join("");
+function onboardingModal() {
+  if (!state.ui.onboarding.open) return "";
+  const labels = ["Client", "Team", "Timeline", "Invitees", "Location", "Sessions", "Confirm"];
+  return `<div class="modal-overlay open"><div class="modal wide"><div class="modal-head"><div><h3>New Project</h3><p>${labels[Math.min(state.ui.onboarding.step, labels.length - 1)]}</p></div><button class="btn-secondary btn-sm" data-action="closeOnboarding">Close</button></div><div class="steps">${labels.map((l, i) => `<span class="step${i === state.ui.onboarding.step ? " active" : ""}${i < state.ui.onboarding.step ? " done" : ""}">${esc(l)}</span>`).join("")}</div><div class="modal-body">${onboardingStep()}</div><div class="modal-actions"><button class="btn-secondary" data-action="prevOnboarding" ${state.ui.onboarding.step === 0 ? "disabled" : ""}>Back</button>${state.ui.onboarding.step >= 6 ? '<button class="btn-primary" data-action="createProject">Create Project</button>' : '<button class="btn-primary" data-action="nextOnboarding">Next</button>'}</div></div></div>`;
 }
 
-export function renderTable() {
-  const empty = document.getElementById("emptyState");
-  const table = document.getElementById("scheduleTable");
-  const tbody = document.getElementById("scheduleBody");
-  if (!empty || !table || !tbody) return;
-
-  if (!state.sessions.length) {
-    empty.style.display = "block";
-    table.style.display = "none";
-    return;
-  }
-
-  empty.style.display = "none";
-  table.style.display = "table";
-
-  const defaultTime = document.getElementById("globalTime")?.value || "09:00";
-  const scheduleMap = getScheduleMap();
-  const timeOptionsCache = new Map();
-  const getOptions = (value) => {
-    if (!timeOptionsCache.has(value)) {
-      timeOptionsCache.set(value, getTimeOptionsHTML(value));
-    }
-    return timeOptionsCache.get(value);
-  };
-
-  tbody.innerHTML = state.sessions
-    .map((session, index) => {
-      const row = scheduleMap.get(session.id) || {
-        date: "",
-        time: "",
-        outlookActioned: false,
-        graphActioned: false,
-        graphEventId: "",
-      };
-      const selectedTime = row.time || defaultTime;
-
-      return `<tr>
-        <td class="seq">${index + 1}</td>
-        <td class="sname">${esc(session.name)}</td>
-        <td>
-          <select class="dur-sel" data-action="setDuration" data-id="${session.id}">
-            ${[30, 45, 60, 90, 120, 150, 180, 240, 480]
-              .map(
-                (minutes) =>
-                  `<option value="${minutes}"${
-                    minutes === session.duration ? " selected" : ""
-                  }>${fmtDur(minutes)}</option>`
-              )
-              .join("")}
-          </select>
-        </td>
-        <td><div class="date-cell">
-          <input type="date" value="${row.date}" data-action="setDate" data-id="${session.id}">
-          <span class="dbadge${row.date ? " set" : ""}" id="badge-${session.id}">${
-            row.date ? fmtDateShort(row.date) : "Not set"
-          }</span>
-        </div></td>
-        <td><select class="time-sel" data-action="setTime" data-id="${session.id}">${getOptions(
-          selectedTime
-        )}</select></td>
-        <td><div class="act-cell" id="ac-${session.id}">${actionHTML(session, row)}</div></td>
-        <td><button class="btn-danger" data-action="removeSession" data-id="${session.id}">✕</button></td>
-      </tr>`;
-    })
-    .join("");
+function settingsModal() {
+  const d = state.ui.settings.draft;
+  if (!state.ui.settings.open || !d) return "";
+  return `<div class="modal-overlay open"><div class="modal wide"><div class="modal-head"><div><h3>Project Settings</h3><p>Edit metadata and sessions.</p></div><button class="btn-secondary btn-sm" data-action="closeSettings">Close</button></div><div class="settings-grid"><label class="field"><span>Client</span><input type="text" value="${esc(d.clientName)}" data-bind="settings.clientName"></label><label class="field"><span>Type</span><select data-bind="settings.projectType">${Object.entries(PROJECT_TYPE_META).map(([v, l]) => `<option value="${v}"${d.projectType === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label><label class="field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="settings.pmName"></label><label class="field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="settings.pmEmail"></label><label class="field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="settings.isName"></label><label class="field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="settings.isEmail"></label><label class="field"><span>Implementation Start</span><input type="date" value="${d.implementationStart}" data-bind="settings.implementationStart"></label><label class="field"><span>Go-Live</span><input type="date" value="${d.goLiveDate}" data-bind="settings.goLiveDate"></label><label class="field"><span>Hypercare</span><select data-bind="settings.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="field full"><span>Invitees</span><textarea rows="3" data-bind="settings.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea></label><label class="field full"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="settings.location"></label></div><div class="settings-session-list">${PHASE_ORDER.map((phaseKey) => `<div class="settings-phase"><h4>${esc(PHASE_META[phaseKey].label)}</h4>${(d.phases[phaseKey]?.sessions || []).map((s) => `<div class="settings-row"><div><strong>${esc(s.name)}</strong><small>${fmtDur(s.duration)} | ${s.owner === "is" ? "IS" : "PM"} | ${esc(s.type)}</small></div><div class="quick-row"><button class="btn-secondary btn-sm" data-action="moveSettingsSession" data-id="${s.id}" data-dir="-1">Up</button><button class="btn-secondary btn-sm" data-action="moveSettingsSession" data-id="${s.id}" data-dir="1">Down</button><button class="btn-danger-outline btn-sm" data-action="removeSettingsSession" data-id="${s.id}">Remove</button></div></div>`).join("")}</div>`).join("")}</div><div class="builder-grid"><label class="field compact"><span>Name</span><input type="text" value="${esc(d.newSession?.name || "")}" data-bind="settings.newSession.name"></label><label class="field compact"><span>Duration</span><input type="number" min="15" step="15" value="${d.newSession?.duration || 90}" data-bind="settings.newSession.duration"></label><label class="field compact"><span>Phase</span><select data-bind="settings.newSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.newSession?.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="field compact"><span>Owner</span><select data-bind="settings.newSession.owner"><option value="pm"${d.newSession?.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.newSession?.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="field compact"><span>Type</span><select data-bind="settings.newSession.type"><option value="external"${d.newSession?.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.newSession?.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-primary" data-action="addSettingsSession">Add Session</button></div><div class="modal-actions"><button class="btn-secondary" data-action="closeSettings">Cancel</button><button class="btn-primary" data-action="saveSettings">Save Project</button></div></div></div>`;
 }
 
-export function renderPool() {
-  const element = document.getElementById("poolChips");
-  if (!element) return;
-
-  const scheduleMap = getScheduleMap();
-  const unscheduled = state.sessions.filter((session) => !scheduleMap.get(session.id)?.date);
-
-  if (!unscheduled.length) {
-    element.innerHTML = '<span class="pool-empty">All sessions scheduled ✓</span>';
-    return;
-  }
-
-  element.innerHTML = unscheduled
-    .map(
-      (session) => `
-    <div class="pool-chip" draggable="true" data-drag="pool" data-id="${session.id}">
-      ${esc(session.name)} <span class="pc-dur">${fmtDur(session.duration)}</span>
-    </div>`
-    )
-    .join("");
-}
-
-export function renderCal() {
-  const grid = document.getElementById("calGrid");
-  const title = document.getElementById("calTitle");
-  if (!grid || !title) return;
-
-  const conflictBtn = document.getElementById("conflictBtn");
-  if (conflictBtn) {
-    conflictBtn.classList.toggle("visible", Boolean(state.graphAccount));
-    const conflictDates = getConflictedDates();
-    if (conflictDates.length) {
-      conflictBtn.textContent = `\u26A0 Review Conflicts (${conflictDates.length} day${conflictDates.length > 1 ? "s" : ""})`;
-      conflictBtn.dataset.action = "reviewConflicts";
-    } else {
-      conflictBtn.textContent = "\u26A0 Check Conflicts";
-      conflictBtn.dataset.action = "checkConflicts";
-    }
-  }
-
-  if (!state.calStart) state.calStart = mondayOf(new Date());
-
-  const defaultTime = document.getElementById("globalTime")?.value || "09:00";
-  const { eventsByDate } = getEventCollections(defaultTime);
-  const conflictsByDate = getConflictsByDate();
-  const sessionConflicts = state.calendarEvents.length ? getConflicts() : new Map();
-  const today = toDateStr(new Date());
-  const mobile = isMobile();
-  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const colDays = mobile ? 5 : 7;
-  const weeks = mobile ? 6 : 8;
-
-  grid.style.gridTemplateColumns = `${mobile ? "30px" : "36px"} repeat(${colDays},1fr)`;
-
-  const endDate = new Date(state.calStart);
-  endDate.setDate(endDate.getDate() + (mobile ? 34 : 55));
-  title.textContent = `${state.calStart.toLocaleDateString("en-AU", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  })} - ${endDate.toLocaleDateString("en-AU", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  })}`;
-
-  let html = '<div class="cal-col-hdr" style="border-bottom:2px solid var(--border);"></div>';
-  days.slice(0, colDays).forEach((day, index) => {
-    html += `<div class="cal-col-hdr${index >= 5 ? " wknd" : ""}">${day}</div>`;
-  });
-
-  for (let week = 0; week < weeks; week += 1) {
-    const weekStart = new Date(state.calStart);
-    weekStart.setDate(weekStart.getDate() + week * 7);
-    html += `<div class="cal-week-lbl">W${week + 1}</div>`;
-
-    for (let dayIndex = 0; dayIndex < colDays; dayIndex += 1) {
-      const day = new Date(weekStart);
-      day.setDate(day.getDate() + dayIndex);
-      const dayString = toDateStr(day);
-      const isToday = dayString === today;
-      const isWeekend = dayIndex >= 5;
-      const hasConflict = conflictsByDate.has(dayString);
-      const classes = `cal-day${isToday ? " today" : ""}${isWeekend ? " wknd" : ""}${hasConflict ? " has-conflict" : ""}`;
-      const events = eventsByDate.get(dayString) || [];
-      const eventHTML = events
-        .map(
-          ({ session, row, time }) => {
-            const hits = sessionConflicts.get(session.id);
-            const conflictClass = hits?.length ? " cal-event-conflict" : "";
-            const conflictBadge = hits?.length
-              ? `<span class="cal-conflict-dot" title="${hits.length} conflict${hits.length > 1 ? "s" : ""}">!</span>`
-              : "";
-            return `<div class="cal-event${conflictClass}" draggable="true" data-drag="event" data-id="${session.id}"
-            title="${esc(session.name)}&#10;${fmt12(time)} · ${fmtDur(session.duration)}">
-            <span class="cal-event-name">${esc(session.name)}</span>
-            <span class="cal-event-time">${fmt12(time)}${conflictBadge}</span>
-            <button class="cal-event-x" data-action="unschedule" data-id="${session.id}" title="Unschedule">✕</button>
-          </div>`;
-          }
-        )
-        .join("");
-
-      const dayNumHTML = hasConflict
-        ? `<div class="day-num dv-link" data-action="openDayView" data-date="${dayString}">${day.getDate()} &#x26A0;</div>`
-        : `<div class="day-num">${day.getDate()}</div>`;
-
-      html += `<div class="${classes}" data-drop data-date="${dayString}">
-        ${dayNumHTML}
-        ${eventHTML}
-      </div>`;
-    }
-  }
-
-  grid.innerHTML = html;
-}
-
-export function refreshRow(sessionId) {
-  const row = getScheduleRow(sessionId);
-  const session = state.sessions.find((item) => item.id === sessionId);
-  if (!row || !session) return;
-
-  const badge = document.getElementById(`badge-${sessionId}`);
-  if (badge) {
-    badge.textContent = row.date ? fmtDateShort(row.date) : "Not set";
-    badge.className = `dbadge${row.date ? " set" : ""}`;
-  }
-
-  const actions = document.getElementById(`ac-${sessionId}`);
-  if (actions) actions.innerHTML = actionHTML(session, row);
-
-  updateStatus();
+function projectErrorModal() {
+  if (!state.ui.projectError.open) return "";
+  return `<div class="modal-overlay open"><div class="modal"><div class="modal-head"><div><h3>Could Not Load Projects</h3><p>${esc(state.ui.projectError.message)}</p></div><button class="btn-secondary btn-sm" data-action="dismissProjectError">Close</button></div><pre class="error-pre">${esc(state.ui.projectError.details || "No diagnostic detail available.")}</pre><div class="modal-actions"><button class="btn-secondary" data-action="dismissProjectError">Close</button><button class="btn-danger-outline" data-action="resetSentinel">Reset Sentinel</button></div></div></div>`;
 }
 
 export function render() {
-  renderChips();
-  renderTable();
-  renderPool();
-  renderCal();
-  updateStatus();
+  const app = document.getElementById("app");
+  if (!app) return;
+  const project = getActiveProject();
+  const main = state.ui.screen === "auth" ? authScreen() : state.ui.screen === "workspace" && project ? workspace(project) : projectsScreen();
+  app.innerHTML = `${state.ui.screen === "auth" ? "" : topbar()}${main}${onboardingModal()}${settingsModal()}${projectErrorModal()}${renderDayViewModal()}<div class="toast" id="toast"></div>`;
 }

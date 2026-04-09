@@ -1,30 +1,34 @@
-import { GRAPH_CLIENT_ID, GRAPH_TENANT_ID } from "./config.js";
+import { DEEP_LINK_LIMIT, SENTINEL_SCHEMA_ID, SENTINEL_SUBJECT, setActiveProject, setActorMode, setAuthStatus, setCalendarEvents, setGraphAccount, setProjects, setProjectError, setScreen, setSentinelState, state, upsertProject, getActiveProject } from "./state.js";
+import { GRAPH_CLIENT_ID, GRAPH_SCOPES, GRAPH_TENANT_ID } from "./config.js";
+import { buildDeepLinkUrl } from "./deeplink.js";
 import { buildBodyHTML, buildSubject, parseInvitees } from "./invites.js";
-import { refreshRow, render } from "./render.js";
 import {
-  clearCalendarEvents,
-  getScheduleRow,
-  getSession,
-  invalidateAllInviteState,
-  saveState,
-  setGraphAccount,
-  state,
-} from "./state.js";
+  deriveProjectStatus,
+  findSession,
+  getCalendarOwnerName,
+  getPhaseSessions,
+  getProjectDateRange,
+  getProjectById,
+  getPushableSessions,
+  mergeDeepLinkProject,
+  normalizeProject,
+  serializeSentinelProjects,
+} from "./projects.js";
 import { getLocalTimeZone, pad, toast } from "./utils.js";
-const GRAPH_SCOPES = ["Calendars.ReadWrite"];
+
 const MSAL_CDN_URLS = [
   "https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js",
   "https://unpkg.com/@azure/msal-browser@2.39.0/lib/msal-browser.min.js",
 ];
 
-const GRAPH_FETCH_TIMEOUT_MS = 30000;
-const POPUP_COOLDOWN_MS = 5000;
+const GRAPH_TIMEOUT_MS = 30000;
+const SENTINEL_LOOKBACK_COUNT = 25;
+const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 
 let msalInstance = null;
 let msalInitPromise = null;
-let msalInitError = null;
 let lastPopupDismissedAt = 0;
-const msalScriptLoads = new Map();
+const scriptLoads = new Map();
 
 function hasGraphConfig() {
   return Boolean(
@@ -36,34 +40,26 @@ function hasGraphConfig() {
 }
 
 function isMsalAvailable() {
-  return Boolean(window.msal && window.msal.PublicClientApplication);
+  return Boolean(window.msal?.PublicClientApplication);
 }
 
-function loadExternalScript(src) {
-  if (msalScriptLoads.has(src)) return msalScriptLoads.get(src);
+function loadScript(src) {
+  if (scriptLoads.has(src)) return scriptLoads.get(src);
 
   const promise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
     script.src = src;
     script.async = true;
-    script.dataset.msalSrc = src;
-    script.onload = () => {
-      if (isMsalAvailable()) {
-        console.info("MSAL loaded from", src);
-        resolve();
-      } else {
-        reject(new Error(`MSAL loaded from ${src} but window.msal.PublicClientApplication is unavailable.`));
-      }
-    };
+    script.onload = () => (isMsalAvailable() ? resolve() : reject(new Error(`MSAL loaded from ${src} but is unavailable.`)));
     script.onerror = () => reject(new Error(`Failed to load MSAL from ${src}`));
     document.head.appendChild(script);
   });
 
   const tracked = promise.catch((error) => {
-    msalScriptLoads.delete(src);
+    scriptLoads.delete(src);
     throw error;
   });
-  msalScriptLoads.set(src, tracked);
+  scriptLoads.set(src, tracked);
   return tracked;
 }
 
@@ -73,56 +69,33 @@ async function ensureMsalLoaded() {
   let lastError = null;
   for (const src of MSAL_CDN_URLS) {
     try {
-      await loadExternalScript(src);
+      await loadScript(src);
       return;
     } catch (error) {
       lastError = error;
-      console.error("MSAL script load failed:", src, error);
+      console.error("MSAL load failed:", error);
     }
   }
 
-  throw lastError || new Error("MSAL could not be loaded from any configured CDN.");
+  throw lastError || new Error("MSAL could not be loaded.");
 }
 
-export function updateAuthUI() {
-  const button = document.getElementById("authBtn");
-  const label = document.getElementById("authLabel");
-  const icon = document.getElementById("authIcon");
-  if (!button || !label || !icon) return;
-
-  if (state.graphAccount) {
-    const initials = state.graphAccount.name
-      ? state.graphAccount.name
-          .split(" ")
-          .map((word) => word[0])
-          .slice(0, 2)
-          .join("")
-          .toUpperCase()
-      : "?";
-
-    icon.outerHTML = `<span id="authIcon" class="auth-avatar">${initials}</span>`;
-    label.textContent = state.graphAccount.name || state.graphAccount.username;
-    button.classList.add("connected");
-    button.title = `Signed in as ${state.graphAccount.username} - click to sign out`;
-  } else {
-    icon.outerHTML = '<span id="authIcon">☁️</span>';
-    label.textContent = "Connect M365";
-    button.classList.remove("connected");
-    button.title = "";
-  }
+function createMsalInstance() {
+  return new window.msal.PublicClientApplication({
+    auth: {
+      clientId: GRAPH_CLIENT_ID,
+      authority: `https://login.microsoftonline.com/${GRAPH_TENANT_ID}`,
+      redirectUri: `${window.location.origin}${window.location.pathname}`,
+    },
+    cache: {
+      cacheLocation: "sessionStorage",
+    },
+  });
 }
 
-function setAuthButtonLoading(loading) {
-  const button = document.getElementById("authBtn");
-  if (!button) return;
-  button.classList.toggle("loading", loading);
-  if (loading) button.setAttribute("disabled", "");
-  else button.removeAttribute("disabled");
-}
-
-export async function initMsal() {
+async function initMsal() {
   if (!hasGraphConfig()) {
-    console.warn("MSAL init skipped: Graph client or tenant ID is missing.");
+    setAuthStatus("error", "Missing Graph configuration");
     return null;
   }
 
@@ -130,390 +103,787 @@ export async function initMsal() {
   if (msalInitPromise) return msalInitPromise;
 
   msalInitPromise = (async () => {
-    try {
-      setAuthButtonLoading(true);
-      if (window.__msalPrimaryScriptError) {
-        console.error("Primary MSAL CDN failed before init. Trying fallback loader.");
-      }
-
-      await ensureMsalLoaded();
-
-      if (!isMsalAvailable()) {
-        throw new Error("MSAL library is not available on window.msal.");
-      }
-
-      const instance = new window.msal.PublicClientApplication({
-        auth: {
-          clientId: GRAPH_CLIENT_ID,
-          authority: `https://login.microsoftonline.com/${GRAPH_TENANT_ID}`,
-          redirectUri: `${window.location.origin}${window.location.pathname}`,
-        },
-        cache: { cacheLocation: "sessionStorage" },
-      });
-
-      if (typeof instance.initialize === "function") {
-        await instance.initialize();
-      }
-
-      let redirectResult = null;
-      if (typeof instance.handleRedirectPromise === "function") {
-        redirectResult = await instance.handleRedirectPromise();
-      }
-
-      msalInstance = instance;
-      msalInitError = null;
-
-      if (redirectResult?.account) {
-        setGraphAccount(redirectResult.account);
-      } else {
-        const accounts = msalInstance.getAllAccounts();
-        if (accounts.length) setGraphAccount(accounts[0]);
-      }
-
-      updateAuthUI();
-      render();
-      console.info("MSAL initialised successfully.");
-      return msalInstance;
-    } catch (error) {
-      msalInitError = error;
-      msalInstance = null;
-      console.error("MSAL init failed:", error);
-      return null;
-    } finally {
-      setAuthButtonLoading(false);
-      msalInitPromise = null;
+    setAuthStatus("loading");
+    await ensureMsalLoaded();
+    msalInstance = createMsalInstance();
+    if (typeof msalInstance.initialize === "function") {
+      await msalInstance.initialize();
     }
-  })();
+
+    if (typeof msalInstance.handleRedirectPromise === "function") {
+      await msalInstance.handleRedirectPromise();
+    }
+
+    const accounts = msalInstance.getAllAccounts();
+    if (accounts.length) {
+      setGraphAccount(accounts[0]);
+      setAuthStatus("ready");
+    } else {
+      setAuthStatus("idle");
+    }
+
+    return msalInstance;
+  })().catch((error) => {
+    console.error("MSAL init failed:", error);
+    setAuthStatus("error", error.message || String(error));
+    msalInstance = null;
+    return null;
+  }).finally(() => {
+    msalInitPromise = null;
+  });
 
   return msalInitPromise;
 }
 
-export async function toggleAuth() {
-  if (!hasGraphConfig()) {
-    toast("Add your Azure Client ID and Tenant ID to enable M365 sync", 4000);
-    return;
-  }
-
-  if (!msalInstance) {
-    await initMsal();
-  }
-
-  if (!msalInstance) {
-    toast(
-      msalInitError
-        ? "M365 sync could not start. Check the browser console for the MSAL error."
-        : "M365 sync is still initialising. Please try again.",
-      5000
-    );
-    return;
-  }
-
-  if (state.graphAccount) {
-    try {
-      await msalInstance.logoutPopup({ account: state.graphAccount });
-    } catch (error) {
-      console.error("MSAL logout failed:", error);
-      toast(`Sign-out failed: ${error.message || error}`, 5000);
-      return;
-    }
-
-    setGraphAccount(null);
-    clearCalendarEvents();
-    updateAuthUI();
-    render();
-    return;
-  }
-
-  await signIn();
-}
-
-async function signIn() {
-  if (!msalInstance) return;
+async function getAccessToken(scopes = GRAPH_SCOPES) {
+  const instance = await initMsal();
+  if (!instance || !state.graphAccount) return null;
 
   try {
-    const result = await msalInstance.loginPopup({
-      scopes: GRAPH_SCOPES,
-      prompt: "select_account",
-    });
-    const previousAccount = state.graphAccount;
-    setGraphAccount(result.account);
-
-    if (previousAccount && previousAccount.username !== result.account.username) {
-      invalidateAllInviteState({ preserveGraphEventId: false });
-    }
-
-    updateAuthUI();
-    render();
-    toast(`Connected as ${state.graphAccount.name || state.graphAccount.username}`);
-  } catch (error) {
-    console.error("MSAL loginPopup failed:", error);
-    if (error.errorCode !== "user_cancelled") {
-      toast(`Sign-in failed: ${error.message || error}`, 5000);
-    }
-  }
-}
-
-async function getGraphToken() {
-  if (!msalInstance) {
-    await initMsal();
-  }
-
-  if (!msalInstance || !state.graphAccount) return null;
-
-  try {
-    const result = await msalInstance.acquireTokenSilent({
-      scopes: GRAPH_SCOPES,
+    const result = await instance.acquireTokenSilent({
+      scopes,
       account: state.graphAccount,
     });
     return result.accessToken;
   } catch (silentError) {
-    console.warn("MSAL acquireTokenSilent failed, falling back to popup:", silentError);
-
+    console.warn("Silent token acquisition failed:", silentError);
     const elapsed = Date.now() - lastPopupDismissedAt;
-    if (elapsed < POPUP_COOLDOWN_MS) {
-      toast("Please wait a moment before retrying", 3000);
-      return null;
-    }
+    if (elapsed < 5000) return null;
 
     try {
-      const result = await msalInstance.acquireTokenPopup({
-        scopes: GRAPH_SCOPES,
+      const result = await instance.acquireTokenPopup({
+        scopes,
         account: state.graphAccount,
       });
       return result.accessToken;
     } catch (popupError) {
       lastPopupDismissedAt = Date.now();
-      console.error("MSAL acquireTokenPopup failed:", popupError);
-      toast(`Could not get calendar access: ${popupError.message || popupError}`, 5000);
+      console.error("Popup token acquisition failed:", popupError);
       return null;
     }
   }
 }
 
-function buildEventPayload(session, row) {
-  const location = document.getElementById("globalLocation")?.value.trim() || "";
-  const attendees = parseInvitees();
-  const bodyHtml = buildBodyHTML(session, row);
+function getGraphBase(userId = "me") {
+  return userId === "me" ? `${GRAPH_ROOT}/me` : `${GRAPH_ROOT}/users/${encodeURIComponent(userId)}`;
+}
 
-  const [year, month, day] = row.date.split("-").map(Number);
-  const [hours, minutes] = row.time.split(":").map(Number);
-  const start = new Date(year, month - 1, day, hours, minutes, 0);
-  if (isNaN(start.getTime())) {
-    throw new Error("Invalid date or time for this session. Check the values and try again.");
+async function graphRequest(path, { method = "GET", body, headers = {}, extraHeaders = {}, scopes = GRAPH_SCOPES } = {}) {
+  const token = await getAccessToken(scopes);
+  if (!token) {
+    throw new Error("Could not get a Microsoft Graph access token.");
   }
-  const end = new Date(start.getTime() + session.duration * 60000);
-  const toLocalISO = (value) =>
-    `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(
-      value.getHours()
-    )}:${pad(value.getMinutes())}:00`;
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), GRAPH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(path, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        ...headers,
+        ...extraHeaders,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({ error: { message: response.statusText } }));
+      const error = new Error(errorPayload.error?.message || response.statusText);
+      error.status = response.status;
+      throw error;
+    }
+
+    if (response.status === 204) return null;
+    return response.json().catch(() => null);
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function getCurrentMonday() {
+  const today = new Date();
+  const monday = new Date(today);
+  const day = monday.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  monday.setDate(monday.getDate() + diff);
+  monday.setHours(0, 0, 0, 0);
+  return monday;
+}
+
+function toIsoLocal(date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours()
+  )}:${pad(date.getMinutes())}:00`;
+}
+
+function buildSentinelPayload(projects) {
+  const payload = {
+    schemaId: SENTINEL_SCHEMA_ID,
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    projects: serializeSentinelProjects(projects),
+  };
+
+  return {
+    "@odata.type": "microsoft.graph.openTypeExtension",
+    extensionName: SENTINEL_SCHEMA_ID,
+    schemaId: SENTINEL_SCHEMA_ID,
+    payload: JSON.stringify(payload),
+    projectCount: payload.projects.length,
+    updatedAt: payload.updatedAt,
+  };
+}
+
+function parseSentinelExtension(extension) {
+  if (!extension) return [];
+
+  if (typeof extension.payload === "string") {
+    const parsed = JSON.parse(extension.payload);
+    if (!Array.isArray(parsed?.projects)) throw new Error("Sentinel payload is missing a valid projects array.");
+    return parsed.projects.map((project) => normalizeProject(project));
+  }
+
+  if (Array.isArray(extension.projects)) {
+    return extension.projects.map((project) => normalizeProject(project));
+  }
+
+  throw new Error("Sentinel extension did not contain a valid payload.");
+}
+
+async function findSentinelSeries(userId = "me") {
+  const path =
+    `${getGraphBase(userId)}/events` +
+    `?$filter=${encodeURIComponent(`startswith(subject,'${SENTINEL_SUBJECT}')`)}` +
+    `&$top=${SENTINEL_LOOKBACK_COUNT}` +
+    `&$select=id,subject,type,seriesMasterId,createdDateTime,start`;
+  const data = await graphRequest(path);
+  const events = data?.value || [];
+  return events.find((event) => event.type === "seriesMaster") || null;
+}
+
+async function createSentinelSeries(userId = "me") {
+  const monday = getCurrentMonday();
+  const endDate = new Date(monday);
+  endDate.setDate(endDate.getDate() + 1);
 
   const event = {
-    subject: buildSubject(session.name),
-    body: { contentType: "html", content: bodyHtml },
-    start: { dateTime: toLocalISO(start), timeZone: getLocalTimeZone() },
-    end: { dateTime: toLocalISO(end), timeZone: getLocalTimeZone() },
+    subject: SENTINEL_SUBJECT,
+    isAllDay: true,
+    showAs: "free",
+    start: {
+      dateTime: toIsoLocal(monday),
+      timeZone: getLocalTimeZone(),
+    },
+    end: {
+      dateTime: toIsoLocal(endDate),
+      timeZone: getLocalTimeZone(),
+    },
+    recurrence: {
+      pattern: {
+        type: "weekly",
+        interval: 1,
+        daysOfWeek: ["monday"],
+        firstDayOfWeek: "monday",
+      },
+      range: {
+        type: "noEnd",
+        startDate: `${monday.getFullYear()}-${pad(monday.getMonth() + 1)}-${pad(monday.getDate())}`,
+      },
+    },
+  };
+
+  return graphRequest(`${getGraphBase(userId)}/events`, {
+    method: "POST",
+    body: event,
+  });
+}
+
+async function readSentinelExtension(masterId, userId = "me") {
+  try {
+    return await graphRequest(`${getGraphBase(userId)}/events/${encodeURIComponent(masterId)}/extensions/${encodeURIComponent(SENTINEL_SCHEMA_ID)}`);
+  } catch (error) {
+    if (error.status === 404) return null;
+    throw error;
+  }
+}
+
+async function writeSentinelExtension(masterId, projects, userId = "me") {
+  const payload = buildSentinelPayload(projects);
+  try {
+    return await graphRequest(
+      `${getGraphBase(userId)}/events/${encodeURIComponent(masterId)}/extensions/${encodeURIComponent(SENTINEL_SCHEMA_ID)}`,
+      {
+        method: "PATCH",
+        body: payload,
+      }
+    );
+  } catch (error) {
+    if (error.status !== 404) throw error;
+    return graphRequest(`${getGraphBase(userId)}/events/${encodeURIComponent(masterId)}/extensions`, {
+      method: "POST",
+      body: payload,
+    });
+  }
+}
+
+export async function ensureSentinelSeries(userId = "me") {
+  let master = await findSentinelSeries(userId);
+  if (!master) {
+    master = await createSentinelSeries(userId);
+  }
+  return master;
+}
+
+export async function fetchSentinel({ userId = "me" } = {}) {
+  const master = await ensureSentinelSeries(userId);
+  const extension = await readSentinelExtension(master.id, userId);
+
+  if (userId === "me") {
+    setSentinelState({
+      status: "ready",
+      eventId: master.id,
+      seriesMasterId: master.id,
+      extensionId: extension?.id || SENTINEL_SCHEMA_ID,
+      malformed: false,
+      error: "",
+      loadedAt: new Date().toISOString(),
+    });
+  }
+
+  if (!extension) {
+    await writeSentinelExtension(master.id, [], userId);
+    return {
+      master,
+      projects: [],
+    };
+  }
+
+  const projects = parseSentinelExtension(extension);
+  return {
+    master,
+    projects,
+  };
+}
+
+export async function writeSentinel(projects, { userId = "me" } = {}) {
+  const master = await ensureSentinelSeries(userId);
+  await writeSentinelExtension(master.id, projects, userId);
+  if (userId === "me") {
+    setSentinelState({
+      status: "ready",
+      eventId: master.id,
+      seriesMasterId: master.id,
+      extensionId: SENTINEL_SCHEMA_ID,
+      malformed: false,
+      error: "",
+      loadedAt: new Date().toISOString(),
+    });
+  }
+  return master;
+}
+
+export async function resetSentinel() {
+  try {
+    setSentinelState({ status: "loading", error: "", malformed: false });
+    await writeSentinel([]);
+    setProjects([]);
+    setActiveProject("");
+    setScreen("projects");
+    toast("Sentinel reset");
+  } catch (error) {
+    console.error("Sentinel reset failed:", error);
+    setProjectError("Could not reset the project sentinel.", error.message || String(error));
+  }
+}
+
+export async function loadProjectsFromSentinel() {
+  if (!state.graphAccount) return [];
+
+  try {
+    setSentinelState({ status: "loading", error: "", malformed: false });
+    const { projects } = await fetchSentinel();
+    setProjects(projects);
+    if (!state.activeProjectId && projects.length) {
+      setActiveProject(projects[0].id);
+    }
+    setScreen(state.deepLink.payload ? "workspace" : "projects");
+    return projects;
+  } catch (error) {
+    console.error("Sentinel bootstrap failed:", error);
+    setSentinelState({
+      status: "error",
+      error: error.message || String(error),
+      malformed: true,
+    });
+    setProjectError("Could not load projects from the calendar sentinel.", error.message || String(error));
+    setScreen("projects");
+    return [];
+  }
+}
+
+export async function persistActiveProjects() {
+  await writeSentinel(state.projects);
+}
+
+export async function resolveUserByEmail(email) {
+  if (!email) return null;
+
+  try {
+    return await graphRequest(
+      `${GRAPH_ROOT}/users/${encodeURIComponent(email)}?$select=id,displayName,mail,userPrincipalName`,
+      {
+        scopes: GRAPH_SCOPES,
+      }
+    );
+  } catch (error) {
+    console.warn("resolveUserByEmail failed:", error);
+    return null;
+  }
+}
+
+export async function searchPeople(query) {
+  if (!query?.trim()) {
+    state.ui.peopleMatches = [];
+    state.ui.peopleStatus = "idle";
+    return [];
+  }
+
+  state.ui.peopleStatus = "loading";
+  state.ui.peopleError = "";
+  try {
+    const response = await graphRequest(
+      `${getGraphBase()}/people?$search=${encodeURIComponent(`"${query.trim()}"`)}&$top=8`,
+      {
+        scopes: GRAPH_SCOPES,
+        extraHeaders: {
+          ConsistencyLevel: "eventual",
+        },
+      }
+    );
+    const matches = (response?.value || [])
+      .map((person) => ({
+        name: person.displayName || person.userPrincipalName || "",
+        email:
+          person.scoredEmailAddresses?.find((item) => item.address)?.address ||
+          person.userPrincipalName ||
+          "",
+      }))
+      .filter((person) => person.email);
+
+    state.ui.peopleMatches = matches;
+    state.ui.peopleStatus = "ready";
+    return matches;
+  } catch (error) {
+    console.error("People lookup failed:", error);
+    state.ui.peopleStatus = "error";
+    state.ui.peopleError = error.message || String(error);
+    state.ui.peopleMatches = [];
+    return [];
+  }
+}
+
+function buildEventPayload(project, session) {
+  const [year, month, day] = session.date.split("-").map(Number);
+  const [hours, minutes] = session.time.split(":").map(Number);
+  const start = new Date(year, month - 1, day, hours, minutes, 0);
+  const end = new Date(start.getTime() + session.duration * 60000);
+  const event = {
+    subject: buildSubject(project, session),
+    body: {
+      contentType: "html",
+      content: buildBodyHTML(project, session),
+    },
+    start: {
+      dateTime: toIsoLocal(start),
+      timeZone: getLocalTimeZone(),
+    },
+    end: {
+      dateTime: toIsoLocal(end),
+      timeZone: getLocalTimeZone(),
+    },
+    location: project.location ? { displayName: project.location } : undefined,
     isOnlineMeeting: false,
   };
 
-  if (location) {
-    event.location = { displayName: location };
-  }
-
-  if (attendees.length) {
-    event.attendees = attendees.map((email) => ({
-      emailAddress: { address: email },
-      type: "required",
-    }));
+  if (session.type === "external") {
+    const attendees = parseInvitees(project.invitees);
+    if (attendees.length) {
+      event.attendees = attendees.map((email) => ({
+        emailAddress: { address: email },
+        type: "required",
+      }));
+    }
   }
 
   return event;
 }
 
-async function pushEventRequest(accessToken, row, eventPayload) {
-  const isUpdate = Boolean(row.graphEventId);
-  const url = isUpdate
-    ? `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(row.graphEventId)}`
-    : "https://graph.microsoft.com/v1.0/me/events";
-  const method = isUpdate ? "PATCH" : "POST";
+async function pushGraphEvent(session, project) {
+  const url = session.graphEventId
+    ? `${getGraphBase()}/events/${encodeURIComponent(session.graphEventId)}`
+    : `${getGraphBase()}/events`;
+  const method = session.graphEventId ? "PATCH" : "POST";
+  const payload = buildEventPayload(project, session);
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), GRAPH_FETCH_TIMEOUT_MS);
-
-  let response;
   try {
-    response = await fetch(url, {
+    return await graphRequest(url, {
       method,
+      body: payload,
       headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
         Prefer: "return=representation",
       },
-      body: JSON.stringify(eventPayload),
-      signal: controller.signal,
     });
-  } catch (fetchError) {
-    if (fetchError.name === "AbortError") {
-      throw new Error("Request timed out. Check your network and try again.");
+  } catch (error) {
+    if (session.graphEventId && [401, 403, 404, 410].includes(error.status)) {
+      session.graphEventId = "";
+      return graphRequest(`${getGraphBase()}/events`, {
+        method: "POST",
+        body: payload,
+        headers: {
+          Prefer: "return=representation",
+        },
+      });
     }
-    throw fetchError;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  if (!response.ok) {
-    let errorPayload = null;
-    try {
-      errorPayload = await response.json();
-    } catch {
-      errorPayload = { error: { message: response.statusText } };
-    }
-
-    const error = new Error(errorPayload.error?.message || response.statusText);
-    error.status = response.status;
     throw error;
   }
-
-  const payload = await response.json().catch(() => null);
-  return { isUpdate, payload };
 }
 
-export async function pushToCalendar(sessionId) {
-  const session = getSession(sessionId);
-  const row = getScheduleRow(sessionId);
-  if (!session || !row || !row.date || !row.time) {
+export async function pushSessionToCalendar(sessionId) {
+  const project = getActiveProject();
+  if (!project) return false;
+  const found = findSession(project, sessionId);
+  if (!found?.session || !found.session.date || !found.session.time) {
     toast("Set a date and time first");
-    return;
+    return false;
   }
-
-  const button = document.querySelector(`#ac-${sessionId} .lbtn-graph`);
-  if (button) {
-    button.classList.add("pushing");
-    button.textContent = row.graphEventId ? "⏳ Updating..." : "⏳ Pushing...";
-  }
-
-  const accessToken = await getGraphToken();
-  if (!accessToken) {
-    toast("Could not get an access token. Try reconnecting M365.", 4000);
-    refreshRow(sessionId);
-    return;
-  }
-
-  const payload = buildEventPayload(session, row);
 
   try {
-    let result;
-    try {
-      result = await pushEventRequest(accessToken, row, payload);
-    } catch (error) {
-      const retryStatuses = new Set([401, 403, 404, 410]);
-      if (row.graphEventId && retryStatuses.has(error.status)) {
-        console.warn(`Graph PATCH returned ${error.status}. Clearing stale event ID and creating new event.`, error);
-        row.graphEventId = "";
-        row.graphActioned = false;
-        result = await pushEventRequest(accessToken, row, payload);
-      } else {
-        throw error;
-      }
+    const payload = await pushGraphEvent(found.session, project);
+    if (payload?.id) {
+      found.session.graphEventId = payload.id;
     }
-
-    if (result.payload?.id) {
-      row.graphEventId = result.payload.id;
-    }
-
-    row.graphActioned = true;
-    saveState();
-    refreshRow(sessionId);
-    toast(
-      result.isUpdate
-        ? `"${session.name}" updated in your calendar`
-        : `"${session.name}" added to your calendar`
-    );
+    found.session.graphActioned = true;
+    project.status = deriveProjectStatus(project);
+    await persistActiveProjects();
+    toast(`"${found.session.name}" synced to calendar`, 3500);
+    return true;
   } catch (error) {
-    console.error("Graph push failed:", error);
-    refreshRow(sessionId);
-    toast(`Graph error: ${error.message}`, 5000);
+    console.error("pushSessionToCalendar failed:", error);
+    toast(`Graph error: ${error.message || error}`, 5000);
+    return false;
   }
 }
 
-export async function fetchCalendarEvents() {
-  const scheduled = state.schedule.filter((row) => row.date && row.time);
-  if (!scheduled.length) {
-    toast("No sessions are scheduled yet");
+export async function fetchCalendarEvents({ project = getActiveProject() } = {}) {
+  if (!project) {
+    setCalendarEvents([]);
     return [];
   }
 
-  const dates = scheduled.map((row) => row.date).sort();
-  const startDate = `${dates[0]}T00:00:00`;
-  const endDate = `${dates[dates.length - 1]}T23:59:59`;
-  const timeZone = getLocalTimeZone();
-
-  const accessToken = await getGraphToken();
-  if (!accessToken) {
-    toast("Could not get an access token. Try reconnecting M365.", 4000);
-    return [];
-  }
-
-  const allEvents = [];
-  let url =
-    `https://graph.microsoft.com/v1.0/me/calendarView` +
-    `?startDateTime=${encodeURIComponent(startDate)}` +
-    `&endDateTime=${encodeURIComponent(endDate)}` +
-    `&$select=id,subject,start,end,isCancelled` +
-    `&$top=250` +
-    `&$orderby=start/dateTime`;
+  const range = getProjectDateRange(project);
+  let nextLink =
+    `${getGraphBase()}/calendarView` +
+    `?startDateTime=${encodeURIComponent(`${range.start}T00:00:00`)}` +
+    `&endDateTime=${encodeURIComponent(`${range.end}T23:59:59`)}` +
+    `&$select=id,subject,start,end,isCancelled,showAs` +
+    `&$top=250`;
+  const rawEvents = [];
 
   try {
-    while (url) {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), GRAPH_FETCH_TIMEOUT_MS);
+    while (nextLink) {
+      const data = await graphRequest(nextLink, {
+        extraHeaders: {
+          Prefer: `outlook.timezone="${getLocalTimeZone()}"`,
+        },
+      });
+      rawEvents.push(...(data?.value || []));
+      nextLink = data?.["@odata.nextLink"] || "";
+    }
 
-      let response;
-      try {
-        response = await fetch(url, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            Prefer: `outlook.timezone="${timeZone}"`,
+    const events = rawEvents
+      .filter((event) => !event.isCancelled)
+      .map((event) => ({
+        id: event.id,
+        subject: event.subject || "Busy",
+        start: event.start?.dateTime,
+        end: event.end?.dateTime,
+        kind: "calendar",
+      }));
+    setCalendarEvents(events);
+    return events;
+  } catch (error) {
+    console.error("fetchCalendarEvents failed:", error);
+    toast(`Could not read the calendar: ${error.message || error}`, 5000);
+    return [];
+  }
+}
+
+export async function pushOwnedSessions({ actor = state.actor } = {}) {
+  const project = getActiveProject();
+  if (!project) return 0;
+
+  const sessions = getPushableSessions(project, actor);
+  if (!sessions.length) {
+    toast(actor === "is" ? "No implementation sessions are ready to commit" : "No sessions are ready to push");
+    return 0;
+  }
+
+  let pushed = 0;
+  for (const session of sessions) {
+    const result = await pushSessionToCalendar(session.id);
+    if (result) pushed += 1;
+  }
+
+  if (actor === "is" && pushed) {
+    project.isCommittedAt = project.isCommittedAt || new Date().toISOString();
+    project.status = deriveProjectStatus(project);
+    await persistActiveProjects();
+    await syncProjectToPartnerSentinel(project, "pm");
+  } else if (actor === "pm") {
+    const pmSessions = [...getPhaseSessions(project, "setup"), ...getPhaseSessions(project, "hypercare")];
+    if (pmSessions.length && pmSessions.every((session) => session.graphActioned || session.type === "internal")) {
+      project.status = deriveProjectStatus(project);
+      await persistActiveProjects();
+    }
+  }
+
+  await fetchCalendarEvents({ project });
+  return pushed;
+}
+
+function buildHandoffBody(project, deepLinkUrl) {
+  const implementationCount = getPhaseSessions(project, "implementation").length;
+  return `<!DOCTYPE html>
+<html>
+<body style="font-family:'Trebuchet MS','Segoe UI',sans-serif;font-size:14px;color:#1f2933;">
+  <h2 style="margin-bottom:8px;">${project.clientName} Implementation Handoff</h2>
+  <p>The implementation phase is ready for review.</p>
+  <ul>
+    <li>Implementation window: ${project.implementationStart || "TBC"} to ${project.goLiveDate || "TBC"}</li>
+    <li>Implementation sessions: ${implementationCount}</li>
+    <li>Calendar owner: ${project.isName || project.isEmail || "Implementation Specialist"}</li>
+  </ul>
+  <p><a href="${deepLinkUrl}">Open this project in Training Planner</a></p>
+</body>
+</html>`;
+}
+
+function buildHandoffEvent(project, deepLinkUrl) {
+  const baseDate = project.implementationStart || new Date().toISOString().slice(0, 10);
+  const start = new Date(`${baseDate}T09:00:00`);
+  const end = new Date(start.getTime() + 30 * 60000);
+
+  return {
+    subject: `${buildSubject(project, { name: "Implementation Handoff", phase: "implementation" })}`,
+    body: {
+      contentType: "html",
+      content: buildHandoffBody(project, deepLinkUrl),
+    },
+    start: {
+      dateTime: toIsoLocal(start),
+      timeZone: getLocalTimeZone(),
+    },
+    end: {
+      dateTime: toIsoLocal(end),
+      timeZone: getLocalTimeZone(),
+    },
+    location: project.location ? { displayName: project.location } : undefined,
+    attendees: project.isEmail
+      ? [
+          {
+            emailAddress: {
+              address: project.isEmail,
+              name: project.isName || project.isEmail,
+            },
+            type: "required",
           },
-          signal: controller.signal,
-        });
-      } catch (fetchError) {
-        if (fetchError.name === "AbortError") throw new Error("Request timed out.");
-        throw fetchError;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({ error: { message: response.statusText } }));
-        throw new Error(body.error?.message || response.statusText);
-      }
-
-      const data = await response.json();
-      for (const event of data.value || []) {
-        if (event.isCancelled) continue;
-        allEvents.push({
-          id: event.id,
-          subject: event.subject,
-          start: event.start?.dateTime,
-          end: event.end?.dateTime,
-        });
-      }
-
-      url = data["@odata.nextLink"] || null;
-    }
-  } catch (error) {
-    console.error("Calendar fetch failed:", error);
-    toast(`Could not read calendar: ${error.message}`, 5000);
-    return [];
-  }
-
-  state.calendarEvents = allEvents;
-  return allEvents;
+        ]
+      : undefined,
+  };
 }
 
-export function bootstrapMsal() {
-  initMsal().catch((error) => {
-    console.error("MSAL bootstrap failed:", error);
-    toast("M365 connection unavailable. You can retry via the Connect button.", 5000);
+async function writeProjectToUserSentinel(project, userId) {
+  const existing = await fetchSentinel({ userId });
+  const projects = [...existing.projects];
+  const index = projects.findIndex((candidate) => candidate.id === project.id);
+  if (index >= 0) {
+    projects.splice(index, 1, project);
+  } else {
+    projects.push(project);
+  }
+  await writeSentinel(projects, { userId });
+}
+
+async function syncProjectToPartnerSentinel(project, partnerRole) {
+  const email = partnerRole === "pm" ? project.pmEmail : project.isEmail;
+  if (!email) return false;
+
+  try {
+    await writeProjectToUserSentinel(project, email);
+    return true;
+  } catch (error) {
+    console.warn("Partner sentinel sync failed:", error);
+    project.handoff.pendingPmSync = partnerRole === "pm";
+    await persistActiveProjects();
+    return false;
+  }
+}
+
+export async function createHandoffEvent(project = getActiveProject()) {
+  if (!project) return null;
+
+  const { url, length } = buildDeepLinkUrl(project);
+  if (length > DEEP_LINK_LIMIT) {
+    throw new Error(`Deep link payload exceeds the ${DEEP_LINK_LIMIT}-character limit.`);
+  }
+
+  const eventPayload = buildHandoffEvent(project, url);
+  const resolvedUser = await resolveUserByEmail(project.isEmail);
+  let createdEvent = null;
+  let delegateUsed = false;
+
+  if (resolvedUser?.id) {
+    try {
+      await writeProjectToUserSentinel(project, resolvedUser.id);
+      createdEvent = await graphRequest(`${getGraphBase(resolvedUser.id)}/events`, {
+        method: "POST",
+        body: eventPayload,
+      });
+      delegateUsed = true;
+    } catch (error) {
+      console.warn("Delegate handoff failed, falling back to attendee handoff:", error);
+    }
+  }
+
+  if (!createdEvent) {
+    createdEvent = await graphRequest(`${getGraphBase()}/events`, {
+      method: "POST",
+      body: eventPayload,
+    });
+  }
+
+  project.handoff = {
+    sentAt: new Date().toISOString(),
+    delegateUsed,
+    deepLinkUrl: url,
+    deepLinkLength: length,
+    pendingPmSync: false,
+    eventId: createdEvent?.id || "",
+  };
+  project.status = deriveProjectStatus(project);
+  await persistActiveProjects();
+  state.ui.lastHandoff = {
+    url,
+    length,
+    delegateUsed,
+    eventId: createdEvent?.id || "",
+  };
+  return state.ui.lastHandoff;
+}
+
+export async function applyDeepLinkProject(payload) {
+  const incomingProject = normalizeProject({
+    id: payload.id,
+    clientName: payload.c,
+    projectType: payload.pt,
+    pmEmail: payload.pm,
+    pmName: payload.pn,
+    isEmail: payload.is,
+    isName: payload.in,
+    implementationStart: payload.s,
+    goLiveDate: payload.g,
+    hypercareDuration: payload.h,
+    location: payload.l,
+    invitees: payload.a,
+    status: payload.st,
+    phases: {
+      setup: { owner: "pm", sessions: [] },
+      implementation: {
+        owner: "is",
+        sessions: (payload.impl || []).map((session, index) => ({
+          id: session.i,
+          key: session.k,
+          bodyKey: session.b || session.k,
+          name: session.n || session.k || "Implementation Session",
+          duration: session.d,
+          type: session.t || "external",
+          phase: "implementation",
+          owner: "is",
+          date: session.dt || "",
+          time: session.tm || "",
+          graphEventId: session.g || "",
+          order: index,
+        })),
+      },
+      hypercare: { owner: "pm", sessions: [] },
+    },
   });
+
+  const existing = getProjectById(state.projects, incomingProject.id);
+  const merged = mergeDeepLinkProject(existing, incomingProject);
+  upsertProject(merged);
+  setActiveProject(merged.id);
+  setActorMode("is", "is");
+  setScreen("workspace");
+  await persistActiveProjects();
+  return merged;
+}
+
+export async function toggleAuth() {
+  if (!hasGraphConfig()) {
+    toast("Add your Azure client and tenant IDs to enable Microsoft 365 sync.", 5000);
+    return false;
+  }
+
+  const instance = await initMsal();
+  if (!instance) return false;
+
+  if (state.graphAccount) {
+    await instance.logoutPopup({ account: state.graphAccount }).catch((error) => {
+      console.error("Logout failed:", error);
+    });
+    setGraphAccount(null);
+    setAuthStatus("idle");
+    setProjects([]);
+    setActiveProject("");
+    setScreen("auth");
+    return false;
+  }
+
+  try {
+    setAuthStatus("loading");
+    const result = await instance.loginPopup({
+      scopes: GRAPH_SCOPES,
+      prompt: "select_account",
+    });
+    setGraphAccount(result.account);
+    setAuthStatus("ready");
+    await loadProjectsFromSentinel();
+    toast(`Connected as ${result.account.name || result.account.username}`, 3500);
+    return true;
+  } catch (error) {
+    console.error("Login failed:", error);
+    setAuthStatus("error", error.message || String(error));
+    if (error.errorCode !== "user_cancelled") {
+      toast(`Sign-in failed: ${error.message || error}`, 5000);
+    }
+    return false;
+  }
+}
+
+export async function bootstrapMsal() {
+  const instance = await initMsal();
+  if (!instance) return null;
+
+  if (state.graphAccount) {
+    await loadProjectsFromSentinel();
+  } else {
+    setScreen("auth");
+  }
+
+  return instance;
 }

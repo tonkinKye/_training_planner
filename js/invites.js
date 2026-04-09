@@ -1,52 +1,65 @@
 import { PRODUCT_NAME } from "./config.js";
+import { getActiveProject } from "./state.js";
+import { findSession, getCalendarOwnerName, PHASE_META } from "./projects.js";
 import { getSessionBody } from "./session-templates.js";
-import { getScheduleRow, getSession, saveState } from "./state.js";
-import { fmt12, fmtDateLong, fmtDur, addMins, esc, toast } from "./utils.js";
-import { refreshRow } from "./render.js";
+import { addMins, esc, fmt12, fmtDateLong, fmtDur, toast } from "./utils.js";
 
-export function parseInvitees() {
-  const raw = document.getElementById("globalInvitees")?.value || "";
-  return raw
+function getCurrentProjectSession(sessionId) {
+  const project = getActiveProject();
+  if (!project) return { project: null, session: null };
+  const found = findSession(project, sessionId);
+  return {
+    project,
+    session: found?.session || null,
+  };
+}
+
+export function parseInvitees(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+
+  return String(value || "")
     .split(/[,;\s\n]+/)
     .map((email) => email.trim().toLowerCase())
     .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
 }
 
-export function buildSubject(sessionName) {
-  const client = document.getElementById("globalClient")?.value.trim() || "";
-  return client ? `${PRODUCT_NAME} | ${client} | ${sessionName}` : `${PRODUCT_NAME} | ${sessionName}`;
+export function buildSubject(project, session) {
+  const phaseLabel = PHASE_META[session.phase]?.label || "Session";
+  if (project.clientName) {
+    return `${PRODUCT_NAME} | ${project.clientName} | ${phaseLabel} | ${session.name}`;
+  }
+  return `${PRODUCT_NAME} | ${phaseLabel} | ${session.name}`;
 }
 
-function buildSignatureLines() {
-  const organiser = document.getElementById("globalOrganiser")?.value.trim() || "";
-  const organiserEmail = document.getElementById("globalEmail")?.value.trim() || "";
+function buildSignatureLines(project, session) {
+  const ownerName = getCalendarOwnerName(project, session.phase);
+  const ownerEmail = session.owner === "is" ? project.isEmail : project.pmEmail;
   const lines = [];
-  if (organiser) lines.push(organiser);
-  if (organiserEmail) lines.push(organiserEmail);
+  if (ownerName) lines.push(ownerName);
+  if (ownerEmail) lines.push(ownerEmail);
   return lines;
 }
 
-function buildSessionBodyText(sessionName) {
-  const organiser = document.getElementById("globalOrganiser")?.value.trim() || "";
-  return getSessionBody(sessionName).replace(
+function buildSessionBodyText(project, session) {
+  const ownerName = getCalendarOwnerName(project, session.phase);
+  return getSessionBody(session.bodyKey || session.key, session.name).replace(
     /\{\{Consultant Name\}\}/g,
-    organiser || "Your Consultant"
+    ownerName || "Your Consultant"
   );
 }
 
-export function buildBodyHTML(session, row) {
-  const dateText = row.date ? fmtDateLong(row.date) : "To be confirmed";
-  const timeText = row.time ? fmt12(row.time) : "To be confirmed";
-  const location = document.getElementById("globalLocation")?.value.trim() || "";
-  const organiser = document.getElementById("globalOrganiser")?.value.trim() || "";
-  const organiserEmail = document.getElementById("globalEmail")?.value.trim() || "";
-  const attendees = parseInvitees();
-  const sessionText = buildSessionBodyText(session.name);
-  const signatureLines = buildSignatureLines();
+export function buildBodyHTML(project, session) {
+  const dateText = session.date ? fmtDateLong(session.date) : "To be confirmed";
+  const timeText = session.time ? fmt12(session.time) : "To be confirmed";
+  const attendees = parseInvitees(project.invitees);
+  const sessionText = buildSessionBodyText(project, session);
+  const signatureLines = buildSignatureLines(project, session);
+  const phaseLabel = PHASE_META[session.phase]?.label || "Session";
   const metaRows = [
+    { label: "Phase", value: phaseLabel },
     { label: "Date", value: dateText },
     { label: "Time", value: `${timeText} (${fmtDur(session.duration)})` },
-    { label: "Location", value: location || "To be advised" },
+    { label: "Location", value: project.location || "To be advised" },
   ];
 
   if (attendees.length) {
@@ -56,42 +69,33 @@ export function buildBodyHTML(session, row) {
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"></head>
-<body style="margin:0;padding:0;background:#f4f5f7;font-family:Calibri,Arial,sans-serif;font-size:14px;color:#1a1f2e;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 0;">
+<body style="margin:0;padding:0;background:#f7f5f1;font-family:'Trebuchet MS','Segoe UI',sans-serif;font-size:14px;color:#1f2933;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f7f5f1;padding:24px 0;">
 <tr><td align="center">
-<table width="580" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
-  <tr><td style="background:#1a3a5c;padding:24px 28px;">
-    <div style="color:#e6a817;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px;">Training Session</div>
+<table width="620" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 12px 32px rgba(18,37,63,0.12);">
+  <tr><td style="background:#163a59;padding:24px 28px;">
+    <div style="color:#f4c95d;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px;">${esc(phaseLabel)} Phase</div>
     <div style="color:#ffffff;font-size:22px;font-weight:700;line-height:1.2;">${esc(session.name)}</div>
   </td></tr>
-  <tr><td style="background:#f8f9fb;border-bottom:1px solid #e5e7eb;padding:16px 28px;">
+  <tr><td style="background:#f6f8fb;border-bottom:1px solid #d8e0ea;padding:16px 28px;">
     <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
       ${metaRows
         .map(
           (rowItem) => `<tr>
-        <td style="width:88px;padding:5px 0;color:#6b7280;font-weight:700;text-transform:uppercase;">${esc(
+        <td style="width:96px;padding:5px 0;color:#637083;font-weight:700;text-transform:uppercase;">${esc(
           rowItem.label
         )}</td>
-        <td style="padding:5px 0;color:#1f2937;">${esc(rowItem.value)}</td>
+        <td style="padding:5px 0;color:#152536;">${esc(rowItem.value)}</td>
       </tr>`
         )
         .join("")}
     </table>
   </td></tr>
   <tr><td style="padding:22px 28px;">
-    <div style="font-size:14px;line-height:1.7;color:#374151;white-space:pre-line;">${esc(sessionText)}</div>
-    ${
-      organiser || organiserEmail
-        ? `<div style="margin-top:18px;font-size:12px;color:#6b7280;">
-        Trainer: <strong style="color:#374151;">${esc(organiser || "Your Consultant")}</strong>${
-            organiserEmail ? ` &lt;${esc(organiserEmail)}&gt;` : ""
-          }
-      </div>`
-        : ""
-    }
+    <div style="font-size:14px;line-height:1.7;color:#324152;white-space:pre-line;">${esc(sessionText)}</div>
     ${
       signatureLines.length
-        ? `<div style="margin-top:18px;font-size:13px;color:#374151;white-space:pre-line;">${esc(
+        ? `<div style="margin-top:18px;font-size:13px;color:#324152;white-space:pre-line;">${esc(
             `Thanks,\n${signatureLines.join("\n")}`
           )}</div>`
         : ""
@@ -104,82 +108,81 @@ export function buildBodyHTML(session, row) {
 </html>`;
 }
 
-export function buildBodyPlain(session, row) {
-  const dateText = row.date ? fmtDateLong(row.date) : "TBC";
-  const timeText = row.time ? fmt12(row.time) : "TBC";
-  const location = document.getElementById("globalLocation")?.value.trim() || "";
-  const attendees = parseInvitees();
-  const sessionText = buildSessionBodyText(session.name);
-  const isUrl = Boolean(location && /^https?:\/\//i.test(location));
-  const signatureLines = buildSignatureLines();
+export function buildBodyPlain(project, session) {
+  const dateText = session.date ? fmtDateLong(session.date) : "TBC";
+  const timeText = session.time ? fmt12(session.time) : "TBC";
+  const attendees = parseInvitees(project.invitees);
+  const sessionText = buildSessionBodyText(project, session);
+  const isUrl = Boolean(project.location && /^https?:\/\//i.test(project.location));
+  const signatureLines = buildSignatureLines(project, session);
+  const subject = buildSubject(project, session);
   const headerLines = [
-    buildSubject(session.name),
-    "=".repeat(Math.max(buildSubject(session.name).length, 48)),
+    subject,
+    "=".repeat(Math.max(subject.length, 48)),
+    `Phase:    ${PHASE_META[session.phase]?.label || "Session"}`,
     `Date:     ${dateText}`,
     `Time:     ${timeText} (${fmtDur(session.duration)})`,
-    location && !isUrl ? `Location: ${location}` : null,
+    project.location && !isUrl ? `Location: ${project.location}` : null,
     attendees.length ? `To:       ${attendees.join(", ")}` : null,
     "-".repeat(48),
   ]
     .filter(Boolean)
     .join("\n");
 
-  const joinBlock = isUrl ? `\n\n---\nJoin meeting\n${location}` : "";
+  const joinBlock = isUrl ? `\n\n---\nJoin meeting\n${project.location}` : "";
   const signature = signatureLines.length ? `\n\nThanks,\n${signatureLines.join("\n")}` : "";
 
   return `${headerLines}\n\n${sessionText}${joinBlock}${signature}`;
 }
 
-export function outlookURL(session, row) {
-  if (!row.date || !row.time) return null;
-  const location = document.getElementById("globalLocation")?.value.trim() || "";
+export function outlookURL(project, session) {
+  if (!session.date || !session.time) return null;
+
   const params = [
-    `subject=${encodeURIComponent(buildSubject(session.name))}`,
-    `startdt=${encodeURIComponent(`${row.date}T${row.time}:00`)}`,
-    `enddt=${encodeURIComponent(addMins(row.date, row.time, session.duration))}`,
+    `subject=${encodeURIComponent(buildSubject(project, session))}`,
+    `startdt=${encodeURIComponent(`${session.date}T${session.time}:00`)}`,
+    `enddt=${encodeURIComponent(addMins(session.date, session.time, session.duration))}`,
     "ismeeting=1",
   ];
 
-  if (location) params.push(`location=${encodeURIComponent(location)}`);
-  const attendees = parseInvitees();
+  if (project.location) params.push(`location=${encodeURIComponent(project.location)}`);
+  const attendees = parseInvitees(project.invitees);
   if (attendees.length) params.push(`to=${encodeURIComponent(attendees.join(";"))}`);
 
   return `https://outlook.office.com/calendar/action/compose?${params.join("&")}`;
 }
 
 export async function openOutlook(sessionId) {
-  const row = getScheduleRow(sessionId);
-  const session = getSession(sessionId);
-  if (!row || !session || !row.date || !row.time) {
+  const { project, session } = getCurrentProjectSession(sessionId);
+  if (!project || !session || !session.date || !session.time) {
     toast("Set a date and time first");
-    return;
+    return false;
   }
 
-  const url = outlookURL(session, row);
-  if (!url) return;
+  const url = outlookURL(project, session);
+  if (!url) return false;
 
-  const body = buildBodyPlain(session, row);
+  const body = buildBodyPlain(project, session);
   if (navigator.clipboard?.writeText) {
     navigator.clipboard
       .writeText(body)
       .then(() => {
-        toast("Invite text copied - paste it into the Outlook compose window", 4000);
+        toast("Invite text copied. Paste it into the Outlook compose window.", 4000);
       })
       .catch((error) => {
         console.warn("Clipboard write failed:", error);
-        toast("Could not auto-copy invite text - paste it manually", 4000);
+        toast("Could not auto-copy invite text. Paste it manually.", 4000);
       });
   } else {
-    toast("Clipboard not available - paste the invite text manually", 4000);
+    toast("Clipboard unavailable. Paste the invite text manually.", 4000);
   }
 
   const openedWindow = window.open(url, "_blank", "noopener");
   if (!openedWindow) {
-    toast("Popup blocked \u2014 invite text is on your clipboard. Open Outlook manually.", 5000);
-    return;
+    toast("Popup blocked. Open Outlook manually and use the copied invite text.", 5000);
+    return false;
   }
 
-  row.outlookActioned = true;
-  saveState();
-  refreshRow(sessionId);
+  session.outlookActioned = true;
+  return true;
 }
