@@ -44,16 +44,17 @@ function topbar() {
 
 function authScreen() {
   return `<main class="screen auth-screen">
-    <section class="hero-card">
-      <div class="eyebrow">Work / School M365 Only</div>
-      <h1>Project scheduling with PM to IS handoff.</h1>
-      <p>Sign in to load the current sentinel, manage projects, and push calendar events directly through Microsoft Graph.</p>
-      <ul class="hero-list">
-        <li>Sentinel events are the storage layer.</li>
-        <li>MSAL may use sessionStorage; app data does not.</li>
-        <li>Implementation is handed off by deep link when needed.</li>
-      </ul>
-      <button class="btn-primary btn-lg" data-action="toggleAuth">Sign In With Microsoft 365</button>
+    <section class="auth-card">
+      <div class="auth-mark">TP</div>
+      <div class="auth-copy">
+        <div class="eyebrow">Training Planner</div>
+        <h1>Login to proceed</h1>
+        <p>Sign in with your work or school Microsoft 365 account to open projects and continue scheduling.</p>
+      </div>
+      <div class="auth-actions">
+        <button class="btn-primary btn-lg auth-button" data-action="toggleAuth">Sign In With Microsoft 365</button>
+        <div class="auth-note">Work / School M365 only</div>
+      </div>
       ${state.authError ? `<div class="inline-alert danger">${esc(state.authError)}</div>` : ""}
     </section>
   </main>`;
