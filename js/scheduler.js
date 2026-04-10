@@ -244,14 +244,14 @@ function getSmartFillSearchStart(dateString, windowMin = "", startAfterDate = ""
   return maxDate(getTodayString(), dateString || "", windowMin || "", startAfterDate ? dayAfter(startAfterDate) : "");
 }
 
-function getEligibleDatesBetween(startDate, endDate) {
+function getEligibleDatesBetween(startDate, endDate, activeDays = state.ui.activeDays) {
   if (!startDate || !endDate || startDate > endDate) return [];
 
   const dates = [];
   const cursor = parseDate(startDate);
   const end = parseDate(endDate);
   while (cursor <= end) {
-    if (state.ui.activeDays.has(cursor.getDay())) {
+    if (activeDays.has(cursor.getDay())) {
       dates.push(toDateStr(cursor));
     }
     cursor.setDate(cursor.getDate() + 1);
@@ -259,13 +259,15 @@ function getEligibleDatesBetween(startDate, endDate) {
   return dates;
 }
 
+const WEEKDAYS = new Set(DEFAULT_WORKING_DAYS);
+
 function getInternalBufferDates(project) {
   const projectStart = project?.projectStart || "";
   if (!projectStart) return [];
   const bufferDays = 10;
   const bufferStart = toDateStr(addDays(parseDate(projectStart), -bufferDays));
   const bufferEnd = dayBefore(projectStart);
-  return bufferStart <= bufferEnd ? getEligibleDatesBetween(bufferStart, bufferEnd) : [];
+  return bufferStart <= bufferEnd ? getEligibleDatesBetween(bufferStart, bufferEnd, WEEKDAYS) : [];
 }
 
 function getSmartFillWindowForPhase(project, phaseKey, previousPhaseLastDate = "") {
@@ -531,6 +533,17 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
     }
   }
 
+  // Extract remaining internal sessions — they use weekday dates, not activeDays
+  const deferredInternal = new Map();
+  for (const stageState of stageStates) {
+    const internal = stageState.pendingSessions.filter((s) => s.type === "internal");
+    if (internal.length) {
+      deferredInternal.set(stageState.stage.key, { sessions: internal, stage: stageState.stage });
+      const ids = new Set(internal.map((s) => s.id));
+      stageState.pendingSessions = stageState.pendingSessions.filter((s) => !ids.has(s.id));
+    }
+  }
+
   const allocatableStages = stageStates.filter((stageState) => !stageState.isGoLive);
   const stageCounts = allocateSequentialCounts(allocatableStages, phaseState.dates.length);
 
@@ -572,6 +585,28 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
     }
 
     lastStageBoundary = maxDate(lastStageBoundary, stage.rangeEnd || "", getLatestSessionDate(stage.sessions));
+  }
+
+  // Post-pass: place deferred internal sessions using weekday dates
+  for (const [, { sessions, stage }] of deferredInternal) {
+    const rangeStart = stage.rangeStart || phaseState.start;
+    const rangeEnd = stage.rangeEnd || phaseState.end;
+    const weekdayDates = getEligibleDatesBetween(rangeStart, rangeEnd, WEEKDAYS);
+    const picks = spreadDatesWithSecondPass(weekdayDates, sessions.length);
+    for (let i = 0; i < Math.min(sessions.length, picks.length); i += 1) {
+      applySessionDate(sessions[i], picks[i]);
+      result.datedCount += 1;
+    }
+    if (picks.length) {
+      const allDates = [stage.rangeStart, stage.rangeEnd, ...picks].filter(Boolean).sort();
+      stage.rangeStart = allDates[0] || stage.rangeStart;
+      stage.rangeEnd = allDates.at(-1) || stage.rangeEnd;
+    }
+    const unplaced = sessions.slice(picks.length);
+    if (unplaced.length) {
+      result.unplacedSessionIds.push(...unplaced.map((s) => s.id));
+      result.unplacedCount += unplaced.length;
+    }
   }
 
   return maxDate(previousPhaseLastDate, getLatestSessionDate(getPhaseSessions(project, phaseKey)));
@@ -1260,7 +1295,8 @@ export function applySmartFill() {
     for (const session of candidates) {
       const intervals = getTimedIntervalsForDate(project, state.actor, session.date, session.id, pendingAssignments);
       const todayFloor = session.date === today ? currentMinutes : 0;
-      const slot = findOpenSlot(session.duration, intervals, normalizeSmartFillPreference(state.ui.smartPreference), todayFloor);
+      const halfPref = session.type === "internal" ? "none" : normalizeSmartFillPreference(state.ui.smartPreference);
+      const slot = findOpenSlot(session.duration, intervals, halfPref, todayFloor);
       if (slot) {
         session.time = slot;
         session.availabilityConflict = false;
