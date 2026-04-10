@@ -604,9 +604,8 @@ export function getPhaseSummary(project, phaseKey) {
 
 export function getWindowForPhase(project, phaseKey) {
   if (phaseKey === "setup") {
-    const bufferDays = 10;
     return {
-      min: project.projectStart ? toDateStr(addDays(parseDate(project.projectStart), -bufferDays)) : "",
+      min: project.projectStart || "",
       max: project.implementationStart ? toDateStr(addDays(parseDate(project.implementationStart), -1)) : "",
     };
   }

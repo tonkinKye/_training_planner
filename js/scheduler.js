@@ -259,9 +259,19 @@ function getEligibleDatesBetween(startDate, endDate) {
   return dates;
 }
 
+function getInternalBufferDates(project) {
+  const projectStart = project?.projectStart || "";
+  if (!projectStart) return [];
+  const bufferDays = 10;
+  const bufferStart = maxDate(getTodayString(), toDateStr(addDays(parseDate(projectStart), -bufferDays)));
+  const bufferEnd = dayBefore(projectStart);
+  return bufferStart <= bufferEnd ? getEligibleDatesBetween(bufferStart, bufferEnd) : [];
+}
+
 function getSmartFillWindowForPhase(project, phaseKey, previousPhaseLastDate = "") {
   const window = getWindowForPhase(project, phaseKey);
   const effectiveSmartStart = state.actor === "pm" && window.min && state.ui.smartStart > window.min
+    && phaseKey !== "setup"
     ? window.min
     : state.ui.smartStart;
   const start = getSmartFillSearchStart(effectiveSmartStart, window.min, previousPhaseLastDate);
@@ -488,6 +498,36 @@ function getSmartFillPhaseBoundary(project, phaseKey, previousPhaseLastDate, act
 function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, result) {
   const phaseState = getSmartFillPhaseBoundary(project, phaseKey, previousPhaseLastDate, actor);
   const stageStates = buildStageStates(project, phaseKey, actor);
+
+  // Pre-pass: place internal setup sessions in the buffer period before projectStart
+  if (phaseKey === "setup" && project.projectStart) {
+    const bufferDates = getInternalBufferDates(project);
+    if (bufferDates.length) {
+      const internalSessions = [];
+      for (const stageState of stageStates) {
+        const internal = stageState.pendingSessions.filter((s) => s.type === "internal");
+        internalSessions.push(...internal);
+        stageState.pendingSessions = stageState.pendingSessions.filter((s) => s.type !== "internal");
+      }
+      if (internalSessions.length) {
+        const picks = spreadDatesWithSecondPass(bufferDates, internalSessions.length);
+        for (let i = 0; i < Math.min(internalSessions.length, picks.length); i += 1) {
+          applySessionDate(internalSessions[i], picks[i]);
+          result.datedCount += 1;
+        }
+        const overflow = internalSessions.slice(picks.length);
+        if (overflow.length) {
+          console.info(`[TP smartfill] ${overflow.length} internal setup session(s) could not fit in buffer, will use main dates`);
+          for (const stageState of stageStates) {
+            const stage = stageState.stage;
+            const overflowForStage = overflow.filter((s) => s.stageKey === stage.key);
+            stageState.pendingSessions.unshift(...overflowForStage);
+          }
+        }
+      }
+    }
+  }
+
   const allocatableStages = stageStates.filter((stageState) => !stageState.isGoLive);
   const stageCounts = allocateSequentialCounts(allocatableStages, phaseState.dates.length);
 
@@ -1280,4 +1320,22 @@ export function confirmShiftRemaining() {
 
 export function dismissShiftDialog() {
   state.ui.shiftDialog = { open: false, sessionId: "", newDate: "", phaseKey: "" };
+}
+
+export function clearSmartFillDates() {
+  const project = getCurrentProjectOrToast();
+  if (!project) return 0;
+  let cleared = 0;
+  for (const session of getAllSessions(project)) {
+    if (!canEditSession(project, session, state.actor)) continue;
+    if (session.lockedDate) continue;
+    if (!session.date) continue;
+    clearSessionScheduling(session, { preserveGraphEventId: false });
+    cleared += 1;
+  }
+  if (cleared) {
+    touchProject(project);
+    project.status = deriveProjectStatus(project);
+  }
+  return cleared;
 }

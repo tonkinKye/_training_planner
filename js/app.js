@@ -32,6 +32,7 @@ import {
   backToProjects,
   calShift,
   calToday,
+  clearSmartFillDates,
   closeOnboarding,
   closeSettings,
   createProjectFromOnboarding,
@@ -473,6 +474,17 @@ async function actionHandlers(action, element) {
         toast(buildSmartFillToast(result), 5000);
         return;
       }
+    case "clearSmartFill": {
+      const cleared = clearSmartFillDates();
+      if (cleared) {
+        await persistAndRender(true);
+        toast(`${cleared} session${cleared !== 1 ? "s" : ""} cleared`, 3000);
+      } else {
+        rerender();
+        toast("No sessions to clear", 3000);
+      }
+      return;
+    }
     case "setSessionDate":
       if (setSessionDate(element.dataset.id, element.value)) {
         await persistAndRender(true);
