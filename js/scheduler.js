@@ -343,12 +343,22 @@ function spreadDatesWithSecondPass(dates, count) {
   return picks;
 }
 
-function pickInternalDates(dates, count, preferredDays = state.ui.activeDays) {
+function pickInternalDates(
+  dates,
+  count,
+  preferredDays = state.ui.activeDays,
+  { preferLatest = false, preferOffPreference = true } = {}
+) {
   if (!dates.length || count <= 0) return [];
+
+  const orderedDates = preferLatest ? [...dates].slice().reverse() : [...dates];
+  if (!preferOffPreference) {
+    return spreadDatesWithSecondPass(orderedDates, count);
+  }
 
   const offPreference = [];
   const preferred = [];
-  for (const dateString of dates) {
+  for (const dateString of orderedDates) {
     if (preferredDays.has(parseDate(dateString).getDay())) {
       preferred.push(dateString);
     } else {
@@ -367,6 +377,28 @@ function pickInternalDates(dates, count, preferredDays = state.ui.activeDays) {
   }
 
   return picks;
+}
+
+function getSetupKickOffAnchorDate(project, previousPhaseLastDate = "") {
+  return getSmartFillSearchStart(state.ui.smartStart || project?.projectStart || "", project?.projectStart || "", previousPhaseLastDate);
+}
+
+function pinKickOffSession(project, stageStates, previousPhaseLastDate, result) {
+  const kickOffDate = getSetupKickOffAnchorDate(project, previousPhaseLastDate);
+  if (!kickOffDate) return "";
+
+  for (const stageState of stageStates) {
+    const kickOffIndex = stageState.pendingSessions.findIndex((session) => session.key === KICK_OFF_SESSION_KEY);
+    if (kickOffIndex < 0) continue;
+
+    const [kickOffSession] = stageState.pendingSessions.splice(kickOffIndex, 1);
+    stageState.fixedDates.push(kickOffDate);
+    applySessionDate(kickOffSession, kickOffDate);
+    result.datedCount += 1;
+    return kickOffDate;
+  }
+
+  return "";
 }
 
 function allocateSequentialCounts(stageStates, totalDateCount) {
@@ -527,6 +559,10 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
   const phaseState = getSmartFillPhaseBoundary(project, phaseKey, previousPhaseLastDate, actor);
   const stageStates = buildStageStates(project, phaseKey, actor);
 
+  if (phaseKey === "setup") {
+    pinKickOffSession(project, stageStates, previousPhaseLastDate, result);
+  }
+
   // Pre-pass: place internal setup sessions in the buffer period before projectStart
   if (phaseKey === "setup" && project.projectStart) {
     const bufferDates = getInternalBufferDates(project);
@@ -541,7 +577,10 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
         stageState.pendingSessions = stageState.pendingSessions.filter((s) => !internalIds.has(s.id));
       }
       if (internalSessions.length) {
-        const picks = pickInternalDates(bufferDates, internalSessions.length);
+        const picks = pickInternalDates(bufferDates, internalSessions.length, state.ui.activeDays, {
+          preferLatest: true,
+          preferOffPreference: false,
+        });
         for (let i = 0; i < Math.min(internalSessions.length, picks.length); i += 1) {
           applySessionDate(internalSessions[i], picks[i]);
           result.datedCount += 1;
