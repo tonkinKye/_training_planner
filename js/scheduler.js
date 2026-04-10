@@ -20,6 +20,7 @@ import {
   getAllSessions,
   getConflictReviewSessions,
   getEditableSessions,
+  INTERNAL_SETUP_BUFFER_DAYS,
   getPhaseSessions,
   getPhaseStages,
   getProjectById,
@@ -264,8 +265,7 @@ const WEEKDAYS = new Set(DEFAULT_WORKING_DAYS);
 function getInternalBufferDates(project) {
   const projectStart = project?.projectStart || "";
   if (!projectStart) return [];
-  const bufferDays = 10;
-  const bufferStart = toDateStr(addDays(parseDate(projectStart), -bufferDays));
+  const bufferStart = toDateStr(addDays(parseDate(projectStart), -INTERNAL_SETUP_BUFFER_DAYS));
   const bufferEnd = dayBefore(projectStart);
   return bufferStart <= bufferEnd ? getEligibleDatesBetween(bufferStart, bufferEnd, WEEKDAYS) : [];
 }

@@ -1,9 +1,10 @@
-import { GO_LIVE_SESSION_KEY, getTemplateDefinition } from "./session-templates.js";
+import { GO_LIVE_SESSION_KEY, KICK_OFF_SESSION_KEY, getTemplateDefinition } from "./session-templates.js";
 import { parseDate, toDateStr } from "./utils.js";
 import { uid } from "./state.js";
 
 export const PHASE_ORDER = ["setup", "implementation", "hypercare"];
 export const DEFAULT_WORKING_DAYS = [1, 2, 3, 4, 5];
+export const INTERNAL_SETUP_BUFFER_DAYS = 10;
 
 export const PHASE_META = {
   setup: {
@@ -629,6 +630,25 @@ export function getWindowForPhase(project, phaseKey) {
   return { min: "", max: "" };
 }
 
+function getEffectiveWindowMin(project, session, window) {
+  if (
+    session?.phase !== "setup" ||
+    session?.type !== "internal" ||
+    !project?.projectStart
+  ) {
+    return window.min;
+  }
+
+  const stage = getStageForSession(project, session);
+  const kickOff = stage?.sessions?.find((candidate) => candidate.key === KICK_OFF_SESSION_KEY);
+  const kickOffOrder = kickOff ? kickOff.order : Infinity;
+  if (session.order >= kickOffOrder) {
+    return window.min;
+  }
+
+  return toDateStr(addDays(parseDate(project.projectStart), -INTERNAL_SETUP_BUFFER_DAYS));
+}
+
 export function getStageRangeForSession(project, session) {
   const stage = getStageForSession(project, session);
   if (!stage) {
@@ -658,7 +678,8 @@ export function isDateWithinPhaseWindow(project, session, dateString) {
   if (!dateString) return true;
 
   const window = getWindowForPhase(project, session.phase);
-  if (window.min && dateString < window.min) return false;
+  const effectiveMin = getEffectiveWindowMin(project, session, window);
+  if (effectiveMin && dateString < effectiveMin) return false;
   if (window.max && dateString > window.max) return false;
 
   if (session.phase === "setup") {
