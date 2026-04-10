@@ -401,6 +401,23 @@ function pinKickOffSession(project, stageStates, previousPhaseLastDate, result) 
   return "";
 }
 
+function getNeighboringSessionDates(stage, session) {
+  const dated = (stage?.sessions || []).filter((candidate) => candidate.id !== session.id && candidate.date);
+  const previous = dated
+    .filter((candidate) => (candidate.order || 0) < (session.order || 0))
+    .map((candidate) => candidate.date)
+    .sort()
+    .at(-1) || "";
+  const next = dated
+    .filter((candidate) => (candidate.order || 0) > (session.order || 0))
+    .map((candidate) => candidate.date)
+    .sort()[0] || "";
+  return {
+    previous,
+    next,
+  };
+}
+
 function allocateSequentialCounts(stageStates, totalDateCount) {
   const counts = new Map();
   if (!stageStates.length || totalDateCount <= 0) {
@@ -654,22 +671,33 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
 
   // Post-pass: place deferred internal sessions using weekday dates
   for (const [, { sessions, stage }] of deferredInternal) {
-    const rangeStart = stage.rangeStart || phaseState.start;
-    const rangeEnd = stage.rangeEnd || phaseState.end;
-    const weekdayDates = getEligibleDatesBetween(rangeStart, rangeEnd, WEEKDAYS);
-    const picks = pickInternalDates(weekdayDates, sessions.length);
-    for (let i = 0; i < Math.min(sessions.length, picks.length); i += 1) {
-      applySessionDate(sessions[i], picks[i]);
+    const unplaced = [];
+    for (const session of sessions) {
+      const { previous, next } = getNeighboringSessionDates(stage, session);
+      const rangeStart = previous || stage.rangeStart || phaseState.start;
+      const rangeEnd = next || stage.rangeEnd || phaseState.end;
+      const weekdayDates = getEligibleDatesBetween(rangeStart, rangeEnd, WEEKDAYS);
+      const picks = pickInternalDates(weekdayDates, 1, state.ui.activeDays, {
+        preferLatest: !next,
+      });
+      const pickedDate = picks[0] || "";
+      if (!pickedDate) {
+        unplaced.push(session);
+        continue;
+      }
+      applySessionDate(session, pickedDate);
       result.datedCount += 1;
     }
-    if (picks.length) {
-      const allDates = [stage.rangeStart, stage.rangeEnd, ...picks].filter(Boolean).sort();
-      stage.rangeStart = allDates[0] || stage.rangeStart;
-      stage.rangeEnd = allDates.at(-1) || stage.rangeEnd;
-    }
-    const unplaced = sessions.slice(picks.length);
+
+    const allDates = stage.sessions
+      .filter((session) => session.key !== GO_LIVE_SESSION_KEY && session.date)
+      .map((session) => session.date)
+      .sort();
+    stage.rangeStart = allDates[0] || stage.rangeStart;
+    stage.rangeEnd = allDates.at(-1) || stage.rangeEnd;
+
     if (unplaced.length) {
-      result.unplacedSessionIds.push(...unplaced.map((s) => s.id));
+      result.unplacedSessionIds.push(...unplaced.map((session) => session.id));
       result.unplacedCount += unplaced.length;
     }
   }
