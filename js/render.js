@@ -8,6 +8,7 @@ import {
   getActorDisplayName,
   getAllSessions,
   getContextPhaseKeys,
+  getPhaseSessions,
   getPhaseStages,
   getPhaseSummary,
   getProjectCardStatus,
@@ -26,6 +27,13 @@ import { esc, fmt12, fmtDur, getTimeOptionsHTML, mondayOf, parseDate, timeAgo, t
 const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
 const STATUS_PRIORITY = { scheduling: 0, pending_is_commit: 1, active: 2, complete: 3, closed: 4 };
 const ARCHIVE_STATUSES = new Set(["complete", "closed"]);
+const KANBAN_COLUMNS = [
+  { key: "setup", label: "Setup", phase: "setup" },
+  { key: "training", label: "Training", phase: "implementation" },
+  { key: "go_live_prep", label: "Go-Live Prep", phase: "implementation" },
+  { key: "go_live", label: "Go-Live", phase: "implementation" },
+  { key: "hypercare", label: "Hypercare", phase: "hypercare" },
+];
 
 function fmtDate(value) {
   if (!value) return "Not set";
@@ -153,23 +161,57 @@ function authScreen() {
   </main>`;
 }
 
-function projectCard(project, archived = false) {
-  const counts = getProjectCounts(project);
+function getProjectKanbanColumn(project) {
+  const today = toDateStr(new Date());
+  const allSessions = getAllSessions(project);
+  const future = allSessions
+    .filter((s) => s.date && s.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99"));
+  const next = future[0];
+  if (!next) {
+    const undated = allSessions.filter((s) => !s.date);
+    if (undated.length) return undated[0].phase === "implementation" ? (undated[0].stageKey || "training") : undated[0].phase;
+    return "hypercare";
+  }
+  return next.phase === "implementation" ? (next.stageKey || "training") : next.phase;
+}
+
+function getNextAppointment(project) {
+  const today = toDateStr(new Date());
+  const next = getAllSessions(project)
+    .filter((s) => s.date && s.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date))[0];
+  return next || null;
+}
+
+function getImplProgress(project) {
+  const today = toDateStr(new Date());
+  const sessions = getPhaseSessions(project, "implementation");
+  if (!sessions.length) return { done: 0, total: 0, percent: 0 };
+  const done = sessions.filter((s) => s.date && s.date < today).length;
+  return { done, total: sessions.length, percent: Math.round((done / sessions.length) * 100) };
+}
+
+function getGoLiveCountdown(project) {
+  if (!project.goLiveDate) return "";
+  const today = toDateStr(new Date());
+  if (project.goLiveDate <= today) return "Go-Live passed";
+  const days = Math.ceil((parseDate(project.goLiveDate).getTime() - parseDate(today).getTime()) / 86400000);
+  return days <= 7 ? `${days}d to Go-Live` : `${Math.ceil(days / 7)}w to Go-Live`;
+}
+
+function kanbanCard(project, archived) {
+  const next = getNextAppointment(project);
+  const progress = getImplProgress(project);
+  const countdown = getGoLiveCountdown(project);
   const status = deriveProjectStatus(project);
   const canDelete = status === "scheduling";
-  return `<button class="project-card${archived ? " archived" : ""}" data-action="selectProject" data-id="${project.id}">
-    <div class="card-top">
-      <span class="pill type">${esc(PROJECT_TYPE_META[project.projectType] || "Project")}</span>
-      <span class="pill status">${esc(getProjectCardStatus(project))}</span>
-      ${canDelete ? `<span class="card-delete" data-action="deleteProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled Project")}" title="Delete project">&times;</span>` : ""}
-    </div>
-    <h3>${esc(project.clientName || "Untitled Project")}</h3>
-    <p>${esc(project.isName || project.isEmail || "IS not set")}</p>
-    <dl>
-      <div><dt>Go-Live</dt><dd>${esc(fmtDate(project.goLiveDate))}</dd></div>
-      <div><dt>Sessions</dt><dd>${counts.scheduled} / ${counts.total}</dd></div>
-    </dl>
-    ${project.updatedAt ? `<div class="card-updated muted">Updated ${esc(timeAgo(project.updatedAt))}</div>` : ""}
+  const nextLabel = next ? `${fmtDate(next.date).replace(/ \d{4}$/, "")} \u00B7 ${next.name}` : "Not scheduled";
+  return `<button class="kanban-card${archived ? " archived" : ""}" data-action="selectProject" data-id="${project.id}">
+    <div class="kanban-card-head"><strong>${esc(project.clientName || "Untitled")}</strong>${canDelete ? `<span class="card-delete" data-action="deleteProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled")}" title="Delete">&times;</span>` : ""}</div>
+    <span class="kanban-next">${esc(nextLabel)}</span>
+    <div class="kanban-progress"><div class="kanban-bar" style="width:${progress.percent}%"></div></div>
+    <span class="kanban-meta">${progress.total ? `${progress.percent}% impl` : ""}${progress.total && countdown ? " \u00B7 " : ""}${esc(countdown)}</span>
   </button>`;
 }
 
@@ -186,18 +228,13 @@ function projectsScreen() {
       }
       return true;
     })
-    .sort((a, b) => {
-      const pa = STATUS_PRIORITY[a.status] ?? 9;
-      const pb = STATUS_PRIORITY[b.status] ?? 9;
-      if (pa !== pb) return pa - pb;
-      return (a.goLiveDate || "9999").localeCompare(b.goLiveDate || "9999");
-    });
+    .sort((a, b) => (a.goLiveDate || "9999").localeCompare(b.goLiveDate || "9999"));
 
-  const groups = new Map();
+  const isGroups = new Map();
   for (const project of visible) {
     const key = project.isName || project.isEmail || "Unassigned";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(project);
+    if (!isGroups.has(key)) isGroups.set(key, []);
+    isGroups.get(key).push(project);
   }
 
   const searchBar = `<div class="projects-toolbar">
@@ -206,10 +243,26 @@ function projectsScreen() {
   </div>`;
 
   let groupsHTML = "";
-  for (const [isName, projects] of groups) {
+  for (const [isName, projects] of isGroups) {
+    const columns = new Map();
+    for (const col of KANBAN_COLUMNS) columns.set(col.key, []);
+    for (const project of projects) {
+      const colKey = getProjectKanbanColumn(project);
+      const target = columns.get(colKey) || columns.get("setup");
+      target.push(project);
+    }
+
+    const boardHTML = KANBAN_COLUMNS.map((col) => {
+      const cards = columns.get(col.key) || [];
+      return `<div class="kanban-column">
+        <div class="kanban-col-header phase-${col.phase}"><span>${esc(col.label)}</span>${cards.length ? `<span class="kanban-count">${cards.length}</span>` : ""}</div>
+        ${cards.map((p) => kanbanCard(p, ARCHIVE_STATUSES.has(p.status))).join("")}
+      </div>`;
+    }).join("");
+
     groupsHTML += `<section class="is-group">
       <header class="is-group-header"><h2>${esc(isName)}</h2><span class="muted">${projects.length} project${projects.length !== 1 ? "s" : ""}</span></header>
-      <div class="project-grid">${projects.map((p) => projectCard(p, ARCHIVE_STATUSES.has(p.status))).join("")}</div>
+      <div class="kanban-board">${boardHTML}</div>
     </section>`;
   }
 
