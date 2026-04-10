@@ -650,7 +650,10 @@ function bindEvents() {
   document.addEventListener("click", async (event) => {
     const element = event.target.closest("[data-action]");
     if (!element) return;
-    event.preventDefault();
+    const tag = element.tagName;
+    if (tag !== "INPUT" && tag !== "SELECT" && tag !== "TEXTAREA") {
+      event.preventDefault();
+    }
     try {
       await actionHandlers(element.dataset.action, element);
     } catch (error) {
