@@ -220,7 +220,7 @@ textarea { resize: vertical; }
 .meta-list dd { margin: 0; }
 .kanban-board {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 0.4rem;
   min-width: 0;
 }
@@ -236,6 +236,7 @@ textarea { resize: vertical; }
   justify-content: space-between;
   align-items: center;
 }
+.kanban-col-header.phase-scheduling { background: rgba(102,116,125,0.08); color: var(--muted); border-bottom: 2px solid rgba(102,116,125,0.25); }
 .kanban-col-header.phase-setup { background: var(--phase-setup-tint); color: var(--phase-setup-text); border-bottom: 2px solid var(--phase-setup-border); }
 .kanban-col-header.phase-implementation { background: var(--phase-implementation-tint); color: var(--phase-implementation-text); border-bottom: 2px solid var(--phase-implementation-border); }
 .kanban-col-header.phase-hypercare { background: var(--phase-hypercare-tint); color: var(--phase-hypercare-text); border-bottom: 2px solid var(--phase-hypercare-border); }

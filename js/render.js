@@ -28,6 +28,7 @@ const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
 const STATUS_PRIORITY = { scheduling: 0, pending_is_commit: 1, active: 2, complete: 3, closed: 4 };
 const ARCHIVE_STATUSES = new Set(["complete", "closed"]);
 const KANBAN_COLUMNS = [
+  { key: "scheduling", label: "Scheduling", phase: "scheduling" },
   { key: "setup", label: "Setup", phase: "setup" },
   { key: "training", label: "Training", phase: "implementation" },
   { key: "go_live_prep", label: "Go-Live Prep", phase: "implementation" },
@@ -162,6 +163,8 @@ function authScreen() {
 }
 
 function getProjectKanbanColumn(project) {
+  const status = deriveProjectStatus(project);
+  if (status === "scheduling") return "scheduling";
   const today = toDateStr(new Date());
   const allSessions = getAllSessions(project);
   const future = allSessions
