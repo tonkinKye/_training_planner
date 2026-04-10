@@ -437,21 +437,33 @@ async function actionHandlers(action, element) {
     case "applySmartFill":
       {
         const sfProject = getActiveProject();
-        if (sfProject) {
-          const sfRange = getSmartFillCoverageRange(sfProject, state.actor);
-          const sfAvail = state.calendarAvailability;
-          if (sfAvail.status !== "ready" || sfAvail.projectId !== sfProject.id || sfAvail.rangeStart > sfRange.start || sfAvail.rangeEnd < sfRange.end) {
-            toast("Loading calendar availability...", 3000);
-            rerender();
-            await fetchCalendarEvents({ project: sfProject, startDate: sfRange.start, endDate: sfRange.end });
-            rerender();
+        if (!sfProject) { rerender(); return; }
+
+        // Ensure availability is loaded before first run
+        const sfRange = getSmartFillCoverageRange(sfProject, state.actor);
+        const sfAvail = state.calendarAvailability;
+        if (sfAvail.status !== "ready" || sfAvail.projectId !== sfProject.id || sfAvail.rangeStart > sfRange.start || sfAvail.rangeEnd < sfRange.end) {
+          toast("Loading calendar availability...", 3000);
+          rerender();
+          await fetchCalendarEvents({ project: sfProject, startDate: sfRange.start, endDate: sfRange.end });
+        }
+
+        let result = applySmartFill();
+        if (!result) { rerender(); return; }
+
+        // If Pass 1 placed dates but Pass 2 was skipped, re-fetch for the updated range and run again
+        if (result.datedCount && result.pass2Skipped) {
+          const updatedRange = getSmartFillCoverageRange(sfProject, state.actor);
+          await fetchCalendarEvents({ project: sfProject, startDate: updatedRange.start, endDate: updatedRange.end });
+          const pass2Result = applySmartFill();
+          if (pass2Result) {
+            result.timedCount = pass2Result.timedCount;
+            result.availabilityCount = pass2Result.availabilityCount;
+            result.availabilitySessionIds = pass2Result.availabilitySessionIds;
+            result.pass2Skipped = pass2Result.pass2Skipped;
           }
         }
-        const result = applySmartFill();
-        if (!result) {
-          rerender();
-          return;
-        }
+
         if (!result.datedCount && !result.timedCount && !result.availabilityCount && !result.unplacedCount && !result.rangeCount) {
           rerender();
           toast(buildSmartFillToast(result), 5000);
