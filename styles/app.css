@@ -348,7 +348,8 @@ textarea { resize: vertical; }
 .unscheduled-chip.phase-setup, .cal-chip.phase-setup { border-color: var(--phase-setup-border); color: var(--phase-setup-text); }
 .unscheduled-chip.phase-implementation, .cal-chip.phase-implementation { border-color: var(--phase-implementation-border); color: var(--phase-implementation-text); }
 .unscheduled-chip.phase-hypercare, .cal-chip.phase-hypercare { border-color: var(--phase-hypercare-border); color: var(--phase-hypercare-text); }
-.day-chip.active { background: rgba(217, 147, 29, 0.16); border-color: rgba(191, 122, 0, 0.35); }
+.day-chip { opacity: 0.5; border-color: rgba(0,0,0,0.04); }
+.day-chip.active { opacity: 1; background: rgba(217, 147, 29, 0.16); border-color: rgba(191, 122, 0, 0.35); }
 
 .phase-group {
   padding: 0.7rem;
@@ -538,6 +539,13 @@ textarea { resize: vertical; }
   grid-column: 1 / -1;
 }
 .template-review pre, .error-pre { white-space: pre-wrap; overflow: auto; }
+.timeline-breakdown { display: grid; gap: 0.3rem; }
+.tl-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 0.88rem; }
+.tl-row span { color: var(--muted); }
+.tl-row strong { font-weight: 600; }
+.tl-total { font-size: 0.95rem; }
+.tl-total span, .tl-total strong { color: var(--text); }
+.tl-divider { height: 1px; background: var(--border); margin: 0.2rem 0; }
 
 .inline-alert {
   padding: 0.95rem 1rem;

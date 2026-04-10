@@ -11,7 +11,8 @@
       "Bash(node --check js/render.js)",
       "Bash(node --check js/clientplan.js)",
       "Bash(node --check js/state.js)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(node --check js/session-templates.js)"
     ]
   }
 }

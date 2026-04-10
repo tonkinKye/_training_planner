@@ -843,7 +843,56 @@ export function computeImplementationStart(source) {
   if (!projectStart) return "";
   const setupPhase = source?.phases?.setup || {};
   const suggestedWeeksMin = Number.isFinite(setupPhase?.suggestedWeeksMin) ? setupPhase.suggestedWeeksMin : 2;
-  return toDateStr(addDays(parseDate(projectStart), suggestedWeeksMin * 7));
+  const workingDays = normalizeWorkingDays(source?.workingDays);
+  const cursor = addDays(parseDate(projectStart), suggestedWeeksMin * 7);
+  while (workingDays.length && !workingDays.includes(cursor.getDay())) {
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return toDateStr(cursor);
+}
+
+export function getTimelineSuggestion(source) {
+  const workingDays = normalizeWorkingDays(source?.workingDays);
+  const projectStart = source?.projectStart || "";
+  const setupPhase = source?.phases?.setup || {};
+  const implPhase = source?.phases?.implementation || {};
+  const hypercarePhase = source?.phases?.hypercare || {};
+  const setupMin = Number.isFinite(setupPhase?.suggestedWeeksMin) ? setupPhase.suggestedWeeksMin : null;
+  const setupMax = Number.isFinite(setupPhase?.suggestedWeeksMax) ? setupPhase.suggestedWeeksMax : null;
+  const implMin = Number.isFinite(implPhase?.suggestedWeeksMin) ? implPhase.suggestedWeeksMin : null;
+  const implMax = Number.isFinite(implPhase?.suggestedWeeksMax) ? implPhase.suggestedWeeksMax : null;
+  const hcMin = Number.isFinite(hypercarePhase?.suggestedWeeksMin) ? hypercarePhase.suggestedWeeksMin : null;
+  const hcMax = Number.isFinite(hypercarePhase?.suggestedWeeksMax) ? hypercarePhase.suggestedWeeksMax : null;
+  const totalMin = (setupMin || 0) + (implMin || 0) + (hcMin || 0);
+  const totalMax = (setupMax || 0) + (implMax || 0) + (hcMax || 0);
+  const implSessions = getPhaseSessions(source, "implementation").filter((s) => s.key !== GO_LIVE_SESSION_KEY);
+  const implFloor = implSessions.length ? Math.ceil(implSessions.length / 3) : 0;
+
+  function roundToWorkingDay(date) {
+    const d = new Date(date);
+    while (workingDays.length && !workingDays.includes(d.getDay())) d.setDate(d.getDate() + 1);
+    return d;
+  }
+
+  let earliestGoLive = "";
+  let earliestWrapUp = "";
+  if (projectStart && workingDays.length) {
+    const implWeeks = Math.max(implMin || 0, implFloor);
+    const goLiveCursor = roundToWorkingDay(addDays(parseDate(projectStart), ((setupMin || 0) + implWeeks) * 7));
+    earliestGoLive = toDateStr(goLiveCursor);
+    const wrapUpCursor = roundToWorkingDay(addDays(goLiveCursor, (hcMin || 1) * 7));
+    earliestWrapUp = toDateStr(wrapUpCursor);
+  }
+
+  return {
+    setupMin, setupMax, implMin, implMax, hcMin, hcMax,
+    totalMin, totalMax,
+    implFloor,
+    implFloorExceedsMin: implFloor > (implMin || 0),
+    earliestGoLive,
+    earliestWrapUp,
+    projectStart,
+  };
 }
 
 export function getSuggestedGoLive(source) {

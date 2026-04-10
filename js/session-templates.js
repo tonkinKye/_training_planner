@@ -15,7 +15,7 @@ const SESSION_BODIES = {
   sales_fulfilment: "Training on sales order and fulfilment workflows with real examples and expected outcomes.",
   bill_of_materials: "Training on BOM setup, validation, and practical usage in day-to-day workflows.",
   manufacturing: "Training on manufacturing workflow, execution, and process controls for production teams.",
-  advanced_mobile: "Training on Fishbowl Advanced Mobile setup, roles, and operational workflows on device.",
+  advanced_mobile: "Training on Fishbowl Advanced Mobile setup, user roles, and operational workflows including receiving, picking, transfers, and cycle counts on device.",
   plugins_accounting: "Training on plugins and accounting-adjacent workflows, including integration touchpoints and reporting impact.",
   workflow: "Workflow design and refinement session based on agreed implementation requirements.",
   go_live_prep: "Go-live preparation session covering cutover readiness, responsibilities, and opening-day plan.",
