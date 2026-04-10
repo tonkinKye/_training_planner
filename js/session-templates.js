@@ -32,6 +32,7 @@ const INTERNAL_BODY_KEYS = new Set([
 ]);
 
 export const GO_LIVE_SESSION_KEY = "go_live";
+export const KICK_OFF_SESSION_KEY = "kick_off_call";
 
 function makeTemplateSession(key, name, duration, owner, bodyKey = key) {
   return {
@@ -62,7 +63,7 @@ function makePhase(suggestedWeeksMin, suggestedWeeksMax, stages) {
 
 const MANUFACTURING = {
   phases: {
-    setup: makePhase(2, 3, [
+    setup: makePhase(3, 3, [
       makeStage("kick_off_data_prep", "Kick-Off & Data Prep", [
         makeTemplateSession("sales_handover", "Sales Handover", 30, "pm"),
         makeTemplateSession("installation", "Installation", 60, "pm"),
@@ -112,7 +113,7 @@ const MANUFACTURING = {
 
 const WAREHOUSING = {
   phases: {
-    setup: makePhase(2, 3, [
+    setup: makePhase(3, 3, [
       makeStage("kick_off_data_prep", "Kick-Off & Data Prep", [
         makeTemplateSession("sales_handover", "Sales Handover", 30, "pm"),
         makeTemplateSession("installation", "Installation", 60, "pm"),

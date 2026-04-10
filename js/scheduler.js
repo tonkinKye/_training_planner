@@ -35,7 +35,7 @@ import {
   removeSession,
   touchProject,
 } from "./projects.js";
-import { GO_LIVE_SESSION_KEY, getTemplateReviewJSON } from "./session-templates.js";
+import { GO_LIVE_SESSION_KEY, KICK_OFF_SESSION_KEY, getTemplateReviewJSON } from "./session-templates.js";
 import { mondayOf, parseDate, toDateStr, toast } from "./utils.js";
 
 const SMART_FILL_PREFERENCES = new Set(["am", "none", "pm"]);
@@ -263,7 +263,7 @@ function getInternalBufferDates(project) {
   const projectStart = project?.projectStart || "";
   if (!projectStart) return [];
   const bufferDays = 10;
-  const bufferStart = maxDate(getTodayString(), toDateStr(addDays(parseDate(projectStart), -bufferDays)));
+  const bufferStart = toDateStr(addDays(parseDate(projectStart), -bufferDays));
   const bufferEnd = dayBefore(projectStart);
   return bufferStart <= bufferEnd ? getEligibleDatesBetween(bufferStart, bufferEnd) : [];
 }
@@ -505,9 +505,12 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
     if (bufferDates.length) {
       const internalSessions = [];
       for (const stageState of stageStates) {
-        const internal = stageState.pendingSessions.filter((s) => s.type === "internal");
+        const kickOff = stageState.stage.sessions.find((s) => s.key === KICK_OFF_SESSION_KEY);
+        const kickOffOrder = kickOff ? kickOff.order : Infinity;
+        const internal = stageState.pendingSessions.filter((s) => s.type === "internal" && s.order < kickOffOrder);
         internalSessions.push(...internal);
-        stageState.pendingSessions = stageState.pendingSessions.filter((s) => s.type !== "internal");
+        const internalIds = new Set(internal.map((s) => s.id));
+        stageState.pendingSessions = stageState.pendingSessions.filter((s) => !internalIds.has(s.id));
       }
       if (internalSessions.length) {
         const picks = spreadDatesWithSecondPass(bufferDates, internalSessions.length);
@@ -612,7 +615,7 @@ function getTimedIntervalsForDate(project, actor, dateString, currentSessionId =
   return intervals.sort((left, right) => left.start - right.start);
 }
 
-function findOpenSlot(duration, intervals, preferredHalf) {
+function findOpenSlot(duration, intervals, preferredHalf, minStartMinutes = 0) {
   const ranges =
     preferredHalf === "pm"
       ? [
@@ -627,7 +630,9 @@ function findOpenSlot(duration, intervals, preferredHalf) {
         ];
 
   for (const [rangeStart, rangeEnd] of ranges) {
-    for (let minutes = rangeStart; minutes + duration <= rangeEnd; minutes += SLOT_INCREMENT_MINUTES) {
+    const effectiveStart = Math.max(rangeStart, minStartMinutes);
+    const slotStart = effectiveStart + ((SLOT_INCREMENT_MINUTES - (effectiveStart % SLOT_INCREMENT_MINUTES)) % SLOT_INCREMENT_MINUTES);
+    for (let minutes = slotStart; minutes + duration <= rangeEnd; minutes += SLOT_INCREMENT_MINUTES) {
       const candidateEnd = minutes + duration;
       const overlaps = intervals.some((interval) => minutes < interval.end && candidateEnd > interval.start);
       if (!overlaps) {
@@ -1027,8 +1032,7 @@ export function setSessionDate(sessionId, value) {
   }
 
   if (value && !isDateWithinPhaseWindow(project, found.session, value)) {
-    toast("That date falls outside the phase window", 4000);
-    return false;
+    toast("Date is outside the phase window \u2014 check conflicts", 4000);
   }
 
   const nextValue = value || "";
@@ -1040,6 +1044,17 @@ export function setSessionDate(sessionId, value) {
     found.session.date = nextValue;
     found.session.availabilityConflict = false;
     invalidateSessionInviteState(found.session);
+  }
+
+  // Refresh stage range from actual session dates
+  const stage = found.stage;
+  if (stage) {
+    const dates = stage.sessions
+      .filter((s) => s.key !== GO_LIVE_SESSION_KEY && s.date)
+      .map((s) => s.date)
+      .sort();
+    stage.rangeStart = dates[0] || "";
+    stage.rangeEnd = dates.at(-1) || "";
   }
 
   touchProject(project);
@@ -1235,13 +1250,17 @@ export function applySmartFill() {
     result.pass2SkipReason = availabilityState.reason;
   } else {
     const pendingAssignments = new Map();
+    const today = getTodayString();
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
     const candidates = getEditableSessions(project, state.actor)
       .filter((session) => session.date && !session.time)
       .sort(compareDatedSessions);
 
     for (const session of candidates) {
       const intervals = getTimedIntervalsForDate(project, state.actor, session.date, session.id, pendingAssignments);
-      const slot = findOpenSlot(session.duration, intervals, normalizeSmartFillPreference(state.ui.smartPreference));
+      const todayFloor = session.date === today ? currentMinutes : 0;
+      const slot = findOpenSlot(session.duration, intervals, normalizeSmartFillPreference(state.ui.smartPreference), todayFloor);
       if (slot) {
         session.time = slot;
         session.availabilityConflict = false;

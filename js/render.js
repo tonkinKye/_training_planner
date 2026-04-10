@@ -343,7 +343,7 @@ function sidebar(project) {
       <div class="side-head"><h3>Smart Fill</h3><button class="btn-secondary btn-sm" data-action="toggleSmart">${state.ui.smartOpen ? "Hide" : "Show"}</button></div>
       ${
         state.ui.smartOpen
-          ? `<label class="field"><span>Schedule from</span><input type="date" value="${state.ui.smartStart}" data-action="setSmartStart"><small class="muted">Sessions won't be placed before this date. Internal prep sessions may use earlier dates.</small></label>
+          ? `<label class="field"><span>Kick-Off Date</span><input type="date" value="${state.ui.smartStart}" data-action="setSmartStart"><small class="muted">The date of the Kick-Off Call. Internal prep sessions will be placed before this date.</small>${state.ui.smartStart && state.ui.smartStart < toDateStr(new Date()) ? '<small class="warning-copy">This date is in the past. Smart Fill will shift sessions forward to today.</small>' : ""}</label>
              <div class="field"><span>Days</span><div class="day-row">
                ${[
                  ["M", 1],
