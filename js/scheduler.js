@@ -343,6 +343,32 @@ function spreadDatesWithSecondPass(dates, count) {
   return picks;
 }
 
+function pickInternalDates(dates, count, preferredDays = state.ui.activeDays) {
+  if (!dates.length || count <= 0) return [];
+
+  const offPreference = [];
+  const preferred = [];
+  for (const dateString of dates) {
+    if (preferredDays.has(parseDate(dateString).getDay())) {
+      preferred.push(dateString);
+    } else {
+      offPreference.push(dateString);
+    }
+  }
+
+  const picks = [];
+  if (offPreference.length) {
+    picks.push(...spreadDatesWithSecondPass(offPreference, Math.min(count, offPreference.length)));
+  }
+
+  const remaining = count - picks.length;
+  if (remaining > 0) {
+    picks.push(...spreadDatesWithSecondPass(preferred, remaining));
+  }
+
+  return picks;
+}
+
 function allocateSequentialCounts(stageStates, totalDateCount) {
   const counts = new Map();
   if (!stageStates.length || totalDateCount <= 0) {
@@ -515,7 +541,7 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
         stageState.pendingSessions = stageState.pendingSessions.filter((s) => !internalIds.has(s.id));
       }
       if (internalSessions.length) {
-        const picks = spreadDatesWithSecondPass(bufferDates, internalSessions.length);
+        const picks = pickInternalDates(bufferDates, internalSessions.length);
         for (let i = 0; i < Math.min(internalSessions.length, picks.length); i += 1) {
           applySessionDate(internalSessions[i], picks[i]);
           result.datedCount += 1;
@@ -592,7 +618,7 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
     const rangeStart = stage.rangeStart || phaseState.start;
     const rangeEnd = stage.rangeEnd || phaseState.end;
     const weekdayDates = getEligibleDatesBetween(rangeStart, rangeEnd, WEEKDAYS);
-    const picks = spreadDatesWithSecondPass(weekdayDates, sessions.length);
+    const picks = pickInternalDates(weekdayDates, sessions.length);
     for (let i = 0; i < Math.min(sessions.length, picks.length); i += 1) {
       applySessionDate(sessions[i], picks[i]);
       result.datedCount += 1;
