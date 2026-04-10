@@ -436,6 +436,17 @@ async function actionHandlers(action, element) {
     }
     case "applySmartFill":
       {
+        const sfProject = getActiveProject();
+        if (sfProject) {
+          const sfRange = getSmartFillCoverageRange(sfProject, state.actor);
+          const sfAvail = state.calendarAvailability;
+          if (sfAvail.status !== "ready" || sfAvail.projectId !== sfProject.id || sfAvail.rangeStart > sfRange.start || sfAvail.rangeEnd < sfRange.end) {
+            toast("Loading calendar availability...", 3000);
+            rerender();
+            await fetchCalendarEvents({ project: sfProject, startDate: sfRange.start, endDate: sfRange.end });
+            rerender();
+          }
+        }
         const result = applySmartFill();
         if (!result) {
           rerender();
