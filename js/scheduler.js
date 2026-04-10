@@ -1,12 +1,15 @@
 import {
   clearProjectError,
   getActiveProject,
+  resetCalendarAvailability,
   setActiveProject,
   setActorMode,
+  setCalendarEvents,
   setScreen,
   state,
   upsertProject,
 } from "./state.js";
+import { getCalendarOwnerForPhase, getCalendarSourceReadiness } from "./calendar-sources.js";
 import {
   addCustomSession,
   canEditSession,
@@ -709,10 +712,12 @@ function getDateEvents(dateString) {
   return state.calendarEvents.filter((event) => event.start?.slice(0, 10) === dateString);
 }
 
-function getTimedIntervalsForDate(project, actor, dateString, currentSessionId = "", pendingAssignments = new Map()) {
+function getTimedIntervalsForDate(project, session, dateString, currentSessionId = "", pendingAssignments = new Map()) {
   const intervals = [];
+  const requiredOwner = getCalendarOwnerForPhase(session?.phase);
 
   for (const event of getDateEvents(dateString)) {
+    if (event.calendarOwner !== requiredOwner) continue;
     const start = new Date(event.start);
     const end = new Date(event.end);
     intervals.push({
@@ -991,6 +996,8 @@ export function openProject(projectId, { actor = "pm", mode = actor } = {}) {
   if (!project) return null;
   setActiveProject(project.id);
   setActorMode(actor, mode);
+  setCalendarEvents([]);
+  resetCalendarAvailability({ projectId: project.id });
   setScreen("workspace");
   setCalendarStartFromProject(project);
   resetSmartFillDefaults(project);
@@ -1322,24 +1329,33 @@ export function getSmartFillCoverageRange(project = getActiveProject(), actor = 
 
 export function getSmartAvailabilityState(project = getActiveProject(), actor = state.actor) {
   if (!project) {
-    return { ready: false, reason: "no_project" };
+    return { ready: false, reason: "no_project", ownerStates: {}, blockingOwners: [] };
   }
 
   const requiredRange = getSmartFillCoverageRange(project, actor);
-  const availability = state.calendarAvailability;
-  if (availability.status !== "ready") {
-    return { ready: false, reason: availability.status === "error" ? "error" : "not_loaded", requiredRange };
+  const requiredOwners = [...new Set(getEditablePhaseKeys(project, actor).map((phaseKey) => getCalendarOwnerForPhase(phaseKey)))];
+  const ownerStates = {};
+  const blockingOwners = [];
+
+  for (const owner of requiredOwners) {
+    const readiness = getCalendarSourceReadiness({
+      availability: state.calendarAvailability,
+      owner,
+      projectId: project.id,
+      requiredRange,
+    });
+    ownerStates[owner] = readiness;
+    if (!readiness.ready) {
+      blockingOwners.push(owner);
+    }
   }
-  if (availability.projectId !== project.id) {
-    return { ready: false, reason: "project_mismatch", requiredRange };
-  }
-  if (availability.rangeStart > requiredRange.start || availability.rangeEnd < requiredRange.end) {
-    return { ready: false, reason: "range_mismatch", requiredRange };
-  }
+
   return {
-    ready: true,
-    reason: "",
+    ready: blockingOwners.length === 0,
+    reason: blockingOwners.length ? ownerStates[blockingOwners[0]].reason : "",
     requiredRange,
+    ownerStates,
+    blockingOwners,
   };
 }
 
@@ -1373,37 +1389,48 @@ export function applySmartFill() {
   }
 
   const availabilityState = getSmartAvailabilityState(project, state.actor);
-  if (!availabilityState.ready) {
-    result.pass2Skipped = true;
-    result.pass2SkipReason = availabilityState.reason;
-  } else {
-    const pendingAssignments = new Map();
-    const today = getTodayString();
-    const now = new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
-    const candidates = getEditableSessions(project, state.actor)
-      .filter((session) => session.date && !session.time)
-      .sort(compareDatedSessions);
+  const pendingAssignments = new Map();
+  const today = getTodayString();
+  const now = new Date();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const candidates = getEditableSessions(project, state.actor)
+    .filter((session) => session.date && !session.time)
+    .sort(compareDatedSessions);
 
-    for (const session of candidates) {
-      const intervals = getTimedIntervalsForDate(project, state.actor, session.date, session.id, pendingAssignments);
-      const todayFloor = session.date === today ? currentMinutes : 0;
-      const halfPref = session.type === "internal" ? "none" : normalizeSmartFillPreference(state.ui.smartPreference);
-      const slot = findOpenSlot(session.duration, intervals, halfPref, todayFloor);
-      if (slot) {
-        session.time = slot;
-        session.availabilityConflict = false;
-        pendingAssignments.set(session.id, slot);
-        invalidateSessionInviteState(session);
-        result.timedCount += 1;
-      } else {
-        session.availabilityConflict = true;
-        result.availabilitySessionIds.push(session.id);
+  for (const session of candidates) {
+    const sourceReadiness = getCalendarSourceReadiness({
+      availability: state.calendarAvailability,
+      owner: getCalendarOwnerForPhase(session.phase),
+      projectId: project.id,
+      requiredRange: availabilityState.requiredRange,
+    });
+
+    if (!sourceReadiness.ready) {
+      session.availabilityConflict = false;
+      result.pass2Skipped = true;
+      if (!result.pass2SkipReason) {
+        result.pass2SkipReason = sourceReadiness.reason;
       }
+      continue;
     }
 
-    result.availabilityCount = result.availabilitySessionIds.length;
+    const intervals = getTimedIntervalsForDate(project, session, session.date, session.id, pendingAssignments);
+    const todayFloor = session.date === today ? currentMinutes : 0;
+    const halfPref = session.type === "internal" ? "none" : normalizeSmartFillPreference(state.ui.smartPreference);
+    const slot = findOpenSlot(session.duration, intervals, halfPref, todayFloor);
+    if (slot) {
+      session.time = slot;
+      session.availabilityConflict = false;
+      pendingAssignments.set(session.id, slot);
+      invalidateSessionInviteState(session);
+      result.timedCount += 1;
+    } else {
+      session.availabilityConflict = true;
+      result.availabilitySessionIds.push(session.id);
+    }
   }
+
+  result.availabilityCount = result.availabilitySessionIds.length;
 
   if (!result.datedCount && !result.timedCount && !result.availabilityCount && !result.unplacedCount && !result.rangeCount) {
     return result;

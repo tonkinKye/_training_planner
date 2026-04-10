@@ -58,6 +58,7 @@ import {
   setSessionDuration,
   setSmartPreference,
   getSmartFillCoverageRange,
+  getSmartAvailabilityState,
   setSessionTime,
   setSmartStart,
   toggleActiveDay,
@@ -88,6 +89,15 @@ async function persistAndRender(shouldPersist = true) {
     await persistActiveProjects();
   }
   rerender();
+}
+
+async function refreshCalendarForProject(project, options = {}) {
+  if (!project) return [];
+  const pending = fetchCalendarEvents({ project, ...options });
+  rerender();
+  const events = await pending;
+  rerender();
+  return events;
 }
 
 async function handleDeepLinkIfPresent() {
@@ -122,13 +132,13 @@ async function handleDeepLinkIfPresent() {
     return;
   }
   clearProjectError();
-  await fetchCalendarEvents({ project });
+  await refreshCalendarForProject(project);
 }
 
 async function refreshProjectContext() {
   const project = getActiveProject();
   if (!project) return;
-  await fetchCalendarEvents({ project });
+  await refreshCalendarForProject(project);
 }
 
 function readBindingTarget(binding) {
@@ -192,7 +202,11 @@ function buildSmartFillToast(result) {
     parts.push(`${result.unplacedCount} unplaced — phase window may be too tight`);
   }
   if (result.pass2Skipped && result.datedCount) {
-    parts.push("availability not loaded, so times were not assigned");
+    parts.push(
+      ["blocked", "error"].includes(result.pass2SkipReason)
+        ? "some phases still need calendar access before times can be assigned"
+        : "availability not loaded, so times were not assigned"
+    );
   }
   return parts.join(", ");
 }
@@ -229,16 +243,14 @@ async function actionHandlers(action, element) {
         return;
       }
       await persistAndRender(true);
-      await fetchCalendarEvents({ project });
-      rerender();
+      await refreshCalendarForProject(project);
       return;
     }
     case "selectProject": {
       const project = openProject(element.dataset.id);
       rerender();
       if (project) {
-        await fetchCalendarEvents({ project });
-        rerender();
+        await refreshCalendarForProject(project);
       }
       return;
     }
@@ -258,7 +270,7 @@ async function actionHandlers(action, element) {
       const outcome = saveSettingsDraft();
       if (outcome?.status === "saved" && outcome.project) {
         await persistAndRender(true);
-        await fetchCalendarEvents({ project: outcome.project });
+        await refreshCalendarForProject(outcome.project);
       } else {
         rerender();
       }
@@ -268,7 +280,7 @@ async function actionHandlers(action, element) {
       const project = confirmWindowChangeClear();
       if (project) {
         await persistAndRender(true);
-        await fetchCalendarEvents({ project });
+        await refreshCalendarForProject(project);
         toast("Affected dates were cleared. Re-run Smart Fill to place them again.", 4500);
       } else {
         rerender();
@@ -279,7 +291,7 @@ async function actionHandlers(action, element) {
       const project = confirmWindowChangeKeep();
       if (project) {
         await persistAndRender(true);
-        await fetchCalendarEvents({ project });
+        await refreshCalendarForProject(project);
         startConflictReview();
       } else {
         rerender();
@@ -429,10 +441,7 @@ async function actionHandlers(action, element) {
         return;
       }
       const range = getSmartFillCoverageRange(project, state.actor);
-      const pending = fetchCalendarEvents({ project, startDate: range.start, endDate: range.end });
-      rerender();
-      await pending;
-      rerender();
+      await refreshCalendarForProject(project, { startDate: range.start, endDate: range.end });
       return;
     }
     case "applySmartFill":
@@ -442,20 +451,22 @@ async function actionHandlers(action, element) {
 
         // Ensure availability is loaded before first run
         const sfRange = getSmartFillCoverageRange(sfProject, state.actor);
-        const sfAvail = state.calendarAvailability;
-        if (sfAvail.status !== "ready" || sfAvail.projectId !== sfProject.id || sfAvail.rangeStart > sfRange.start || sfAvail.rangeEnd < sfRange.end) {
+        const sfAvail = getSmartAvailabilityState(sfProject, state.actor);
+        const needsAvailabilityRefresh = Object.values(sfAvail.ownerStates || {}).some((ownerState) =>
+          ["not_loaded", "project_mismatch", "range_mismatch"].includes(ownerState.reason)
+        );
+        if (needsAvailabilityRefresh) {
           toast("Loading calendar availability...", 3000);
-          rerender();
-          await fetchCalendarEvents({ project: sfProject, startDate: sfRange.start, endDate: sfRange.end });
+          await refreshCalendarForProject(sfProject, { startDate: sfRange.start, endDate: sfRange.end });
         }
 
         let result = applySmartFill();
         if (!result) { rerender(); return; }
 
         // If Pass 1 placed dates but Pass 2 was skipped, re-fetch for the updated range and run again
-        if (result.datedCount && result.pass2Skipped) {
+        if (result.datedCount && result.pass2Skipped && ["not_loaded", "project_mismatch", "range_mismatch"].includes(result.pass2SkipReason)) {
           const updatedRange = getSmartFillCoverageRange(sfProject, state.actor);
-          await fetchCalendarEvents({ project: sfProject, startDate: updatedRange.start, endDate: updatedRange.end });
+          await refreshCalendarForProject(sfProject, { startDate: updatedRange.start, endDate: updatedRange.end });
           const pass2Result = applySmartFill();
           if (pass2Result) {
             result.timedCount = pass2Result.timedCount;

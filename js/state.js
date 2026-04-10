@@ -1,3 +1,5 @@
+import { createCalendarAvailabilityState } from "./calendar-sources.js";
+
 export const STORAGE_EXCEPTION_NOTE = "MSAL may use sessionStorage; application data must not.";
 export const SENTINEL_SUBJECT = "TP-ProjectIndex";
 export const SENTINEL_SCHEMA_ID = "com.fishbowl.trainingplanner.v1";
@@ -116,14 +118,7 @@ export const state = {
     showArchived: false,
     projectSearch: "",
   },
-  calendarAvailability: {
-    status: "idle",
-    projectId: "",
-    rangeStart: "",
-    rangeEnd: "",
-    loadedAt: "",
-    error: "",
-  },
+  calendarAvailability: createCalendarAvailabilityState(),
   calStart: null,
   calendarEvents: [],
   dragData: null,
@@ -222,10 +217,28 @@ export function clearCalendarEvents() {
 }
 
 export function setCalendarAvailability(nextState) {
-  state.calendarAvailability = {
-    ...state.calendarAvailability,
-    ...nextState,
+  const current = createCalendarAvailabilityState(state.calendarAvailability);
+  const mergedSources = {
+    pm: {
+      ...current.sources.pm,
+      ...(nextState?.sources?.pm || {}),
+    },
+    is: {
+      ...current.sources.is,
+      ...(nextState?.sources?.is || {}),
+    },
   };
+
+  state.calendarAvailability = {
+    ...current,
+    ...(nextState || {}),
+    warnings: Array.isArray(nextState?.warnings) ? [...nextState.warnings] : current.warnings,
+    sources: mergedSources,
+  };
+}
+
+export function resetCalendarAvailability(nextState = {}) {
+  state.calendarAvailability = createCalendarAvailabilityState(nextState);
 }
 
 export function setProjectError(message, details = "") {
@@ -289,14 +302,7 @@ export function resetAppState({ preserveAuth = false } = {}) {
     payload: null,
     length: 0,
   };
-  state.calendarAvailability = {
-    status: "idle",
-    projectId: "",
-    rangeStart: "",
-    rangeEnd: "",
-    loadedAt: "",
-    error: "",
-  };
+  state.calendarAvailability = createCalendarAvailabilityState();
   resetUIState();
   state.calStart = null;
   state.calendarEvents = [];

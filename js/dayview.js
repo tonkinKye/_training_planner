@@ -1,6 +1,7 @@
 import { getConflictedDates, getConflicts, summarizeConflictKinds } from "./conflicts.js";
 import { pushOwnedSessions, fetchCalendarEvents } from "./m365.js";
 import { getActiveProject, state } from "./state.js";
+import { getCalendarOwnerForPhase, getDayViewExternalOwners } from "./calendar-sources.js";
 import {
   canEditSession,
   findSession,
@@ -116,7 +117,14 @@ function getHeaderContext() {
   }
 
   const activeSession = getReviewSession();
-  const phaseKey = activeSession?.phase || (state.actor === "is" ? "implementation" : "setup");
+  if (!activeSession && state.actor === "pm") {
+    return {
+      title: "Project Calendars",
+      subhead: "PM + IS calendars",
+    };
+  }
+
+  const phaseKey = activeSession?.phase || "implementation";
   const ownerName = getCalendarOwnerName(project, phaseKey);
   const stageLabel = activeSession ? findSession(project, activeSession.id)?.stage?.label || "" : "";
   return {
@@ -138,6 +146,10 @@ function getWeekDates() {
 
 function getExternalEventsByDate(project) {
   const byDate = new Map();
+  const allowedOwners = new Set(
+    // In review mode the visible busy blocks follow the current review session's phase owner.
+    getDayViewExternalOwners({ actor: state.actor, reviewSession: getReviewSession() })
+  );
   const pushedIds = new Set(
     getAllSessions(project)
       .map((session) => session.graphEventId)
@@ -145,7 +157,8 @@ function getExternalEventsByDate(project) {
   );
 
   for (const event of state.calendarEvents) {
-    if (pushedIds.has(event.id)) continue;
+    if (!allowedOwners.has(event.calendarOwner || getCalendarOwnerForPhase("setup"))) continue;
+    if (pushedIds.has(event.graphId || event.id)) continue;
     const start = event.start ? new Date(event.start) : null;
     if (!start || Number.isNaN(start.getTime())) continue;
     const date = toDateStr(start);

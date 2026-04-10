@@ -308,15 +308,55 @@ function renderConflictTags(conflicts) {
     .join("");
 }
 
+function getCalendarWarnings(project) {
+  if (!project || state.calendarAvailability.projectId !== project.id) return [];
+  return Array.isArray(state.calendarAvailability.warnings) ? state.calendarAvailability.warnings : [];
+}
+
+function renderCalendarWarnings(project) {
+  const warnings = getCalendarWarnings(project);
+  if (!warnings.length) return "";
+
+  return warnings
+    .map(
+      (warning) => `<section class="inline-alert danger"><strong>${esc(warning.title || "Calendar Warning")}</strong><div>${esc(
+        warning.message || "Calendar access is blocked."
+      )}</div>${warning.detail ? `<small>${esc(warning.detail)}</small>` : ""}</section>`
+    )
+    .join("");
+}
+
+function getAvailabilityMessage(project, availability) {
+  const matchesProject = state.calendarAvailability.projectId === project.id;
+  const sources = state.calendarAvailability.sources || {};
+  const statuses = Object.values(sources).map((source) => source.status);
+  const hasLoading = matchesProject && statuses.includes("loading");
+  const pmReady = Boolean(availability.ownerStates?.pm?.ready);
+  const isReady = Boolean(availability.ownerStates?.is?.ready);
+
+  if (hasLoading) {
+    return state.actor === "is"
+      ? "Refreshing implementation calendar availability..."
+      : "Refreshing PM and implementation calendar availability...";
+  }
+  if (availability.ready) {
+    return state.actor === "is"
+      ? "Implementation availability loaded"
+      : "PM and implementation availability loaded";
+  }
+  if (state.actor === "pm" && pmReady && !isReady) {
+    return "PM availability loaded; implementation timing is blocked until the IS calendar is available";
+  }
+  if (state.actor === "pm" && !pmReady && isReady) {
+    return "Implementation availability loaded; setup and hypercare checks are blocked until the PM calendar is available";
+  }
+  return "No availability loaded; Smart Fill will assign dates only";
+}
+
 function sidebar(project) {
   const range = getProjectDateRange(project);
   const availability = getSmartAvailabilityState(project, state.actor);
-  const availabilityMessage =
-    state.calendarAvailability.status === "loading"
-      ? "Refreshing availability for this project window..."
-      : availability.ready
-        ? "Availability loaded for this project window"
-        : "No availability loaded; Smart Fill will assign dates only";
+  const availabilityMessage = getAvailabilityMessage(project, availability);
   return `<aside class="sidebar">
     <section class="side-card">
       <div class="card-top">
@@ -339,6 +379,7 @@ function sidebar(project) {
           : ""
       }
     </section>
+    ${renderCalendarWarnings(project)}
     <section class="side-card">
       <div class="side-head"><h3>Smart Fill</h3><button class="btn-secondary btn-sm" data-action="toggleSmart">${state.ui.smartOpen ? "Hide" : "Show"}</button></div>
       ${

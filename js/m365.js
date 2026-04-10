@@ -1,5 +1,6 @@
-import { DEEP_LINK_LIMIT, SENTINEL_SCHEMA_ID, SENTINEL_SUBJECT, setActiveProject, setActorMode, setAuthStatus, setCalendarAvailability, setCalendarEvents, setGraphAccount, setProjects, setProjectError, setScreen, setSentinelState, state, upsertProject, getActiveProject } from "./state.js";
+import { DEEP_LINK_LIMIT, SENTINEL_SCHEMA_ID, SENTINEL_SUBJECT, getActiveProject, resetCalendarAvailability, setActiveProject, setActorMode, setAuthStatus, setCalendarEvents, setGraphAccount, setProjects, setProjectError, setScreen, setSentinelState, state, upsertProject } from "./state.js";
 import { GRAPH_CLIENT_ID, GRAPH_SCOPES, GRAPH_TENANT_ID, PRODUCT_NAME } from "./config.js";
+import { classifyCalendarSourceError, getCalendarFetchPlan } from "./calendar-sources.js";
 import { buildDeepLinkUrl } from "./deeplink.js";
 import { buildBodyHTML, buildSubject, parseInvitees } from "./invites.js";
 import {
@@ -612,40 +613,62 @@ export async function pushSessionToCalendar(sessionId) {
 export async function fetchCalendarEvents({ project = getActiveProject(), startDate = "", endDate = "" } = {}) {
   if (!project) {
     setCalendarEvents([]);
-    setCalendarAvailability({
-      status: "idle",
-      projectId: "",
-      rangeStart: "",
-      rangeEnd: "",
-      loadedAt: "",
-      error: "",
-    });
+    resetCalendarAvailability();
     return [];
   }
 
+  const projectRange = getProjectDateRange(project) || {};
   const range = {
-    ...(getProjectDateRange(project) || {}),
-    start: startDate || getProjectDateRange(project).start,
-    end: endDate || getProjectDateRange(project).end,
+    ...projectRange,
+    start: startDate || projectRange.start,
+    end: endDate || projectRange.end,
+  };
+  const plan = getCalendarFetchPlan({ project, actor: state.actor });
+  const pmSource = plan.sources.find((source) => source.owner === "pm");
+  const isSource = plan.sources.find((source) => source.owner === "is");
+  const initialWarnings = [...plan.warnings];
+  const initialSourceState = {
+    pm: {
+      status: pmSource ? "loading" : "idle",
+      userId: pmSource?.userId || "me",
+      mailbox: pmSource?.mailbox || "",
+      loadedAt: "",
+      error: "",
+      errorCode: "",
+    },
+    is: {
+      status: initialWarnings.some((warning) => warning.owner === "is")
+        ? "blocked"
+        : isSource
+          ? "loading"
+          : "idle",
+      userId: isSource?.userId || "",
+      mailbox: isSource?.mailbox || String(project.isEmail || "").trim().toLowerCase(),
+      loadedAt: "",
+      error: initialWarnings.find((warning) => warning.owner === "is")?.message || "",
+      errorCode: initialWarnings.find((warning) => warning.owner === "is")?.code || "",
+    },
   };
   setCalendarEvents([]);
-  setCalendarAvailability({
-    status: "loading",
+  resetCalendarAvailability({
     projectId: project.id,
     rangeStart: range.start,
     rangeEnd: range.end,
-    loadedAt: "",
-    error: "",
+    warnings: initialWarnings,
+    sources: initialSourceState,
   });
-  let nextLink =
-    `${getGraphBase()}/calendarView` +
+
+  function buildCalendarViewPath(userId) {
+    return `${getGraphBase(userId)}/calendarView` +
     `?startDateTime=${encodeURIComponent(`${range.start}T00:00:00`)}` +
     `&endDateTime=${encodeURIComponent(`${range.end}T23:59:59`)}` +
     `&$select=id,subject,start,end,isCancelled,showAs` +
     `&$top=250`;
-  const rawEvents = [];
+  }
 
-  try {
+  async function fetchSourceEvents(source) {
+    let nextLink = buildCalendarViewPath(source.userId);
+    const rawEvents = [];
     while (nextLink) {
       const data = await graphRequest(nextLink, {
         extraHeaders: {
@@ -656,42 +679,85 @@ export async function fetchCalendarEvents({ project = getActiveProject(), startD
       nextLink = data?.["@odata.nextLink"] || "";
     }
 
-    const events = rawEvents
+    return rawEvents
       .filter((event) => !event.isCancelled)
       .filter((event) => event.showAs !== "free" && event.showAs !== "oof")
       .filter((event) => !String(event.subject || "").startsWith(SENTINEL_SUBJECT))
       .map((event) => ({
-        id: event.id,
+        id: `${source.owner}:${event.id}`,
+        graphId: event.id,
         subject: event.subject || "Busy",
         start: event.start?.dateTime,
         end: event.end?.dateTime,
         showAs: event.showAs || "",
+        calendarOwner: source.owner,
         kind: "calendar",
       }));
-    setCalendarEvents(events);
-    setCalendarAvailability({
+  }
+
+  const results = await Promise.all(
+    plan.sources.map(async (source) => {
+      try {
+        const events = await fetchSourceEvents(source);
+        return {
+          source,
+          events,
+          warning: null,
+        };
+      } catch (error) {
+        console.error(`fetchCalendarEvents failed for ${source.owner}:`, error);
+        return {
+          source,
+          events: [],
+          warning: classifyCalendarSourceError({
+            owner: source.owner,
+            error,
+            actor: state.actor,
+            project,
+          }),
+        };
+      }
+    })
+  );
+
+  const warnings = [...initialWarnings];
+  const nextSources = {
+    ...initialSourceState,
+  };
+  const events = [];
+
+  for (const result of results) {
+    if (result.warning) {
+      warnings.push(result.warning);
+      nextSources[result.source.owner] = {
+        ...nextSources[result.source.owner],
+        status: result.warning.blocking ? "blocked" : "error",
+        loadedAt: "",
+        error: result.warning.message,
+        errorCode: result.warning.code,
+      };
+      continue;
+    }
+
+    events.push(...result.events);
+    nextSources[result.source.owner] = {
+      ...nextSources[result.source.owner],
       status: "ready",
-      projectId: project.id,
-      rangeStart: range.start,
-      rangeEnd: range.end,
       loadedAt: new Date().toISOString(),
       error: "",
-    });
-    return events;
-  } catch (error) {
-    console.error("fetchCalendarEvents failed:", error);
-    setCalendarEvents([]);
-    setCalendarAvailability({
-      status: "error",
-      projectId: project.id,
-      rangeStart: range.start,
-      rangeEnd: range.end,
-      loadedAt: "",
-      error: error.message || String(error),
-    });
-    toast(`Could not read the calendar: ${error.message || error}`, 5000);
-    return [];
+      errorCode: "",
+    };
   }
+
+  setCalendarEvents(events);
+  resetCalendarAvailability({
+    projectId: project.id,
+    rangeStart: range.start,
+    rangeEnd: range.end,
+    warnings,
+    sources: nextSources,
+  });
+  return events;
 }
 
 export async function pushOwnedSessions({ actor = state.actor } = {}) {

@@ -1,6 +1,7 @@
 import { GO_LIVE_SESSION_KEY, KICK_OFF_SESSION_KEY, getTemplateDefinition } from "./session-templates.js";
 import { parseDate, toDateStr } from "./utils.js";
 import { uid } from "./state.js";
+import { getCalendarOwnerForPhase as getPhaseCalendarOwner } from "./calendar-sources.js";
 
 export const PHASE_ORDER = ["setup", "implementation", "hypercare"];
 export const DEFAULT_WORKING_DAYS = [1, 2, 3, 4, 5];
@@ -714,6 +715,10 @@ export function canCommitSession(session, actor) {
   return session.owner === "is";
 }
 
+export function getCalendarOwnerForPhase(phaseKey) {
+  return getPhaseCalendarOwner(phaseKey);
+}
+
 export function getVisiblePhaseKeys(actor) {
   return actor === "is" ? ["implementation"] : [...PHASE_ORDER];
 }
@@ -729,7 +734,7 @@ export function getEditableSessions(project, actor) {
 export function getConflictReviewSessions(project, actor) {
   return getAllSessions(project).filter(
     (session) =>
-      session.owner === actor &&
+      (actor === "pm" || session.owner === actor) &&
       session.type !== "internal" &&
       session.date &&
       canEditSession(project, session, actor)
@@ -770,7 +775,7 @@ export function getActorDisplayName(project, actor) {
 }
 
 export function getCalendarOwnerName(project, phaseKey) {
-  const owner = phaseKey ? PHASE_META[phaseKey]?.owner : "pm";
+  const owner = phaseKey ? getCalendarOwnerForPhase(phaseKey) : "pm";
   return owner === "is" ? project?.isName || "Implementation Specialist" : project?.pmName || "Project Manager";
 }
 

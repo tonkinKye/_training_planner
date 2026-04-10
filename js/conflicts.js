@@ -1,4 +1,5 @@
 import { getActiveProject, state } from "./state.js";
+import { filterCalendarEventsByPhase, getCalendarOwnerForPhase, getCalendarSourceState } from "./calendar-sources.js";
 import {
   canEditSession,
   getAllSessions,
@@ -78,6 +79,18 @@ function buildAvailabilityConflict(session) {
   };
 }
 
+function buildCalendarSourceConflict(session, sourceState) {
+  const phaseLabel = session.phase === "implementation" ? "Implementation" : "PM";
+  return {
+    id: `calendar-source:${session.id}:${sourceState.owner || getCalendarOwnerForPhase(session.phase)}`,
+    subject: sourceState.error || `${phaseLabel} calendar unavailable`,
+    kind: "calendar",
+    blocking: true,
+    start: session.date && session.time ? `${session.date}T${session.time}:00` : session.date,
+    end: session.date && session.time ? `${session.date}T${session.time}:00` : session.date,
+  };
+}
+
 function filterBlocking(conflicts, blockingOnly) {
   return blockingOnly ? conflicts.filter((conflict) => conflict.blocking !== false) : conflicts;
 }
@@ -129,14 +142,19 @@ export function getConflicts({ project = getActiveProject(), actor = state.actor
       hits.push(buildStageWindowConflict(project, session));
     }
 
+    const sourceState = getCalendarSourceState(state.calendarAvailability, getCalendarOwnerForPhase(session.phase));
+    if (sourceState.status === "blocked" || sourceState.status === "error") {
+      hits.push(buildCalendarSourceConflict(session, sourceState));
+    }
+
     if (!session.time) {
       if (session.availabilityConflict) {
         hits.push(buildAvailabilityConflict(session));
       }
     } else {
       const scheduledRange = sessionInterval(session);
-      for (const event of state.calendarEvents) {
-        if (event.id === session.graphEventId) continue;
+      for (const event of filterCalendarEventsByPhase(state.calendarEvents, session.phase)) {
+        if ((event.graphId || event.id) === session.graphEventId) continue;
         if (overlaps(scheduledRange, calendarInterval(event))) {
           hits.push({
             ...event,
