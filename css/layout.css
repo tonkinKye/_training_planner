@@ -343,7 +343,7 @@
 
 .tp-workspace {
   display: grid;
-  grid-template-columns: 272px minmax(0, 1fr) 420px;
+  grid-template-columns: 264px minmax(540px, 0.95fr) minmax(460px, 1.05fr);
   gap: 0;
   width: 100%;
   min-height: calc(100vh - 112px);
@@ -369,7 +369,7 @@
 
 .tp-main {
   background: var(--page);
-  padding: 0 16px 22px;
+  padding: 0 14px 22px;
   overflow: hidden;
 }
 
@@ -377,10 +377,12 @@
   position: sticky;
   top: 46px;
   z-index: 20;
+  display: grid;
+  gap: 4px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  padding: 18px 16px 0;
-  margin: 0 -16px 18px;
+  padding: 16px 14px 12px;
+  margin: 0 -14px 14px;
 }
 
 .tp-main-title {
@@ -392,8 +394,7 @@
 .tp-main-sub {
   color: var(--muted);
   font-size: 12px;
-  margin-top: 2px;
-  margin-bottom: 14px;
+  margin: 0;
 }
 
 .tp-cal-panel {

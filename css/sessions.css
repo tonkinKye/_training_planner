@@ -33,6 +33,10 @@
   flex-wrap: wrap;
 }
 
+.tp-phase-header {
+  padding: 0 2px;
+}
+
 .tp-phase-title {
   font-size: 13px;
   font-weight: 700;
@@ -163,7 +167,7 @@
 
 .sc-fields {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(150px, 0.9fr) minmax(220px, 1.15fr) minmax(120px, 0.75fr);
   gap: 12px;
   padding: 10px 15px 13px;
   border-top: 1px solid var(--border);
