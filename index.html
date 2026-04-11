@@ -4,8 +4,28 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Training Planner</title>
+  <script>
+    (function () {
+      try {
+        if (window.localStorage.getItem("tp-theme") === "dark") {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      } catch (error) {
+        console.warn("Theme bootstrap skipped:", error);
+      }
+    })();
+  </script>
   <script src="https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js" onerror="window.__msalPrimaryScriptError = true;"></script>
-  <link rel="stylesheet" href="styles/app.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/tokens.css">
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/layout.css">
+  <link rel="stylesheet" href="/css/components.css">
+  <link rel="stylesheet" href="/css/sessions.css">
+  <link rel="stylesheet" href="/css/calendar.css">
+  <link rel="stylesheet" href="/css/theme-toggle.css">
 </head>
 <body>
   <div id="app"></div>

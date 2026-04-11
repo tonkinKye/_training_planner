@@ -91,12 +91,12 @@ export function toast(message, duration = 2700, action = null) {
   const element = document.getElementById("toast");
   if (!element) return;
   if (action && action.label && action.callback) {
-    element.innerHTML = `${esc(message)} <button class="toast-action">${esc(action.label)}</button>`;
-    const button = element.querySelector(".toast-action");
+    element.innerHTML = `${esc(message)} <button class="tp-toast-action">${esc(action.label)}</button>`;
+    const button = element.querySelector(".tp-toast-action");
     if (button) {
       button.onclick = (event) => {
         event.stopPropagation();
-        element.classList.remove("show");
+        element.classList.remove("is-visible");
         clearTimeout(toastTimer);
         action.callback();
       };
@@ -104,14 +104,14 @@ export function toast(message, duration = 2700, action = null) {
   } else {
     element.textContent = message;
   }
-  element.classList.add("show");
+  element.classList.add("is-visible");
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => element.classList.remove("show"), duration);
+  toastTimer = window.setTimeout(() => element.classList.remove("is-visible"), duration);
 }
 
 export function closeModal(id) {
   const element = document.getElementById(id);
-  if (element) element.classList.remove("open");
+  if (element) element.classList.remove("is-open");
 }
 
 export function downloadBlob(contents, filename, mimeType) {
@@ -124,10 +124,6 @@ export function downloadBlob(contents, filename, mimeType) {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-export function isMobile() {
-  return window.innerWidth <= 768;
 }
 
 export function getLocalTimeZone() {

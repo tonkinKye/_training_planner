@@ -97,7 +97,6 @@ export const state = {
   },
   ui: {
     screen: "auth",
-    mobileTab: "schedule",
     sidebarOpen: false,
     smartOpen: false,
     smartStart: "",
@@ -255,7 +254,6 @@ export function clearProjectError() {
 
 export function resetUIState() {
   state.ui.screen = state.graphAccount ? "projects" : "auth";
-  state.ui.mobileTab = "schedule";
   state.ui.sidebarOpen = false;
   state.ui.smartOpen = false;
   state.ui.smartStart = "";

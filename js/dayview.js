@@ -20,6 +20,13 @@ const UNTIMED_STRIP_HEIGHT = 64;
 const START_MINUTES = 6 * 60;
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+function getDayViewPhaseClass(phaseKey) {
+  if (phaseKey === "setup") return "cal-event-teal";
+  if (phaseKey === "implementation") return "cal-event-purple";
+  if (phaseKey === "hypercare") return "cal-event-green";
+  return "cal-event-gray";
+}
+
 const dayViewState = {
   open: false,
   weekStart: null,
@@ -196,11 +203,11 @@ function getSessionBlocksByDate(project) {
 }
 
 function renderTimeColumn() {
-  let html = '<div class="dv-time-col">';
+  let html = '<div class="tp-dv-time-col">';
   for (let index = 0; index < SLOT_COUNT; index += 1) {
     const minutes = START_MINUTES + index * 30;
     const label = index % 2 === 0 ? fmt12(`${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`) : "";
-    html += `<div class="dv-time-label">${label}</div>`;
+    html += `<div class="tp-dv-time-label">${label}</div>`;
   }
   html += "</div>";
   return html;
@@ -215,14 +222,14 @@ function renderSessionBlock(project, block, conflicts) {
   if (!height) return "";
 
   const classes = [
-    "dv-session",
-    `phase-${session.phase}`,
-    editable ? "" : "read-only",
-    context ? "context" : "",
-    conflictHits.length ? "conflict" : "",
-    conflictSummary.hasCalendar ? "calendar-conflict" : "",
-    conflictSummary.hasWindow ? "window-conflict" : "",
-    dayViewState.review.currentSessionId === session.id ? "active-conflict" : "",
+    "tp-dv-block",
+    "cal-event",
+    getDayViewPhaseClass(session.phase),
+    editable ? "" : "is-readonly",
+    context ? "is-context" : "",
+    conflictSummary.hasCalendar ? "is-calendar-conflict" : "",
+    conflictSummary.hasWindow ? "is-window-conflict" : "",
+    dayViewState.review.currentSessionId === session.id ? "is-active" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -243,13 +250,15 @@ function renderUntimedItem(project, block, conflicts) {
   const conflictHits = conflicts.get(session.id) || [];
   const conflictSummary = summarizeConflictKinds(conflictHits);
   const classes = [
-    "dv-untimed-item",
-    `phase-${session.phase}`,
-    editable ? "" : "read-only",
-    context ? "context" : "",
-    conflictSummary.hasAvailability ? "availability-conflict" : "",
-    conflictSummary.hasWindow ? "window-conflict" : "",
-    dayViewState.review.currentSessionId === session.id ? "active-conflict" : "",
+    "tp-dv-block",
+    "cal-event",
+    "tp-dv-untimed-item",
+    getDayViewPhaseClass(session.phase),
+    editable ? "" : "is-readonly",
+    context ? "is-context" : "",
+    conflictSummary.hasAvailability ? "is-availability-conflict" : "",
+    conflictSummary.hasWindow ? "is-window-conflict" : "",
+    dayViewState.review.currentSessionId === session.id ? "is-active" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -268,7 +277,7 @@ function renderExternalBlock(event, activeConflictIds) {
   const end = new Date(event.end);
   const duration = Math.max(30, (end.getTime() - start.getTime()) / 60000);
   const startMinutes = start.getHours() * 60 + start.getMinutes();
-  const classes = ["dv-cal-event", activeConflictIds.has(event.id) ? "active-conflict" : ""]
+  const classes = ["tp-dv-block", "cal-event", "cal-event-gray", "is-external", activeConflictIds.has(event.id) ? "is-active" : ""]
     .filter(Boolean)
     .join(" ");
 
@@ -287,7 +296,7 @@ function renderDayColumn(project, dateString, index, timedBlocks, untimedBlocks,
   const isActiveDay = activeSession?.date === dateString;
   let slots = "";
   for (let slot = 0; slot < SLOT_COUNT; slot += 1) {
-    slots += '<div class="dv-slot"></div>';
+    slots += '<div class="tp-dv-slot"></div>';
   }
 
   const sessionsHTML = (timedBlocks || [])
@@ -299,12 +308,12 @@ function renderDayColumn(project, dateString, index, timedBlocks, untimedBlocks,
     .map((event) => renderExternalBlock(event, activeConflictIds))
     .join("");
 
-  return `<div class="dv-day-col${isActiveDay ? " active-conflict" : ""}${isActiveDay && activeConflictSummary.hasCalendar ? " active-calendar-conflict" : ""}${isActiveDay && activeConflictSummary.hasWindow ? " active-window-conflict" : ""}${isActiveDay && activeConflictSummary.hasAvailability ? " active-availability-conflict" : ""}" data-drop-dv data-date="${dateString}">
-    <div class="dv-day-hdr${dateString === today ? " today" : ""}${isActiveDay ? " active-conflict" : ""}${isActiveDay && activeConflictSummary.hasCalendar ? " active-calendar-conflict" : ""}${isActiveDay && activeConflictSummary.hasWindow ? " active-window-conflict" : ""}${isActiveDay && activeConflictSummary.hasAvailability ? " active-availability-conflict" : ""}">
+  return `<div class="tp-dv-day-col${isActiveDay ? " is-active" : ""}${isActiveDay && activeConflictSummary.hasCalendar ? " is-active-calendar-conflict" : ""}${isActiveDay && activeConflictSummary.hasWindow ? " is-active-window-conflict" : ""}${isActiveDay && activeConflictSummary.hasAvailability ? " is-active-availability-conflict" : ""}" data-drop-dv data-date="${dateString}">
+    <div class="tp-dv-day-hdr${dateString === today ? " cal-day-today" : ""}">
       <span>${DAY_NAMES[index]}</span>
       <strong>${date.getDate()}</strong>
     </div>
-    <div class="dv-untimed-strip">${untimedHTML || '<span class="dv-untimed-empty">No date-only items</span>'}</div>
+    <div class="tp-dv-untimed">${untimedHTML || '<span class="tp-dv-empty">No date-only items</span>'}</div>
     ${slots}
     ${externalHTML}
     ${sessionsHTML}
@@ -314,7 +323,7 @@ function renderDayColumn(project, dateString, index, timedBlocks, untimedBlocks,
 function renderReviewMeta(project, conflicts) {
   if (!isReviewMode()) return "";
   const session = getReviewSession();
-  if (!session) return `<div class="dv-review-meta">Conflict review complete.</div>`;
+  if (!session) return `<div class="tp-dv-review">Conflict review complete.</div>`;
 
   const progress = dayViewState.review.currentIndex >= 0 ? `${dayViewState.review.currentIndex + 1} / ${dayViewState.review.queue.length}` : "";
   const ownerName = getCalendarOwnerName(project, session.phase);
@@ -323,7 +332,7 @@ function renderReviewMeta(project, conflicts) {
   const label = currentConflicts.length
     ? `Resolve ${session.name} in ${ownerName}'s calendar, then confirm to continue.${summary.label ? ` ${summary.label}.` : ""}`
     : `${session.name} is clear. Confirm to continue.`;
-  return `<div class="dv-review-meta">${progress ? `<strong>${progress}</strong> | ` : ""}${esc(label)}</div>`;
+  return `<div class="tp-dv-review">${progress ? `<strong>${progress}</strong> | ` : ""}${esc(label)}</div>`;
 }
 
 export function renderDayViewModal() {
@@ -350,10 +359,10 @@ export function renderDayViewModal() {
   const sessionBlocks = getSessionBlocksByDate(project);
   const externalBlocks = getExternalEventsByDate(project);
 
-  return `<div class="modal-overlay open" id="dayViewModal">
-    <div class="modal dv-modal">
-      <div class="dv-header">
-        <div class="dv-header-copy">
+  return `<div class="tp-modal-overlay is-open" id="dayViewModal">
+    <div class="tp-modal tp-dv-modal">
+      <div class="tp-dv-header">
+        <div class="tp-dv-copy">
           <h3>${esc(title)}</h3>
           <p>${esc(subhead)} | ${weekStart.toLocaleDateString("en-AU", {
             day: "numeric",
@@ -364,17 +373,17 @@ export function renderDayViewModal() {
             year: "numeric",
           })}</p>
         </div>
-        <div class="dv-nav">
-          <button class="btn-secondary btn-sm" data-action="shiftDayView" data-dir="-1">Prev Week</button>
-          <button class="btn-secondary btn-sm" data-action="shiftDayView" data-dir="1">Next Week</button>
-          <button class="btn-secondary btn-sm" data-action="navigateConflict" data-dir="-1">Prev Conflict</button>
-          <button class="btn-secondary btn-sm" data-action="navigateConflict" data-dir="1">Next Conflict</button>
+        <div class="tp-dv-nav">
+          <button class="btn-default btn-sm" data-action="shiftDayView" data-dir="-1">Prev Week</button>
+          <button class="btn-default btn-sm" data-action="shiftDayView" data-dir="1">Next Week</button>
+          <button class="btn-default btn-sm" data-action="navigateConflict" data-dir="-1">Prev Conflict</button>
+          <button class="btn-default btn-sm" data-action="navigateConflict" data-dir="1">Next Conflict</button>
         </div>
-        <button class="btn-secondary btn-sm" data-action="closeDayView">Close</button>
+        <button class="btn-default btn-sm" data-action="closeDayView">Close</button>
       </div>
       ${renderReviewMeta(project, conflicts)}
-      <div class="dv-scroll" id="dvScroll">
-        <div class="dv-grid" id="dvGrid">
+      <div class="tp-dv-scroll" id="dvScroll">
+        <div class="tp-dv-grid" id="dvGrid">
           ${renderTimeColumn()}
           ${weekDates
             .map((dateString, index) =>
@@ -391,11 +400,11 @@ export function renderDayViewModal() {
             .join("")}
         </div>
       </div>
-      <div class="modal-actions">
-        <button class="btn-secondary" data-action="closeDayView">Close</button>
+      <div class="tp-modal-actions">
+        <button class="btn-default" data-action="closeDayView">Close</button>
         ${
           isReviewMode()
-            ? `<button class="btn-primary" data-action="confirmConflict">${
+            ? `<button class="btn-amber" data-action="confirmConflict">${
                 dayViewState.review.pendingCommit ? "Confirm & Continue" : "Confirm & Next"
               }</button>`
             : ""

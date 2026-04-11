@@ -1,0 +1,468 @@
+/* Legacy families absorbed here: topbar, auth screen, projects board, workspace grid, sidebar, panels. */
+.tp-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  padding: 0 18px;
+  background: var(--nav);
+  border-bottom: 1px solid var(--nav-border);
+}
+
+.tp-nav-mark {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, var(--nav-mark-start), var(--nav-mark-end));
+  color: var(--nav-mark-text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tp-nav-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.tp-nav-title {
+  color: var(--nav-text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.tp-nav-sub {
+  color: var(--nav-muted);
+  font-size: 10px;
+}
+
+.tp-nav-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--nav-border);
+  margin: 0 6px;
+}
+
+.tp-nav-crumb {
+  color: var(--nav-muted);
+  font-size: 12px;
+}
+
+.tp-nav-crumb-current {
+  color: var(--nav-current);
+}
+
+.tp-nav-spacer {
+  flex: 1;
+}
+
+.tp-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tp-screen {
+  padding: 18px;
+}
+
+.tp-screen-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.tp-eyebrow {
+  color: var(--hint);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.tp-screen-head h1 {
+  font-size: 28px;
+  letter-spacing: -0.04em;
+}
+
+.tp-auth-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+}
+
+.tp-auth-card {
+  width: 420px;
+  display: grid;
+  justify-items: center;
+  gap: 18px;
+  padding: 28px 28px 24px;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow-lg);
+}
+
+.tp-auth-mark {
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, var(--nav-mark-start), var(--nav-mark-end));
+  color: var(--nav-mark-text);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.tp-auth-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.tp-auth-copy h1 {
+  font-size: 34px;
+  letter-spacing: -0.05em;
+}
+
+.tp-auth-copy p {
+  color: var(--muted);
+}
+
+.tp-auth-actions {
+  width: 100%;
+  display: grid;
+  gap: 10px;
+}
+
+.tp-auth-actions .btn-amber {
+  width: 100%;
+}
+
+.tp-auth-note {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tp-projects-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.tp-project-search {
+  width: 320px;
+}
+
+.tp-is-group {
+  margin-bottom: 22px;
+}
+
+.tp-is-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tp-is-group-header h2 {
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+
+.tp-kanban-board {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+}
+
+.tp-kanban-column {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.tp-kanban-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tp-kanban-header.is-scheduling {
+  background: var(--gray-bg);
+  border-color: var(--gray-border);
+  color: var(--gray-text);
+}
+
+.tp-kanban-header.badge-setup {
+  background: var(--teal-bg);
+  border-color: var(--teal-border);
+  color: var(--teal-text);
+}
+
+.tp-kanban-header.badge-training {
+  background: var(--blue-bg);
+  border-color: var(--blue-border);
+  color: var(--blue-text);
+}
+
+.tp-kanban-header.badge-golive {
+  background: var(--amber-bg);
+  border-color: var(--amber-btn);
+  color: var(--amber-text);
+}
+
+.tp-kanban-header.badge-hypercare {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-text);
+}
+
+.tp-kanban-count {
+  font-size: 10px;
+}
+
+.tp-project-card {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 11px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.tp-project-card:hover {
+  border-color: var(--border-md);
+  box-shadow: var(--shadow-md);
+}
+
+.tp-project-card.is-archived {
+  opacity: 0.58;
+}
+
+.tp-project-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tp-project-card strong {
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+
+.tp-project-next,
+.tp-project-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tp-project-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border-soft);
+  overflow: hidden;
+}
+
+.tp-project-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--amber), var(--amber-btn));
+}
+
+.tp-card-delete {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  color: var(--muted);
+}
+
+.tp-empty-card {
+  width: 420px;
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.tp-workspace-screen {
+  padding: 0 0 18px;
+}
+
+.tp-workspace-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 18px 0;
+}
+
+.tp-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tp-workspace {
+  display: grid;
+  grid-template-columns: 210px 1fr 310px;
+  gap: 0;
+  min-height: calc(100vh - 112px);
+  margin-top: 18px;
+}
+
+.tp-sidebar,
+.tp-cal-panel {
+  background: var(--surface);
+}
+
+.tp-sidebar {
+  border-right: 1px solid var(--border);
+  padding: 18px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tp-main {
+  background: var(--page);
+  padding: 0 22px 22px;
+}
+
+.tp-main-header {
+  position: sticky;
+  top: 46px;
+  z-index: 20;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 18px 22px 0;
+  margin: 0 -22px 18px;
+}
+
+.tp-main-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.tp-main-sub {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+  margin-bottom: 14px;
+}
+
+.tp-cal-panel {
+  border-left: 1px solid var(--border);
+  padding: 18px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tp-card,
+.tp-side-card,
+.tp-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.tp-side-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.tp-card-top,
+.tp-side-head,
+.tp-panel-head,
+.tp-calendar-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tp-panel-head {
+  margin-bottom: 16px;
+}
+
+.tp-panel-head p,
+.tp-calendar-sub {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.tp-card-top {
+  align-items: center;
+}
+
+.tp-side-note {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.tp-meta-list {
+  display: grid;
+  gap: 7px;
+}
+
+.tp-meta-list dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tp-meta-list dd {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tp-muted {
+  color: var(--muted);
+}

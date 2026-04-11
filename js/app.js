@@ -75,13 +75,32 @@ import { downloadBlob, pad, toast, toDateStr } from "./utils.js";
 
 function afterRender() {
   if (document.getElementById("dayViewModal")) {
-    document.querySelector(".dv-day-col.active-conflict")?.scrollIntoView({ inline: "center", block: "nearest" });
+    document.querySelector(".tp-dv-day-col.is-active")?.scrollIntoView({ inline: "center", block: "nearest" });
   }
 }
 
 function rerender() {
   render();
   afterRender();
+}
+
+function applyTheme(theme) {
+  if (theme === "dark") {
+    document.documentElement.setAttribute("data-theme", "dark");
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+  try {
+    window.localStorage.setItem("tp-theme", theme);
+  } catch (error) {
+    console.warn("Theme persistence skipped:", error);
+  }
+}
+
+function toggleThemePreference() {
+  const nextTheme = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  applyTheme(nextTheme);
+  rerender();
 }
 
 async function persistAndRender(shouldPersist = true) {
@@ -640,9 +659,8 @@ async function actionHandlers(action, element) {
       state.ui.peopleQuery = element.dataset.email || "";
       rerender();
       return;
-    case "switchMobileTab":
-      state.ui.mobileTab = element.dataset.tab;
-      rerender();
+    case "toggleTheme":
+      toggleThemePreference();
       return;
     case "resetSentinel":
       await resetSentinel();
@@ -704,11 +722,11 @@ function bindEvents() {
       sessionId: element.dataset.id,
       type: element.dataset.drag,
     };
-    element.classList.add("dragging");
+    element.classList.add("is-dragging");
   });
 
   document.addEventListener("dragend", (event) => {
-    event.target.closest("[data-drag]")?.classList.remove("dragging");
+    event.target.closest("[data-drag]")?.classList.remove("is-dragging");
     state.dragData = null;
   });
 

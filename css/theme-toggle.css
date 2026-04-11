@@ -1,0 +1,20 @@
+/* Legacy families absorbed here: new theme toggle only. */
+.theme-toggle {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.theme-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+[data-theme="dark"] .theme-toggle .theme-toggle-sun {
+  display: none;
+}
+
+:root:not([data-theme="dark"]) .theme-toggle .theme-toggle-moon {
+  display: none;
+}
