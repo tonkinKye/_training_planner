@@ -248,6 +248,7 @@
 .tp-field {
   display: grid;
   gap: 5px;
+  min-width: 0;
 }
 
 .tp-field span,
@@ -309,6 +310,10 @@
 
 .tp-quick-row,
 .tp-badge-row {
+  flex-wrap: wrap;
+}
+
+.tp-working-days {
   flex-wrap: wrap;
 }
 
@@ -413,6 +418,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
+  flex-wrap: wrap;
 }
 
 .tp-settings-row small,

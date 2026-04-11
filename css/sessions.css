@@ -21,6 +21,7 @@
 
 .tp-phase-section {
   margin-top: 18px;
+  min-width: 0;
 }
 
 .tp-phase-header,
@@ -29,6 +30,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .tp-phase-title {
@@ -47,6 +49,7 @@
   display: grid;
   gap: 12px;
   margin-top: 12px;
+  min-width: 0;
 }
 
 .tp-phase-context {
@@ -65,6 +68,7 @@
   border-radius: 6px;
   border: 1px solid var(--purple-border);
   background: var(--purple-bg);
+  flex-wrap: wrap;
 }
 
 .tp-phase-banner-label {
@@ -87,6 +91,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
+  min-width: 0;
 }
 
 .tp-stage-head h4 {
@@ -99,6 +104,7 @@
   border-radius: 10px;
   box-shadow: var(--shadow-sm);
   overflow: hidden;
+  min-width: 0;
 }
 
 .sc-active {
@@ -123,11 +129,14 @@
   justify-content: space-between;
   gap: 12px;
   padding: 11px 15px 9px;
+  flex-wrap: wrap;
 }
 
 .sc-title {
   display: grid;
   gap: 5px;
+  min-width: 0;
+  flex: 1 1 260px;
 }
 
 .sc-name {
@@ -148,6 +157,8 @@
   justify-content: flex-end;
   gap: 4px;
   flex-wrap: wrap;
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 .sc-fields {
@@ -157,6 +168,7 @@
   padding: 10px 15px 13px;
   border-top: 1px solid var(--border);
   background: var(--surface-subtle);
+  min-width: 0;
 }
 
 .sc-impl .sc-fields {

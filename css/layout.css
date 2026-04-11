@@ -343,15 +343,18 @@
 
 .tp-workspace {
   display: grid;
-  grid-template-columns: 210px 1fr 310px;
+  grid-template-columns: 272px minmax(0, 1fr) 420px;
   gap: 0;
+  width: 100%;
   min-height: calc(100vh - 112px);
   margin-top: 18px;
 }
 
 .tp-sidebar,
+.tp-main,
 .tp-cal-panel {
   background: var(--surface);
+  min-width: 0;
 }
 
 .tp-sidebar {
@@ -360,11 +363,14 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
+  width: 100%;
+  overflow: hidden;
 }
 
 .tp-main {
   background: var(--page);
-  padding: 0 22px 22px;
+  padding: 0 16px 22px;
+  overflow: hidden;
 }
 
 .tp-main-header {
@@ -373,8 +379,8 @@
   z-index: 20;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  padding: 18px 22px 0;
-  margin: 0 -22px 18px;
+  padding: 18px 16px 0;
+  margin: 0 -16px 18px;
 }
 
 .tp-main-title {
@@ -396,6 +402,8 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
+  width: 100%;
+  overflow: hidden;
 }
 
 .tp-card,
@@ -411,6 +419,8 @@
   display: grid;
   gap: 12px;
   padding: 14px;
+  width: 100%;
+  min-width: 0;
 }
 
 .tp-card-top,
@@ -436,6 +446,7 @@
 
 .tp-card-top {
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .tp-side-note {
@@ -461,6 +472,7 @@
   margin-top: 2px;
   font-size: 12px;
   font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
 .tp-muted {

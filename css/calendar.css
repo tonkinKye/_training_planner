@@ -20,6 +20,8 @@
 }
 
 .tp-calendar-scroll {
+  width: 100%;
+  min-width: 0;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -28,7 +30,7 @@
 
 .tp-calendar-grid {
   display: grid;
-  min-width: 820px;
+  min-width: 720px;
 }
 
 .tp-week-spacer,
