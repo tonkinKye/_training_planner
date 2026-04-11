@@ -21,6 +21,7 @@ import { getLocalTimeZone, pad, toast, toDateStr } from "./utils.js";
 const MSAL_CDN_URLS = [
   "https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js",
   "https://unpkg.com/@azure/msal-browser@2.39.0/lib/msal-browser.min.js",
+  "https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.39.0/lib/msal-browser.min.js",
 ];
 
 const GRAPH_TIMEOUT_MS = 30000;
@@ -76,10 +77,11 @@ async function ensureMsalLoaded() {
       return;
     } catch (error) {
       lastError = error;
-      console.error("MSAL load failed:", error);
+      console.warn("MSAL load attempt failed:", error);
     }
   }
 
+  console.error("MSAL load failed:", lastError);
   throw lastError || new Error("MSAL could not be loaded.");
 }
 
