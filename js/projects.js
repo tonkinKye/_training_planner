@@ -688,6 +688,13 @@ export function isDateWithinPhaseWindow(project, session, dateString) {
   let effectiveMax = window.max;
 
   if (session.phase === "setup") {
+    // If any setup session is already scheduled before effectiveMin (e.g. an
+    // internal session placed before projectStart via the buffer), expand the
+    // min so other setup sessions can be rearranged into that range too.
+    const setupDates = getPhaseDates(project, "setup");
+    if (setupDates.length && setupDates[0] < effectiveMin) {
+      effectiveMin = setupDates[0];
+    }
     const implDates = getPhaseDates(project, "implementation");
     if (implDates.length) {
       effectiveMax = getDateBefore(implDates[0]);

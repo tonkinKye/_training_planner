@@ -216,6 +216,51 @@ test("hypercare session after max window is rejected", () => {
   assert.equal(isDateWithinPhaseWindow(project, session, "2026-06-09"), false);
 });
 
+// --- Setup min expands when internal sessions are scheduled before projectStart ---
+
+test("external setup session can move to date of internal session scheduled before projectStart", () => {
+  // Scenario: Smart Fill placed an internal session (Sales Handover) on Tuesday
+  // before projectStart (Wednesday) using the buffer. User should be able to
+  // move an external session (Installation) to Tuesday as well.
+  const project = makeProject({ projectStart: "2026-04-22", implementationStart: "2026-05-20" }); // Wednesday
+  const internalSession = makeSession({
+    phase: "setup",
+    type: "internal",
+    key: "sales_handover",
+    order: 0,
+    date: "2026-04-21", // Tuesday — placed before projectStart via buffer
+  });
+  const externalSession = makeSession({
+    phase: "setup",
+    type: "external",
+    key: "installation",
+    order: 1,
+    date: "2026-04-22", // Wednesday — currently at projectStart
+  });
+  const kickOff = makeSession({
+    phase: "setup",
+    type: "external",
+    key: "kick_off_call",
+    order: 2,
+    date: "2026-04-22",
+  });
+  project.phases.setup.stages[0].sessions = [internalSession, externalSession, kickOff];
+
+  // Moving Installation to Tuesday (where Sales Handover already is) should be valid
+  assert.equal(isDateWithinPhaseWindow(project, externalSession, "2026-04-21"), true);
+  // Moving it to Monday (before any scheduled session) should still be rejected
+  assert.equal(isDateWithinPhaseWindow(project, externalSession, "2026-04-20"), false);
+});
+
+test("setup min stays at projectStart when no session is scheduled earlier", () => {
+  const project = makeProject({ projectStart: "2026-04-22", implementationStart: "2026-05-20" });
+  const session = makeSession({ phase: "setup", type: "external", date: "2026-04-23" });
+  project.phases.setup.stages[0].sessions = [session];
+  // Can't go before projectStart since no session is scheduled there
+  assert.equal(isDateWithinPhaseWindow(project, session, "2026-04-21"), false);
+  assert.equal(isDateWithinPhaseWindow(project, session, "2026-04-22"), true);
+});
+
 // --- Internal setup buffer preserved ---
 
 test("internal setup session before kickoff can use buffer before projectStart", () => {
