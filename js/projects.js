@@ -340,6 +340,11 @@ function getDateAfter(dateString) {
   return toDateStr(addDays(parseDate(dateString), 1));
 }
 
+function getDateBefore(dateString) {
+  if (!dateString) return "";
+  return toDateStr(addDays(parseDate(dateString), -1));
+}
+
 export function createOnboardingDraft(projectType = "manufacturing") {
   const phases = {
     setup: createPhaseFromTemplate(projectType, "setup"),
@@ -679,25 +684,28 @@ export function isDateWithinPhaseWindow(project, session, dateString) {
   if (!dateString) return true;
 
   const window = getWindowForPhase(project, session.phase);
-  const effectiveMin = getEffectiveWindowMin(project, session, window);
-  if (effectiveMin && dateString < effectiveMin) return false;
-  if (window.max && dateString > window.max) return false;
+  let effectiveMin = getEffectiveWindowMin(project, session, window);
+  let effectiveMax = window.max;
 
   if (session.phase === "setup") {
-    const implementationDates = getPhaseDates(project, "implementation");
-    if (implementationDates[0] && dateString >= implementationDates[0]) return false;
-  }
-
-  if (session.phase === "implementation") {
+    const implDates = getPhaseDates(project, "implementation");
+    if (implDates.length) {
+      effectiveMax = getDateBefore(implDates[0]);
+    }
+  } else if (session.phase === "implementation") {
     const setupDates = getPhaseDates(project, "setup");
-    if (setupDates.length && dateString <= setupDates[setupDates.length - 1]) return false;
+    if (setupDates.length) {
+      effectiveMin = getDateAfter(setupDates[setupDates.length - 1]);
+    }
+  } else if (session.phase === "hypercare") {
+    const implDates = getPhaseDates(project, "implementation");
+    if (implDates.length) {
+      effectiveMin = getDateAfter(implDates[implDates.length - 1]);
+    }
   }
 
-  if (session.phase === "hypercare") {
-    const implementationDates = getPhaseDates(project, "implementation");
-    if (implementationDates.length && dateString <= implementationDates[implementationDates.length - 1]) return false;
-  }
-
+  if (effectiveMin && dateString < effectiveMin) return false;
+  if (effectiveMax && dateString > effectiveMax) return false;
   return true;
 }
 
