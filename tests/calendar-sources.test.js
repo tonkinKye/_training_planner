@@ -117,15 +117,8 @@ test("owner-based event filtering keeps Smart Fill and conflicts on the correct 
   );
 });
 
-test("day view uses the current review session owner only in review mode", () => {
+test("day view shows both calendars for PM, own calendar for IS", () => {
   assert.deepEqual(getDayViewExternalOwners({ actor: "pm" }), ["pm", "is"]);
-  assert.deepEqual(
-    getDayViewExternalOwners({
-      actor: "pm",
-      reviewSession: { phase: "implementation" },
-    }),
-    ["is"]
-  );
   assert.deepEqual(getDayViewExternalOwners({ actor: "is" }), ["is"]);
 });
 

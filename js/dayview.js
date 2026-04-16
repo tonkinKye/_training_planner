@@ -154,8 +154,7 @@ function getWeekDates() {
 function getExternalEventsByDate(project) {
   const byDate = new Map();
   const allowedOwners = new Set(
-    // In review mode the visible busy blocks follow the current review session's phase owner.
-    getDayViewExternalOwners({ actor: state.actor, reviewSession: getReviewSession() })
+    getDayViewExternalOwners({ actor: state.actor })
   );
   const pushedIds = new Set(
     getAllSessions(project)

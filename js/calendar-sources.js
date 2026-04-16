@@ -175,9 +175,8 @@ export function filterCalendarEventsByPhase(events = [], phaseKey) {
   return filterCalendarEventsByOwner(events, getCalendarOwnerForPhase(phaseKey));
 }
 
-export function getDayViewExternalOwners({ actor = "pm", reviewSession = null } = {}) {
+export function getDayViewExternalOwners({ actor = "pm" } = {}) {
   if (actor === "is") return ["is"];
-  if (reviewSession?.phase) return [getCalendarOwnerForPhase(reviewSession.phase)];
   return ["pm", "is"];
 }
 
