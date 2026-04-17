@@ -408,6 +408,23 @@
   color: var(--warn-text);
 }
 
+.tp-plain-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.tp-summary-card.is-danger {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+
+.tp-summary-card.is-warning {
+  border-color: var(--warn-border);
+  background: color-mix(in srgb, var(--warn-bg) 55%, var(--surface-subtle));
+}
+
 .tp-settings-phase,
 .tp-settings-row {
   padding: 12px;

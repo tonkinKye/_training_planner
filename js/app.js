@@ -70,6 +70,24 @@ import {
   updateSettingsField,
 } from "./scheduler.js";
 import { getAllSessions } from "./projects.js";
+import {
+  addTemplateEditorSession,
+  addTemplateEditorStage,
+  applyOneOffTemplateToOnboarding,
+  buildTemplateLibraryExport,
+  closeTemplateEditor,
+  createTemplateEditorTemplate,
+  duplicateTemplateEditorTemplate,
+  moveTemplateEditorSession,
+  moveTemplateEditorStage,
+  openTemplateLibraryEditor,
+  openTemplateOneOffEditor,
+  removeTemplateEditorSession,
+  removeTemplateEditorStage,
+  selectTemplateEditorTemplate,
+  templateEditorHasUnsavedChanges,
+  updateTemplateEditorField,
+} from "./template-editor.js";
 import { clearProjectError, getActiveProject, removeProject, setActorMode, setDeepLink, setProjectError, setScreen, state } from "./state.js";
 import { downloadBlob, pad, toast, toDateStr } from "./utils.js";
 
@@ -180,10 +198,20 @@ function applyBinding(binding, value) {
     rerender();
     return;
   }
+  if (scope === "templateEditor") {
+    updateTemplateEditorField(field, value);
+    rerender();
+    return;
+  }
   if (scope === "peopleQuery") {
     state.ui.peopleQuery = value;
     return;
   }
+}
+
+function confirmTemplateEditorLeave() {
+  if (state.ui.screen !== "templates" || !templateEditorHasUnsavedChanges()) return true;
+  return window.confirm("You have unsaved template changes. Leave this screen?");
 }
 
 function dayViewSlotFromEvent(event, column) {
@@ -231,6 +259,27 @@ function buildSmartFillToast(result) {
 }
 
 async function actionHandlers(action, element) {
+  const templateEditorSafeActions = new Set([
+    "closeTemplateEditor",
+    "createTemplateEditorTemplate",
+    "duplicateTemplateEditorTemplate",
+    "selectTemplateEditorTemplate",
+    "addTemplateStage",
+    "moveTemplateStage",
+    "removeTemplateStage",
+    "addTemplateSession",
+    "moveTemplateSession",
+    "removeTemplateSession",
+    "exportTemplateLibrary",
+    "applyOneOffTemplate",
+    "toggleTheme",
+  ]);
+
+  if (state.ui.screen === "templates" && !templateEditorSafeActions.has(action) && !confirmTemplateEditorLeave()) {
+    rerender();
+    return;
+  }
+
   switch (action) {
     case "toggleAuth":
       await toggleAuth();
@@ -243,6 +292,89 @@ async function actionHandlers(action, element) {
       openOnboarding();
       rerender();
       return;
+    case "openOnboardingTemplateEditor":
+      state.ui.onboarding.open = false;
+      openTemplateOneOffEditor({
+        template: state.ui.onboarding.draft?.templateSnapshot || null,
+        originKey: state.ui.onboarding.draft?.templateOriginKey || state.ui.onboarding.draft?.projectType || "manufacturing",
+        returnScreen: "projects",
+      });
+      rerender();
+      return;
+    case "openTemplates":
+      openTemplateLibraryEditor();
+      rerender();
+      return;
+    case "closeTemplateEditor":
+      if (state.ui.templateEditor.mode === "oneoff") {
+        closeTemplateEditor();
+        state.ui.onboarding.open = true;
+        rerender();
+        return;
+      }
+      closeTemplateEditor();
+      rerender();
+      return;
+    case "createTemplateEditorTemplate":
+      createTemplateEditorTemplate();
+      rerender();
+      return;
+    case "duplicateTemplateEditorTemplate":
+      duplicateTemplateEditorTemplate();
+      rerender();
+      return;
+    case "selectTemplateEditorTemplate":
+      selectTemplateEditorTemplate(Number(element.value));
+      rerender();
+      return;
+    case "addTemplateStage":
+      addTemplateEditorStage(Number(element.dataset.phaseIndex));
+      rerender();
+      return;
+    case "moveTemplateStage":
+      moveTemplateEditorStage(Number(element.dataset.phaseIndex), Number(element.dataset.stageIndex), Number(element.dataset.dir));
+      rerender();
+      return;
+    case "removeTemplateStage":
+      removeTemplateEditorStage(Number(element.dataset.phaseIndex), Number(element.dataset.stageIndex));
+      rerender();
+      return;
+    case "addTemplateSession":
+      addTemplateEditorSession(Number(element.dataset.phaseIndex), Number(element.dataset.stageIndex));
+      rerender();
+      return;
+    case "moveTemplateSession":
+      moveTemplateEditorSession(Number(element.dataset.phaseIndex), Number(element.dataset.stageIndex), Number(element.dataset.sessionIndex), Number(element.dataset.dir));
+      rerender();
+      return;
+    case "removeTemplateSession":
+      removeTemplateEditorSession(Number(element.dataset.phaseIndex), Number(element.dataset.stageIndex), Number(element.dataset.sessionIndex));
+      rerender();
+      return;
+    case "exportTemplateLibrary": {
+      const exportResult = buildTemplateLibraryExport();
+      if (!exportResult.ok) {
+        toast(exportResult.errors[0] || "Template library has validation errors.", 5000);
+        rerender();
+        return;
+      }
+      downloadBlob(exportResult.source, "session-templates.js", "text/javascript");
+      toast("session-templates.js exported", 3000);
+      rerender();
+      return;
+    }
+    case "applyOneOffTemplate": {
+      const applyResult = applyOneOffTemplateToOnboarding();
+      if (!applyResult.ok) {
+        toast(applyResult.errors[0] || "Template has validation errors.", 5000);
+        rerender();
+        return;
+      }
+      closeTemplateEditor();
+      state.ui.onboarding.open = true;
+      rerender();
+      return;
+    }
     case "closeOnboarding":
       closeOnboarding();
       rerender();
@@ -725,12 +857,12 @@ function bindEvents() {
   document.addEventListener("change", (event) => {
     const bound = event.target.closest("[data-bind]");
     if (bound) {
-      applyBinding(bound.dataset.bind, bound.value);
+      applyBinding(bound.dataset.bind, bound.type === "checkbox" ? bound.checked : bound.value);
       return;
     }
 
     const actionable = event.target.closest("[data-action]");
-    if (actionable && ["setSmartStart", "setSessionDate", "setSessionTime", "setSessionDuration"].includes(actionable.dataset.action)) {
+    if (actionable && ["setSmartStart", "setSessionDate", "setSessionTime", "setSessionDuration", "selectTemplateEditorTemplate"].includes(actionable.dataset.action)) {
       actionHandlers(actionable.dataset.action, actionable).catch((error) => {
         console.error(`Change action ${actionable.dataset.action} failed:`, error);
         toast(error.message || String(error), 5000);
@@ -812,6 +944,11 @@ async function init() {
   }
 
   bindEvents();
+  window.addEventListener("beforeunload", (event) => {
+    if (!templateEditorHasUnsavedChanges()) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
   rerender();
   await bootstrapMsal();
   if (state.graphAccount) {

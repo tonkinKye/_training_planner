@@ -1,6 +1,6 @@
 import { PRODUCT_NAME } from "./config.js";
-import { getActorDisplayName, getCalendarOwnerName, getPhaseStages, PHASE_META, PHASE_ORDER, PROJECT_TYPE_META } from "./projects.js";
-import { getSessionBody, GO_LIVE_SESSION_KEY } from "./session-templates.js";
+import { getActorDisplayName, getCalendarOwnerName, getPhaseStages, getProjectTemplateLabel, PHASE_META, PHASE_ORDER } from "./projects.js";
+import { getSessionBody } from "./session-templates.js";
 import { esc, fmt12, fmtDateLong, fmtDur, toDateStr } from "./utils.js";
 
 function getClientPlanSessions(project) {
@@ -19,7 +19,7 @@ function getClientPlanSessions(project) {
           phaseKey,
           stageLabel: stage.label || "",
           bodyText: rawBody.replace(/\{\{Consultant Name\}\}/g, ownerName || "Your Consultant"),
-          isGoLive: session.key === GO_LIVE_SESSION_KEY,
+          isGoLive: Boolean(session.lockedDate),
         });
       }
     }
@@ -572,7 +572,7 @@ export function buildClientPlanHTML(project) {
   const pmName = getActorDisplayName(project, "pm");
   const pmEmail = project.pmEmail || "";
   const clientName = project.clientName || "Training Plan";
-  const projectTypeLabel = PROJECT_TYPE_META[project.projectType] || "Project";
+  const projectTypeLabel = getProjectTemplateLabel(project) || "Project";
   const goLiveDate = project.goLiveDate ? fmtDateLong(project.goLiveDate) : "To be confirmed";
 
   const phaseGroups = new Map();

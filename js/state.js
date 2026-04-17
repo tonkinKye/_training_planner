@@ -1,4 +1,5 @@
 import { createCalendarAvailabilityState } from "./calendar-sources.js";
+import { getBuiltInTemplates } from "./session-templates.js";
 
 export const STORAGE_EXCEPTION_NOTE = "MSAL may use sessionStorage; application data must not.";
 export const SENTINEL_SUBJECT = "TP-ProjectIndex";
@@ -19,6 +20,22 @@ function createSettingsState() {
   return {
     open: false,
     draft: null,
+  };
+}
+
+function createTemplateEditorState() {
+  return {
+    mode: "library",
+    activeTemplateIndex: 0,
+    draft: null,
+    originKey: "",
+    dirty: false,
+    exportSource: "",
+    validation: {
+      errors: [],
+      warnings: [],
+    },
+    returnScreen: "projects",
   };
 }
 
@@ -78,6 +95,7 @@ export const state = {
   authStatus: "idle",
   authError: "",
   projects: [],
+  templateLibrary: getBuiltInTemplates(),
   activeProjectId: "",
   actor: "pm",
   mode: "pm",
@@ -104,6 +122,7 @@ export const state = {
     activeDays: new Set([1, 2, 3, 4, 5]),
     onboarding: createOnboardingState(),
     settings: createSettingsState(),
+    templateEditor: createTemplateEditorState(),
     windowChangeDialog: createWindowChangeDialogState(),
     shiftDialog: createShiftDialogState(),
     deleteDialog: createDeleteDialogState(),
@@ -139,6 +158,10 @@ export function getActiveProject() {
 
 export function setGraphAccount(account) {
   state.graphAccount = account || null;
+}
+
+export function setTemplateLibrary(templates) {
+  state.templateLibrary = Array.isArray(templates) ? [...templates] : getBuiltInTemplates();
 }
 
 export function setScreen(screen) {
@@ -263,6 +286,7 @@ export function resetUIState() {
   state.ui.activeDays = new Set([1, 2, 3, 4, 5]);
   state.ui.onboarding = createOnboardingState();
   state.ui.settings = createSettingsState();
+  state.ui.templateEditor = createTemplateEditorState();
   state.ui.windowChangeDialog = createWindowChangeDialogState();
   state.ui.shiftDialog = createShiftDialogState();
   state.ui.deleteDialog = createDeleteDialogState();
@@ -287,6 +311,7 @@ export function resetAppState({ preserveAuth = false } = {}) {
   state.authStatus = preservedAuthStatus;
   state.authError = "";
   state.projects = [];
+  state.templateLibrary = getBuiltInTemplates();
   state.activeProjectId = "";
   state.actor = "pm";
   state.mode = "pm";

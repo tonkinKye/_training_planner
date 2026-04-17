@@ -38,7 +38,7 @@ function getTargetSessions(project, actor, scope) {
   if (scope === "review") return getConflictReviewSessions(project, actor);
   if (scope === "editable") return getEditableSessions(project, actor);
 
-  const visible = new Set(getVisiblePhaseKeys(actor));
+  const visible = new Set(getVisiblePhaseKeys(actor, project));
   return getAllSessions(project).filter((session) => visible.has(session.phase) || canEditSession(project, session, actor));
 }
 
@@ -79,10 +79,10 @@ function buildAvailabilityConflict(session) {
   };
 }
 
-function buildCalendarSourceConflict(session, sourceState) {
-  const phaseLabel = session.phase === "implementation" ? "Implementation" : "PM";
+function buildCalendarSourceConflict(project, session, sourceState) {
+  const phaseLabel = session.phase === "implementation" ? "Implementation" : "Project";
   return {
-    id: `calendar-source:${session.id}:${sourceState.owner || getCalendarOwnerForPhase(session.phase)}`,
+    id: `calendar-source:${session.id}:${sourceState.owner || getCalendarOwnerForPhase(session.phase, project)}`,
     subject: sourceState.error || `${phaseLabel} calendar unavailable`,
     kind: "calendar",
     blocking: true,
@@ -142,9 +142,9 @@ export function getConflicts({ project = getActiveProject(), actor = state.actor
       hits.push(buildStageWindowConflict(project, session));
     }
 
-    const sourceState = getCalendarSourceState(state.calendarAvailability, getCalendarOwnerForPhase(session.phase));
+    const sourceState = getCalendarSourceState(state.calendarAvailability, getCalendarOwnerForPhase(session.phase, project));
     if (sourceState.status === "blocked" || sourceState.status === "error") {
-      hits.push(buildCalendarSourceConflict(session, sourceState));
+      hits.push(buildCalendarSourceConflict(project, session, sourceState));
     }
 
     if (!session.time) {
@@ -153,7 +153,7 @@ export function getConflicts({ project = getActiveProject(), actor = state.actor
       }
     } else {
       const scheduledRange = sessionInterval(session);
-      for (const event of filterCalendarEventsByPhase(state.calendarEvents, session.phase)) {
+      for (const event of filterCalendarEventsByPhase(state.calendarEvents, session.phase, project)) {
         if ((event.graphId || event.id) === session.graphEventId) continue;
         if (overlaps(scheduledRange, calendarInterval(event))) {
           hits.push({

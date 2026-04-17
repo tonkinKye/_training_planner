@@ -1,4 +1,4 @@
-import { GO_LIVE_SESSION_KEY, KICK_OFF_SESSION_KEY, getTemplateDefinition } from "./session-templates.js";
+import { getTemplateDefinition, getTemplateLabel, getTemplateOptions } from "./session-templates.js";
 import { parseDate, toDateStr } from "./utils.js";
 import { uid } from "./state.js";
 import { getCalendarOwnerForPhase as getPhaseCalendarOwner } from "./calendar-sources.js";
@@ -28,11 +28,12 @@ export const PHASE_META = {
   },
 };
 
-export const PROJECT_TYPE_META = {
-  manufacturing: "Manufacturing",
-  warehousing: "Warehousing",
-  custom: "Custom",
-};
+export const PROJECT_TYPE_META = Object.freeze(
+  getTemplateOptions().reduce((lookup, template) => {
+    lookup[template.key] = template.label;
+    return lookup;
+  }, {})
+);
 
 export const STATUS_META = {
   scheduling: "Scheduling",
@@ -85,34 +86,79 @@ function cloneValue(value) {
     : JSON.parse(JSON.stringify(value));
 }
 
-function getTemplatePhase(projectType, phaseKey) {
-  return getTemplateDefinition(projectType)?.phases?.[phaseKey] || {
+function createOneOffTemplateKey() {
+  return `oneoff_${uid().replace(/[^a-zA-Z0-9]/g, "").slice(0, 12)}`;
+}
+
+function resolveTemplateSource(source, fallbackKey = "manufacturing") {
+  if (typeof source === "string") {
+    return getTemplateDefinition(source || fallbackKey);
+  }
+
+  const templateKey = String(source?.templateKey || source?.projectType || fallbackKey || "manufacturing").trim() || "manufacturing";
+  return getTemplateDefinition(templateKey, { templateSnapshot: source?.templateSnapshot || null });
+}
+
+export function getProjectTemplate(project) {
+  return resolveTemplateSource(project);
+}
+
+export function getProjectTemplateLabel(projectOrKey) {
+  if (!projectOrKey) return getTemplateLabel("custom");
+  if (typeof projectOrKey === "string") return getTemplateLabel(projectOrKey);
+  return (
+    projectOrKey.templateLabel
+    || resolveTemplateSource(projectOrKey).label
+    || getTemplateLabel(projectOrKey.templateKey || projectOrKey.projectType || "custom")
+  );
+}
+
+function getTemplatePhase(source, phaseKey) {
+  return resolveTemplateSource(source)?.phaseMap?.[phaseKey] || {
+    key: phaseKey,
+    label: PHASE_META[phaseKey]?.label || phaseKey,
+    owner: PHASE_META[phaseKey]?.owner || "pm",
+    ownerLabel: PHASE_META[phaseKey]?.ownerLabel || "PM",
+    calendarSource: PHASE_META[phaseKey]?.owner || "pm",
+    durationWeeks: { min: null, max: null },
     suggestedWeeksMin: null,
     suggestedWeeksMax: null,
     stages: [],
+    sessions: [],
   };
 }
 
 function makeSession(definition, index, phaseKey = definition?.phase || "implementation", stageKey = definition?.stageKey || "") {
   const key = String(definition?.key || "").trim();
+  const bodyKey = definition?.bodyKey === undefined
+    ? key || null
+    : definition?.bodyKey === null
+      ? null
+      : String(definition?.bodyKey || "").trim() || null;
+  const duration = Number(definition?.duration ?? definition?.durationMinutes) || 90;
   return {
     id: definition?.id || uid(),
     key,
-    bodyKey: String(definition?.bodyKey || key).trim(),
+    bodyKey,
     name: String(definition?.name || "").trim(),
-    duration: Number(definition?.duration) || 90,
+    duration,
+    durationMinutes: duration,
     phase: phaseKey,
     stageKey,
     owner: definition?.owner || PHASE_META[phaseKey].owner,
     type: definition?.type || "external",
     order: Number.isFinite(definition?.order) ? Number(definition.order) : index,
+    phaseOrder: Number.isFinite(definition?.phaseOrder) ? Number(definition.phaseOrder) : index,
+    grandOrder: Number.isFinite(definition?.grandOrder) ? Number(definition.grandOrder) : index,
+    gating: definition?.gating ? cloneValue(definition.gating) : null,
+    calendarSource: definition?.calendarSource || definition?.phaseCalendarSource || PHASE_META[phaseKey].owner,
     date: definition?.date || "",
     time: definition?.time || "",
     graphEventId: definition?.graphEventId || "",
     graphActioned: Boolean(definition?.graphActioned),
     outlookActioned: Boolean(definition?.outlookActioned),
     locked: Boolean(definition?.locked),
-    lockedDate: Boolean(definition?.lockedDate || key === GO_LIVE_SESSION_KEY),
+    lockedDate: Boolean(definition?.lockedDate ?? definition?.locked),
     lockedTime: Boolean(definition?.lockedTime),
     availabilityConflict: Boolean(definition?.availabilityConflict),
   };
@@ -132,10 +178,15 @@ function makeStage(definition, phaseKey, index) {
   };
 }
 
-function createPhaseFromTemplate(projectType, phaseKey, { includeSessions = true } = {}) {
-  const templatePhase = getTemplatePhase(projectType, phaseKey);
+function createPhaseFromTemplate(source, phaseKey, { includeSessions = true } = {}) {
+  const templatePhase = getTemplatePhase(source, phaseKey);
   return {
-    owner: PHASE_META[phaseKey].owner,
+    key: templatePhase.key || phaseKey,
+    label: templatePhase.label || PHASE_META[phaseKey].label,
+    owner: templatePhase.owner || PHASE_META[phaseKey].owner,
+    ownerLabel: templatePhase.ownerLabel || PHASE_META[phaseKey].ownerLabel,
+    calendarSource: templatePhase.calendarSource || templatePhase.owner || PHASE_META[phaseKey].owner,
+    durationWeeks: cloneValue(templatePhase.durationWeeks || { min: null, max: null }),
     suggestedWeeksMin: Number.isFinite(templatePhase.suggestedWeeksMin) ? templatePhase.suggestedWeeksMin : null,
     suggestedWeeksMax: Number.isFinite(templatePhase.suggestedWeeksMax) ? templatePhase.suggestedWeeksMax : null,
     stages: (templatePhase.stages || []).map((stage, stageIndex) =>
@@ -148,6 +199,9 @@ function createPhaseFromTemplate(projectType, phaseKey, { includeSessions = true
                 phase: phaseKey,
                 stageKey: stage.key,
                 order: sessionIndex,
+                phaseOrder: session.phaseOrder,
+                grandOrder: session.grandOrder,
+                calendarSource: templatePhase.calendarSource || templatePhase.owner || PHASE_META[phaseKey].owner,
               }))
             : [],
         },
@@ -158,13 +212,23 @@ function createPhaseFromTemplate(projectType, phaseKey, { includeSessions = true
   };
 }
 
-function normalizePhaseOrders(project, phaseKey) {
-  getPhaseStages(project, phaseKey).forEach((stage, stageIndex) => {
-    stage.order = stageIndex;
-    stage.sessions.forEach((session, sessionIndex) => {
-      session.order = sessionIndex;
-      session.phase = phaseKey;
-      session.stageKey = stage.key;
+function normalizeProjectOrders(project) {
+  let grandOrder = 0;
+  PHASE_ORDER.forEach((phaseKey) => {
+    let phaseOrder = 0;
+    getPhaseStages(project, phaseKey).forEach((stage, stageIndex) => {
+      stage.order = stageIndex;
+      stage.sessions.forEach((session, sessionIndex) => {
+        session.order = sessionIndex;
+        session.phaseOrder = phaseOrder;
+        session.grandOrder = grandOrder;
+        session.phase = phaseKey;
+        session.stageKey = stage.key;
+        session.calendarSource = project?.phases?.[phaseKey]?.calendarSource || session.calendarSource || PHASE_META[phaseKey].owner;
+        session.durationMinutes = Number(session.durationMinutes ?? session.duration) || 90;
+        grandOrder += 1;
+        phaseOrder += 1;
+      });
     });
   });
 }
@@ -190,15 +254,15 @@ function getOrCreateManualStage(phase, phaseKey) {
   return stage;
 }
 
-function buildMigrationCandidates(projectType, phaseKey) {
-  const templatePhase = getTemplatePhase(projectType, phaseKey);
+function buildMigrationCandidates(source, phaseKey) {
+  const templatePhase = getTemplatePhase(source, phaseKey);
   return (templatePhase.stages || []).flatMap((stage) =>
     (stage.sessions || []).map((session) => ({
       stageKey: stage.key,
       key: session.key,
-      bodyKey: session.bodyKey || session.key,
+      bodyKey: session.bodyKey || session.key || "",
       name: session.name,
-      duration: session.duration,
+      duration: session.durationMinutes || session.duration,
       used: false,
     }))
   );
@@ -208,25 +272,23 @@ function findMigrationCandidate(candidates, predicate) {
   return candidates.find((candidate) => !candidate.used && predicate(candidate)) || null;
 }
 
-function migrateLegacyPhase(projectType, phaseKey, legacyPhase = {}) {
-  const phase = createPhaseFromTemplate(projectType, phaseKey, { includeSessions: false });
-  const candidates = buildMigrationCandidates(projectType, phaseKey);
+function migrateLegacyPhase(source, phaseKey, legacyPhase = {}) {
+  const phase = createPhaseFromTemplate(source, phaseKey, { includeSessions: false });
+  const candidates = buildMigrationCandidates(source, phaseKey);
   const legacySessions = Array.isArray(legacyPhase?.sessions) ? legacyPhase.sessions : [];
 
   for (const legacySession of legacySessions) {
     const key = migrationSessionLabel(legacySession);
     let match = findMigrationCandidate(candidates, (candidate) => candidate.key && candidate.key === legacySession.key);
-    let reason = "matched by key";
 
     if (!match) {
       match = findMigrationCandidate(
         candidates,
         (candidate) =>
-          candidate.bodyKey &&
-          candidate.bodyKey === (legacySession.bodyKey || legacySession.key) &&
-          candidate.name === legacySession.name
+          candidate.bodyKey
+          && candidate.bodyKey === (legacySession.bodyKey || legacySession.key)
+          && candidate.name === legacySession.name
       );
-      reason = "matched by bodyKey+name";
     }
 
     if (!match) {
@@ -234,34 +296,40 @@ function migrateLegacyPhase(projectType, phaseKey, legacyPhase = {}) {
         candidates,
         (candidate) => candidate.name === legacySession.name && Number(candidate.duration) === Number(legacySession.duration)
       );
-      reason = "matched by name+duration";
     }
 
     if (!match) {
-      console.info(`[TP migrate] session "${key}" -> unmatched -> manual stage`);
       const manualStage = getOrCreateManualStage(phase, phaseKey);
-      manualStage.sessions.push(makeSession({ ...legacySession, phase: phaseKey, stageKey: manualStage.key }, manualStage.sessions.length, phaseKey, manualStage.key));
+      manualStage.sessions.push(
+        makeSession({ ...legacySession, phase: phaseKey, stageKey: manualStage.key }, manualStage.sessions.length, phaseKey, manualStage.key)
+      );
       continue;
     }
 
     match.used = true;
-    console.info(`[TP migrate] session "${key}" -> ${reason}`);
     const targetStage = phase.stages.find((stage) => stage.key === match.stageKey);
     if (targetStage) {
-      targetStage.sessions.push(makeSession({ ...legacySession, phase: phaseKey, stageKey: targetStage.key }, targetStage.sessions.length, phaseKey, targetStage.key));
+      targetStage.sessions.push(
+        makeSession({ ...legacySession, phase: phaseKey, stageKey: targetStage.key }, targetStage.sessions.length, phaseKey, targetStage.key)
+      );
     }
   }
 
-  normalizePhaseOrders({ phases: { [phaseKey]: phase } }, phaseKey);
+  normalizeProjectOrders({ phases: { [phaseKey]: phase } });
   return phase;
 }
 
-function normalizeModernPhase(projectType, phaseKey, phase = {}) {
-  const templatePhase = getTemplatePhase(projectType, phaseKey);
+function normalizeModernPhase(source, phaseKey, phase = {}) {
+  const templatePhase = getTemplatePhase(source, phaseKey);
   const templateStages = new Map((templatePhase.stages || []).map((stage) => [stage.key, stage]));
 
-  const nextPhase = {
-    owner: PHASE_META[phaseKey].owner,
+  return {
+    key: phaseKey,
+    label: phase?.label || templatePhase.label || PHASE_META[phaseKey].label,
+    owner: phase?.owner || templatePhase.owner || PHASE_META[phaseKey].owner,
+    ownerLabel: templatePhase.ownerLabel || PHASE_META[phaseKey].ownerLabel,
+    calendarSource: phase?.calendarSource || templatePhase.calendarSource || templatePhase.owner || PHASE_META[phaseKey].owner,
+    durationWeeks: cloneValue(phase?.durationWeeks || templatePhase.durationWeeks || { min: null, max: null }),
     suggestedWeeksMin: Number.isFinite(phase?.suggestedWeeksMin) ? Number(phase.suggestedWeeksMin) : templatePhase.suggestedWeeksMin ?? null,
     suggestedWeeksMax: Number.isFinite(phase?.suggestedWeeksMax) ? Number(phase.suggestedWeeksMax) : templatePhase.suggestedWeeksMax ?? null,
     stages: (phase?.stages || []).map((stage, index) => {
@@ -278,6 +346,8 @@ function normalizeModernPhase(projectType, phaseKey, phase = {}) {
             phase: phaseKey,
             stageKey: stage?.key || templateStage?.key,
             order: Number.isFinite(session?.order) ? Number(session.order) : sessionIndex,
+            phaseOrder: Number.isFinite(session?.phaseOrder) ? Number(session.phaseOrder) : sessionIndex,
+            calendarSource: phase?.calendarSource || templatePhase.calendarSource || templatePhase.owner || PHASE_META[phaseKey].owner,
           })),
         },
         phaseKey,
@@ -285,35 +355,49 @@ function normalizeModernPhase(projectType, phaseKey, phase = {}) {
       );
     }),
   };
-
-  return nextPhase;
 }
 
-function normalizePhaseContainer(projectType, phaseKey, phase = null) {
+function normalizePhaseContainer(source, phaseKey, phase = null) {
   if (phase?.stages) {
-    return normalizeModernPhase(projectType, phaseKey, phase);
+    return normalizeModernPhase(source, phaseKey, phase);
   }
   if (phase?.sessions) {
-    return migrateLegacyPhase(projectType, phaseKey, phase);
+    return migrateLegacyPhase(source, phaseKey, phase);
   }
-  return createPhaseFromTemplate(projectType, phaseKey);
+  return createPhaseFromTemplate(source, phaseKey);
 }
 
-function syncGoLiveSession(project) {
-  const found = getAllSessions(project).find((session) => session.key === GO_LIVE_SESSION_KEY);
-  if (!found) return;
+export function getLockedPhaseSessions(project, phaseKey) {
+  return getPhaseSessions(project, phaseKey).filter((session) => session.lockedDate);
+}
 
-  found.phase = "implementation";
-  found.owner = "is";
-  found.lockedDate = true;
-  found.date = project.goLiveDate || "";
-  found.time = found.time || "08:30";
+export function getPhaseGateSession(project, phaseKey) {
+  return getPhaseSessions(project, phaseKey).find((session) => session.gating?.type === "phase_gate") || null;
+}
 
-  const stage = getStageForSession(project, found);
-  if (stage) {
-    stage.rangeStart = project.goLiveDate || "";
-    stage.rangeEnd = project.goLiveDate || "";
-  }
+export function isSessionBeforePhaseGate(project, session) {
+  if (!project || !session) return false;
+  const gate = getPhaseGateSession(project, session.phase);
+  if (!gate) return false;
+  const sessionOrder = Number.isFinite(session.phaseOrder) ? Number(session.phaseOrder) : Number(session.order);
+  const gateOrder = Number.isFinite(gate.phaseOrder) ? Number(gate.phaseOrder) : Number(gate.order);
+  return Number.isFinite(sessionOrder) && Number.isFinite(gateOrder) && sessionOrder < gateOrder;
+}
+
+function syncLockedAnchorSessions(project) {
+  getLockedPhaseSessions(project, "implementation").forEach((session) => {
+    session.phase = "implementation";
+    session.owner = session.owner || "is";
+    session.lockedDate = true;
+    session.date = project.goLiveDate || "";
+    session.time = session.time || "08:30";
+
+    const stage = getStageForSession(project, session);
+    if (stage) {
+      stage.rangeStart = project.goLiveDate || "";
+      stage.rangeEnd = project.goLiveDate || "";
+    }
+  });
 }
 
 function weeksBetween(startDate, endDate) {
@@ -328,9 +412,9 @@ function compareByDate(left, right) {
   return left.localeCompare(right);
 }
 
-function getPhaseDates(project, phaseKey) {
+function getPhaseDates(project, phaseKey, { includeLocked = true } = {}) {
   return getPhaseSessions(project, phaseKey)
-    .filter((session) => session.date)
+    .filter((session) => session.date && (includeLocked || !session.lockedDate))
     .map((session) => session.date)
     .sort(compareByDate);
 }
@@ -345,17 +429,36 @@ function getDateBefore(dateString) {
   return toDateStr(addDays(parseDate(dateString), -1));
 }
 
-export function createOnboardingDraft(projectType = "manufacturing") {
+export function createOnboardingDraft(projectType = "manufacturing", options = {}) {
+  const templateSnapshot = options.templateSnapshot ? cloneValue(options.templateSnapshot) : null;
+  const templateCustomized = Boolean(options.templateCustomized || templateSnapshot);
+  const templateOriginKey = String(options.templateOriginKey || projectType || "manufacturing").trim() || "manufacturing";
+  const templateKey = String(
+    options.templateKey
+    || (templateCustomized ? createOneOffTemplateKey() : templateOriginKey)
+    || "manufacturing"
+  ).trim() || "manufacturing";
+  const templateLabel = options.templateLabel || getProjectTemplateLabel({ templateKey, projectType: templateOriginKey, templateSnapshot });
+  const templateSource = {
+    templateKey,
+    projectType: templateOriginKey,
+    templateSnapshot,
+  };
   const phases = {
-    setup: createPhaseFromTemplate(projectType, "setup"),
-    implementation: createPhaseFromTemplate(projectType, "implementation"),
-    hypercare: createPhaseFromTemplate(projectType, "hypercare"),
+    setup: createPhaseFromTemplate(templateSource, "setup"),
+    implementation: createPhaseFromTemplate(templateSource, "implementation"),
+    hypercare: createPhaseFromTemplate(templateSource, "hypercare"),
   };
   const defaultStageKey = phases.implementation.stages[0]?.key || "";
 
   return {
     clientName: "",
-    projectType,
+    projectType: templateOriginKey,
+    templateKey,
+    templateLabel,
+    templateCustomized,
+    templateOriginKey,
+    templateSnapshot,
     pmName: "",
     pmEmail: "",
     isName: "",
@@ -381,15 +484,35 @@ export function createOnboardingDraft(projectType = "manufacturing") {
       name: "",
       duration: 90,
       type: "external",
+      bodyKey: null,
     },
   };
 }
 
 export function normalizeProject(project) {
+  const templateSnapshot = project?.templateSnapshot ? cloneValue(project.templateSnapshot) : null;
+  const templateCustomized = Boolean(project?.templateCustomized || templateSnapshot);
+  const templateOriginKey = String(project?.templateOriginKey || project?.projectType || project?.templateKey || "manufacturing").trim() || "manufacturing";
+  const templateKey = String(
+    project?.templateKey
+    || (templateCustomized ? createOneOffTemplateKey() : templateOriginKey)
+    || "manufacturing"
+  ).trim() || "manufacturing";
+  const templateSource = {
+    templateKey,
+    projectType: templateOriginKey,
+    templateSnapshot,
+  };
+  const template = resolveTemplateSource(templateSource);
   const nextProject = {
     id: project?.id || uid(),
     clientName: String(project?.clientName || "").trim(),
-    projectType: project?.projectType || "manufacturing",
+    projectType: templateOriginKey,
+    templateKey,
+    templateLabel: String(project?.templateLabel || template.label || getTemplateLabel(templateKey)).trim(),
+    templateCustomized,
+    templateOriginKey,
+    templateSnapshot,
     pmName: String(project?.pmName || "").trim(),
     pmEmail: String(project?.pmEmail || "").trim().toLowerCase(),
     isName: String(project?.isName || "").trim(),
@@ -403,9 +526,9 @@ export function normalizeProject(project) {
     location: String(project?.location || "").trim(),
     invitees: normalizeInvitees(project?.invitees),
     phases: {
-      setup: normalizePhaseContainer(project?.projectType || "manufacturing", "setup", project?.phases?.setup || null),
-      implementation: normalizePhaseContainer(project?.projectType || "manufacturing", "implementation", project?.phases?.implementation || null),
-      hypercare: normalizePhaseContainer(project?.projectType || "manufacturing", "hypercare", project?.phases?.hypercare || null),
+      setup: normalizePhaseContainer(templateSource, "setup", project?.phases?.setup || null),
+      implementation: normalizePhaseContainer(templateSource, "implementation", project?.phases?.implementation || null),
+      hypercare: normalizePhaseContainer(templateSource, "hypercare", project?.phases?.hypercare || null),
     },
     handoff: {
       sentAt: project?.handoff?.sentAt || "",
@@ -424,8 +547,8 @@ export function normalizeProject(project) {
     status: project?.status || "scheduling",
   };
 
-  PHASE_ORDER.forEach((phaseKey) => normalizePhaseOrders(nextProject, phaseKey));
-  syncGoLiveSession(nextProject);
+  normalizeProjectOrders(nextProject);
+  syncLockedAnchorSessions(nextProject);
   nextProject.status = deriveProjectStatus(nextProject);
   return nextProject;
 }
@@ -438,6 +561,11 @@ export function createProjectFromDraft(draft) {
   return normalizeProject({
     clientName: draft.clientName,
     projectType: draft.projectType,
+    templateKey: draft.templateKey,
+    templateLabel: draft.templateLabel,
+    templateCustomized: draft.templateCustomized,
+    templateOriginKey: draft.templateOriginKey,
+    templateSnapshot: cloneValue(draft.templateSnapshot),
     pmName: draft.pmName,
     pmEmail: draft.pmEmail,
     isName: draft.isName,
@@ -505,7 +633,7 @@ export function recomputeStageRange(stage) {
   if (!stage) return null;
 
   const dates = (stage.sessions || [])
-    .filter((session) => session.key !== GO_LIVE_SESSION_KEY && session.date)
+    .filter((session) => !session.lockedDate && session.date)
     .map((session) => session.date)
     .sort(compareByDate);
 
@@ -525,7 +653,7 @@ function createManualStage(project, phaseKey, label) {
     getPhaseStages(project, phaseKey).length
   );
   project.phases[phaseKey].stages.push(stage);
-  normalizePhaseOrders(project, phaseKey);
+  normalizeProjectOrders(project);
   return stage;
 }
 
@@ -545,9 +673,10 @@ export function addCustomSession(project, sessionInput) {
         ...sessionInput,
         phase: phaseKey,
         stageKey: stage.key,
-        owner: sessionInput.owner || PHASE_META[phaseKey].owner,
+        owner: sessionInput.owner || phase.owner || PHASE_META[phaseKey].owner,
         key: sessionInput.key || "",
-        bodyKey: sessionInput.bodyKey || sessionInput.key || "",
+        bodyKey: sessionInput.bodyKey ?? sessionInput.key ?? null,
+        calendarSource: phase.calendarSource || phase.owner || PHASE_META[phaseKey].owner,
       },
       stage.sessions.length,
       phaseKey,
@@ -555,7 +684,7 @@ export function addCustomSession(project, sessionInput) {
     )
   );
 
-  normalizePhaseOrders(project, phaseKey);
+  normalizeProjectOrders(project);
   touchProject(project);
   project.status = deriveProjectStatus(project);
   return stage;
@@ -567,7 +696,7 @@ export function removeSession(project, sessionId) {
 
   found.stage.sessions.splice(found.index, 1);
   recomputeStageRange(found.stage);
-  normalizePhaseOrders(project, found.phaseKey);
+  normalizeProjectOrders(project);
   touchProject(project);
   project.status = deriveProjectStatus(project);
 }
@@ -582,7 +711,7 @@ export function moveSession(project, sessionId, direction) {
 
   const [session] = sessions.splice(found.index, 1);
   sessions.splice(targetIndex, 0, session);
-  normalizePhaseOrders(project, found.phaseKey);
+  normalizeProjectOrders(project);
   touchProject(project);
 }
 
@@ -606,7 +735,7 @@ export function getPhaseSummary(project, phaseKey) {
   const phase = project?.phases?.[phaseKey];
   const sessions = getPhaseSessions(project, phaseKey);
   const scheduled = sessions.filter((session) => session.date && session.time).length;
-  const dated = sessions.filter((session) => session.date).map((session) => session.date).sort(compareByDate);
+  const dated = sessions.filter((session) => session.date && !session.lockedDate).map((session) => session.date).sort(compareByDate);
   const spanWeeks = dated.length ? weeksBetween(dated[0], dated[dated.length - 1]) : 0;
   const minWeeks = Number.isFinite(phase?.suggestedWeeksMin) ? phase.suggestedWeeksMin : null;
   const maxWeeks = Number.isFinite(phase?.suggestedWeeksMax) ? phase.suggestedWeeksMax : null;
@@ -652,17 +781,11 @@ export function getWindowForPhase(project, phaseKey) {
 
 function getEffectiveWindowMin(project, session, window) {
   if (
-    session?.phase !== "setup" ||
-    session?.type !== "internal" ||
-    !project?.projectStart
+    session?.phase !== "setup"
+    || session?.type !== "internal"
+    || !project?.projectStart
+    || !isSessionBeforePhaseGate(project, session)
   ) {
-    return window.min;
-  }
-
-  const stage = getStageForSession(project, session);
-  const kickOff = stage?.sessions?.find((candidate) => candidate.key === KICK_OFF_SESSION_KEY);
-  const kickOffOrder = kickOff ? kickOff.order : Infinity;
-  if (session.order >= kickOffOrder) {
     return window.min;
   }
 
@@ -687,7 +810,7 @@ export function getStageRangeForSession(project, session) {
 }
 
 export function isDateWithinStageRange(project, session, dateString) {
-  if (!dateString) return true;
+  if (!dateString || session?.lockedDate) return true;
   const range = getStageRangeForSession(project, session);
   if (range.start && dateString < range.start) return false;
   if (range.end && dateString > range.end) return false;
@@ -695,21 +818,18 @@ export function isDateWithinStageRange(project, session, dateString) {
 }
 
 export function isDateWithinPhaseWindow(project, session, dateString) {
-  if (!dateString) return true;
+  if (!dateString || session?.lockedDate) return true;
 
   const window = getWindowForPhase(project, session.phase);
   let effectiveMin = getEffectiveWindowMin(project, session, window);
   let effectiveMax = window.max;
 
   if (session.phase === "setup") {
-    // If any setup session is already scheduled before effectiveMin (e.g. an
-    // internal session placed before projectStart via the buffer), expand the
-    // min so other setup sessions can be rearranged into that range too.
     const setupDates = getPhaseDates(project, "setup");
-    if (setupDates.length && setupDates[0] < effectiveMin) {
+    if (setupDates.length && effectiveMin && setupDates[0] < effectiveMin) {
       effectiveMin = setupDates[0];
     }
-    const implDates = getPhaseDates(project, "implementation");
+    const implDates = getPhaseDates(project, "implementation", { includeLocked: false });
     if (implDates.length) {
       effectiveMax = getDateBefore(implDates[0]);
     }
@@ -732,9 +852,8 @@ export function isDateWithinPhaseWindow(project, session, dateString) {
 
 export function canEditSession(project, session, actor) {
   if (!project || !session || !actor || session.locked) return false;
-  if (session.key === GO_LIVE_SESSION_KEY) return actor === "is";
   if (actor === "pm") return true;
-  return session.phase === "implementation";
+  return getCalendarOwnerForPhase(session.phase, project) === actor;
 }
 
 export function canCommitSession(session, actor) {
@@ -744,16 +863,20 @@ export function canCommitSession(session, actor) {
   return session.owner === "is";
 }
 
-export function getCalendarOwnerForPhase(phaseKey) {
-  return getPhaseCalendarOwner(phaseKey);
+export function getCalendarOwnerForPhase(phaseKey, project = null) {
+  return getPhaseCalendarOwner(phaseKey, project);
 }
 
-export function getVisiblePhaseKeys(actor) {
-  return actor === "is" ? ["implementation"] : [...PHASE_ORDER];
+export function getVisiblePhaseKeys(actor, project = null) {
+  if (actor !== "is") return [...PHASE_ORDER];
+  if (!project) return ["implementation"];
+  return PHASE_ORDER.filter((phaseKey) => getCalendarOwnerForPhase(phaseKey, project) === "is");
 }
 
-export function getContextPhaseKeys(actor) {
-  return actor === "is" ? ["setup", "hypercare"] : [];
+export function getContextPhaseKeys(actor, project = null) {
+  if (actor !== "is") return [];
+  const visible = new Set(getVisiblePhaseKeys(actor, project));
+  return PHASE_ORDER.filter((phaseKey) => !visible.has(phaseKey));
 }
 
 export function getEditableSessions(project, actor) {
@@ -763,10 +886,10 @@ export function getEditableSessions(project, actor) {
 export function getConflictReviewSessions(project, actor) {
   return getAllSessions(project).filter(
     (session) =>
-      (actor === "pm" || session.owner === actor) &&
-      session.type !== "internal" &&
-      session.date &&
-      canEditSession(project, session, actor)
+      (actor === "pm" || session.owner === actor)
+      && session.type !== "internal"
+      && session.date
+      && canEditSession(project, session, actor)
   );
 }
 
@@ -781,7 +904,7 @@ export function getSchedulableSessions(project, actor = "pm") {
 }
 
 export function getProjectAnchor(project) {
-  return getAllSessions(project).find((session) => session.key === GO_LIVE_SESSION_KEY) || null;
+  return getLockedPhaseSessions(project, "implementation")[0] || null;
 }
 
 export function getHypercareWindowDates(project) {
@@ -800,12 +923,15 @@ export function getHypercareWindowDates(project) {
 
 export function getActorDisplayName(project, actor) {
   if (actor === "is") return project?.isName || "Implementation Specialist";
+  if (actor === "shared") return "Shared";
   return project?.pmName || "Project Manager";
 }
 
 export function getCalendarOwnerName(project, phaseKey) {
-  const owner = phaseKey ? getCalendarOwnerForPhase(phaseKey) : "pm";
-  return owner === "is" ? project?.isName || "Implementation Specialist" : project?.pmName || "Project Manager";
+  const owner = phaseKey ? getCalendarOwnerForPhase(phaseKey, project) : "pm";
+  if (owner === "is") return project?.isName || "Implementation Specialist";
+  if (owner === "shared") return "Shared";
+  return project?.pmName || "Project Manager";
 }
 
 export function projectHasImplementationReady(project) {
@@ -919,7 +1045,7 @@ export function getTimelineSuggestion(source) {
   const hcMax = Number.isFinite(hypercarePhase?.suggestedWeeksMax) ? hypercarePhase.suggestedWeeksMax : null;
   const totalMin = (setupMin || 0) + (implMin || 0) + (hcMin || 0);
   const totalMax = (setupMax || 0) + (implMax || 0) + (hcMax || 0);
-  const implSessions = getPhaseSessions(source, "implementation").filter((s) => s.key !== GO_LIVE_SESSION_KEY);
+  const implSessions = getPhaseSessions(source, "implementation").filter((session) => !session.lockedDate);
   const implFloor = implSessions.length ? Math.ceil(implSessions.length / 3) : 0;
 
   function roundToWorkingDay(date) {
@@ -939,8 +1065,14 @@ export function getTimelineSuggestion(source) {
   }
 
   return {
-    setupMin, setupMax, implMin, implMax, hcMin, hcMax,
-    totalMin, totalMax,
+    setupMin,
+    setupMax,
+    implMin,
+    implMax,
+    hcMin,
+    hcMax,
+    totalMin,
+    totalMax,
     implFloor,
     implFloorExceedsMin: implFloor > (implMin || 0),
     earliestGoLive,
@@ -964,7 +1096,7 @@ export function getSuggestedGoLive(source) {
   const implementationPhase = source?.phases?.implementation || {};
   const suggestedWeeksMin = Number.isFinite(implementationPhase?.suggestedWeeksMin) ? implementationPhase.suggestedWeeksMin : 0;
   const suggestedWeeksMax = Number.isFinite(implementationPhase?.suggestedWeeksMax) ? implementationPhase.suggestedWeeksMax : 0;
-  const implementationSessions = getPhaseSessions(source, "implementation").filter((session) => session.key !== GO_LIVE_SESSION_KEY);
+  const implementationSessions = getPhaseSessions(source, "implementation").filter((session) => !session.lockedDate);
   const minimumWeeksAtThreePerWeek = implementationSessions.length ? Math.ceil(implementationSessions.length / 3) : 0;
   const recommendedWeeks = Math.max(suggestedWeeksMin || 0, minimumWeeksAtThreePerWeek);
 
@@ -1001,6 +1133,11 @@ export function mergeDeepLinkProject(existingProject, incomingProject) {
   const merged = normalizeProject({
     ...existingProject,
     ...incomingProject,
+    templateKey: incomingProject.templateKey || existingProject.templateKey,
+    templateLabel: incomingProject.templateLabel || existingProject.templateLabel,
+    templateCustomized: incomingProject.templateCustomized || existingProject.templateCustomized,
+    templateOriginKey: incomingProject.templateOriginKey || existingProject.templateOriginKey,
+    templateSnapshot: incomingProject.templateSnapshot || existingProject.templateSnapshot,
     phases: {
       setup: existingProject.phases.setup,
       implementation: incomingProject.phases.implementation,
@@ -1011,14 +1148,14 @@ export function mergeDeepLinkProject(existingProject, incomingProject) {
   const existingImplementation = getPhaseSessions(existingProject, "implementation");
   for (const session of getPhaseSessions(merged, "implementation")) {
     const preserved =
-      existingImplementation.find((candidate) => candidate.key && candidate.key === session.key) ||
-      existingImplementation.find(
+      existingImplementation.find((candidate) => candidate.key && candidate.key === session.key)
+      || existingImplementation.find(
         (candidate) =>
-          candidate.bodyKey === session.bodyKey &&
-          candidate.name === session.name &&
-          candidate.duration === session.duration
-      ) ||
-      existingImplementation.find((candidate) => candidate.name === session.name && candidate.duration === session.duration);
+          candidate.bodyKey === session.bodyKey
+          && candidate.name === session.name
+          && candidate.duration === session.duration
+      )
+      || existingImplementation.find((candidate) => candidate.name === session.name && candidate.duration === session.duration);
 
     if (!preserved) continue;
     session.id = preserved.id;

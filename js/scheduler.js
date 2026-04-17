@@ -23,7 +23,10 @@ import {
   getAllSessions,
   getConflictReviewSessions,
   getEditableSessions,
+  getLockedPhaseSessions,
+  getPhaseGateSession,
   INTERNAL_SETUP_BUFFER_DAYS,
+  isSessionBeforePhaseGate,
   getPhaseSessions,
   getPhaseStages,
   getProjectById,
@@ -41,7 +44,6 @@ import {
   removeSession,
   touchProject,
 } from "./projects.js";
-import { GO_LIVE_SESSION_KEY, KICK_OFF_SESSION_KEY, getTemplateReviewJSON } from "./session-templates.js";
 import { mondayOf, parseDate, toDateStr, toast } from "./utils.js";
 
 const SMART_FILL_PREFERENCES = new Set(["am", "none", "pm"]);
@@ -57,6 +59,12 @@ function addDays(date, amount) {
   const nextDate = new Date(date);
   nextDate.setDate(nextDate.getDate() + amount);
   return nextDate;
+}
+
+function cloneValue(value) {
+  return typeof structuredClone === "function"
+    ? structuredClone(value)
+    : JSON.parse(JSON.stringify(value));
 }
 
 function getTodayString() {
@@ -190,7 +198,12 @@ function refreshGoLiveSuggestion(source, { forceAutofill = false } = {}) {
 }
 
 function createDraftFromAccount() {
-  const draft = createOnboardingDraft();
+  const defaultTemplate = state.templateLibrary.find((template) => template.key === "manufacturing") || state.templateLibrary[0] || null;
+  const draft = createOnboardingDraft(defaultTemplate?.key || "manufacturing", {
+    templateSnapshot: defaultTemplate ? cloneValue(defaultTemplate) : null,
+    templateLabel: defaultTemplate?.label || "",
+    templateOriginKey: defaultTemplate?.key || "manufacturing",
+  });
   if (state.graphAccount) {
     draft.pmName = state.graphAccount.name || "";
     draft.pmEmail = state.graphAccount.username || "";
@@ -198,6 +211,15 @@ function createDraftFromAccount() {
   refreshGoLiveSuggestion(draft, { forceAutofill: true });
   ensureBuilderStage(draft, "customSession");
   return draft;
+}
+
+function getLibraryTemplate(templateKey) {
+  return state.templateLibrary.find((template) => template.key === templateKey) || null;
+}
+
+function setOnboardingTemplateReviewJSON(draft) {
+  const reviewTemplate = draft?.templateSnapshot || getLibraryTemplate(draft?.templateOriginKey || draft?.projectType || draft?.templateKey);
+  state.ui.onboarding.templateReviewJSON = reviewTemplate ? JSON.stringify(reviewTemplate, null, 2) : "";
 }
 
 function resetSmartFillDefaults(project) {
@@ -316,8 +338,12 @@ function getSmartFillWindowForPhase(project, phaseKey, previousPhaseLastDate = "
   const start = getSmartFillSearchStart(effectiveSmartStart, window.min, previousPhaseLastDate);
   let end = window.max || start;
 
-  if (phaseKey === "implementation" && project.goLiveDate) {
-    end = dayBefore(project.goLiveDate);
+  if (phaseKey === "implementation") {
+    const lockedAnchor = getLockedPhaseSessions(project, "implementation")[0];
+    const anchorDate = lockedAnchor?.date || project.goLiveDate;
+    if (anchorDate) {
+      end = dayBefore(anchorDate);
+    }
   }
 
   return {
@@ -426,22 +452,27 @@ function getSetupKickOffAnchorDate(project, previousPhaseLastDate = "") {
   return getSmartFillSearchStart(state.ui.smartStart || project?.projectStart || "", project?.projectStart || "", previousPhaseLastDate);
 }
 
-function pinKickOffSession(project, stageStates, previousPhaseLastDate, result) {
-  const kickOffDate = getSetupKickOffAnchorDate(project, previousPhaseLastDate);
-  if (!kickOffDate) return "";
+function pinPhaseGateSession(project, phaseKey, stageStates, previousPhaseLastDate, result) {
+  const gateDate = phaseKey === "setup"
+    ? getSetupKickOffAnchorDate(project, previousPhaseLastDate)
+    : "";
+  if (!gateDate) return "";
+
+  const gateSession = getPhaseGateSession(project, phaseKey);
+  if (!gateSession) return "";
 
   for (const stageState of stageStates) {
-    const kickOffIndex = stageState.pendingSessions.findIndex((session) => session.key === KICK_OFF_SESSION_KEY);
-    if (kickOffIndex < 0) continue;
+    const gateIndex = stageState.pendingSessions.findIndex((session) => session.id === gateSession.id);
+    if (gateIndex < 0) continue;
 
-    const [kickOffSession] = stageState.pendingSessions.splice(kickOffIndex, 1);
-    stageState.fixedDates.push(kickOffDate);
-    applySessionDate(kickOffSession, kickOffDate);
+    const [phaseGateSession] = stageState.pendingSessions.splice(gateIndex, 1);
+    stageState.fixedDates.push(gateDate);
+    applySessionDate(phaseGateSession, gateDate);
     result.datedCount += 1;
-    return kickOffDate;
+    return gateDate;
   }
 
-  return "";
+  return gateDate;
 }
 
 function getNeighboringSessionDates(stage, session) {
@@ -510,21 +541,21 @@ function getLatestSessionDate(sessions) {
 
 function getStageFixedDates(stage) {
   return (stage.sessions || [])
-    .filter((session) => session.key !== GO_LIVE_SESSION_KEY && session.date)
+    .filter((session) => !session.lockedDate && session.date)
     .map((session) => session.date)
     .sort();
 }
 
 function buildStageStates(project, phaseKey, actor) {
   return getPhaseStages(project, phaseKey).map((stage) => {
-    const placeableSessions = stage.sessions.filter((session) => session.key !== GO_LIVE_SESSION_KEY);
+    const placeableSessions = stage.sessions.filter((session) => !session.lockedDate);
     const pendingSessions = placeableSessions
       .filter((session) => !session.date && canEditSession(project, session, actor))
       .sort(compareSessions);
     const fixedDates = getStageFixedDates(stage);
     return {
       stage,
-      isGoLive: stage.sessions.some((session) => session.key === GO_LIVE_SESSION_KEY),
+      hasLockedSession: stage.sessions.some((session) => session.lockedDate),
       weight: placeableSessions.length || fixedDates.length || 1,
       pendingSessions,
       fixedDates,
@@ -606,7 +637,7 @@ function setStageRange(stage, stageDates, fixedDates = []) {
 function getSmartFillPhaseBoundary(project, phaseKey, previousPhaseLastDate, actor) {
   const phaseWindow = getSmartFillWindowForPhase(project, phaseKey, previousPhaseLastDate);
   const editableSessions = getEditableSessions(project, actor).filter(
-    (session) => session.phase === phaseKey && session.key !== GO_LIVE_SESSION_KEY
+    (session) => session.phase === phaseKey && !session.lockedDate
   );
 
   return {
@@ -620,7 +651,7 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
   const stageStates = buildStageStates(project, phaseKey, actor);
 
   if (phaseKey === "setup") {
-    pinKickOffSession(project, stageStates, previousPhaseLastDate, result);
+    pinPhaseGateSession(project, phaseKey, stageStates, previousPhaseLastDate, result);
   }
 
   // Pre-pass: place internal setup sessions in the buffer period before projectStart
@@ -629,9 +660,9 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
     if (bufferDates.length) {
       const internalSessions = [];
       for (const stageState of stageStates) {
-        const kickOff = stageState.stage.sessions.find((s) => s.key === KICK_OFF_SESSION_KEY);
-        const kickOffOrder = kickOff ? kickOff.order : Infinity;
-        const internal = stageState.pendingSessions.filter((s) => s.type === "internal" && s.order < kickOffOrder);
+        const internal = stageState.pendingSessions.filter(
+          (candidate) => candidate.type === "internal" && isSessionBeforePhaseGate(project, candidate)
+        );
         internalSessions.push(...internal);
         const internalIds = new Set(internal.map((s) => s.id));
         stageState.pendingSessions = stageState.pendingSessions.filter((s) => !internalIds.has(s.id));
@@ -669,20 +700,21 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
     }
   }
 
-  const allocatableStages = stageStates.filter((stageState) => !stageState.isGoLive);
+  const allocatableStages = stageStates.filter((stageState) => !stageState.hasLockedSession);
   const stageCounts = allocateSequentialCounts(allocatableStages, phaseState.dates.length);
 
   let dateOffset = 0;
   let lastStageBoundary = previousPhaseLastDate;
 
   for (const stageState of stageStates) {
-    const { stage, isGoLive } = stageState;
+    const { stage, hasLockedSession } = stageState;
 
-    if (isGoLive) {
+    if (hasLockedSession) {
       const previousStart = stage.rangeStart || "";
       const previousEnd = stage.rangeEnd || "";
-      stage.rangeStart = project.goLiveDate || "";
-      stage.rangeEnd = project.goLiveDate || "";
+      const lockedDate = stage.sessions.find((session) => session.lockedDate)?.date || project.goLiveDate || "";
+      stage.rangeStart = lockedDate;
+      stage.rangeEnd = lockedDate;
       if (stage.rangeStart !== previousStart || stage.rangeEnd !== previousEnd) {
         result.rangeCount += 1;
       }
@@ -733,7 +765,7 @@ function runPhaseSmartFill(project, phaseKey, actor, previousPhaseLastDate, resu
     }
 
     const allDates = stage.sessions
-      .filter((session) => session.key !== GO_LIVE_SESSION_KEY && session.date)
+      .filter((session) => !session.lockedDate && session.date)
       .map((session) => session.date)
       .sort();
     stage.rangeStart = allDates[0] || stage.rangeStart;
@@ -899,7 +931,7 @@ export function openOnboarding() {
   state.ui.onboarding.open = true;
   state.ui.onboarding.step = 0;
   state.ui.onboarding.draft = createDraftFromAccount();
-  state.ui.onboarding.templateReviewJSON = getTemplateReviewJSON();
+  setOnboardingTemplateReviewJSON(state.ui.onboarding.draft);
 }
 
 export function closeOnboarding() {
@@ -921,7 +953,12 @@ export function updateOnboardingField(field, value) {
   if (!draft) return;
 
   if (field === "projectType") {
-    const next = createOnboardingDraft(value);
+    const selectedTemplate = getLibraryTemplate(value);
+    const next = createOnboardingDraft(value, {
+      templateSnapshot: selectedTemplate ? cloneValue(selectedTemplate) : null,
+      templateLabel: selectedTemplate?.label || "",
+      templateOriginKey: value,
+    });
     next.clientName = draft.clientName;
     next.pmName = draft.pmName;
     next.pmEmail = draft.pmEmail;
@@ -937,6 +974,7 @@ export function updateOnboardingField(field, value) {
     next.goLiveManuallySet = draft.goLiveManuallySet;
     refreshGoLiveSuggestion(next, { forceAutofill: false });
     state.ui.onboarding.draft = next;
+    setOnboardingTemplateReviewJSON(next);
     return;
   }
 
@@ -1102,6 +1140,38 @@ export function updateSettingsField(field, value) {
 
   draft[field] = value;
   if (field === "implementationStart" || field === "projectType") {
+    if (field === "projectType") {
+      const selectedTemplate = getLibraryTemplate(value);
+      draft.templateKey = value;
+      draft.templateOriginKey = value;
+      draft.templateLabel = selectedTemplate?.label || draft.templateLabel;
+      draft.templateCustomized = false;
+      draft.templateSnapshot = selectedTemplate ? cloneValue(selectedTemplate) : null;
+      draft.phases = {
+        setup: normalizeProject({
+          ...draft,
+          templateKey: value,
+          templateOriginKey: value,
+          templateSnapshot: selectedTemplate ? cloneValue(selectedTemplate) : null,
+          phases: {},
+        }).phases.setup,
+        implementation: normalizeProject({
+          ...draft,
+          templateKey: value,
+          templateOriginKey: value,
+          templateSnapshot: selectedTemplate ? cloneValue(selectedTemplate) : null,
+          phases: {},
+        }).phases.implementation,
+        hypercare: normalizeProject({
+          ...draft,
+          templateKey: value,
+          templateOriginKey: value,
+          templateSnapshot: selectedTemplate ? cloneValue(selectedTemplate) : null,
+          phases: {},
+        }).phases.hypercare,
+      };
+      ensureBuilderStage(draft, "newSession");
+    }
     refreshGoLiveSuggestion(draft, { forceAutofill: false });
   }
 }

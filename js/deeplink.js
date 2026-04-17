@@ -1,4 +1,4 @@
-import { getPhaseStages } from "./projects.js";
+import { getPhaseStages, getProjectTemplate } from "./projects.js";
 import { getTemplateDefinition } from "./session-templates.js";
 import { DEEP_LINK_LIMIT } from "./state.js";
 
@@ -21,8 +21,8 @@ function fromBase64Url(value) {
   return bytes;
 }
 
-function getImplementationTemplateMaps(projectType) {
-  const implementationStages = getTemplateDefinition(projectType)?.phases?.implementation?.stages || [];
+function getImplementationTemplateMaps(templateSource) {
+  const implementationStages = templateSource?.phaseMap?.implementation?.stages || [];
   const stageMap = new Map();
   const sessionMap = new Map();
 
@@ -43,19 +43,21 @@ function getImplementationTemplateMaps(projectType) {
 function encodeSessionTuple(session, templateSession) {
   const tuple = [session.id || "", session.key || "", session.date || "", session.time || ""];
   const needsExtendedTuple =
-    !templateSession ||
-    !session.key ||
-    session.name !== templateSession.name ||
-    Number(session.duration) !== Number(templateSession.duration) ||
-    session.type !== templateSession.type ||
-    (session.bodyKey || session.key || "") !== (templateSession.bodyKey || templateSession.key || "");
+    !templateSession
+    || !session.key
+    || session.name !== templateSession.name
+    || Number(session.duration) !== Number(templateSession.durationMinutes || templateSession.duration)
+    || session.type !== templateSession.type
+    || (session.bodyKey || session.key || "") !== (templateSession.bodyKey || templateSession.key || "");
 
   if (needsExtendedTuple) {
     tuple.push(
       session.name || "",
       Number(session.duration) || 90,
       session.type || "external",
-      session.bodyKey || session.key || ""
+      session.bodyKey ?? null,
+      session.owner || templateSession?.owner || "is",
+      session.lockedDate ? 1 : 0
     );
   }
 
@@ -63,8 +65,8 @@ function encodeSessionTuple(session, templateSession) {
 }
 
 function encodeImplementationStages(project) {
-  const { stageMap, sessionMap } = getImplementationTemplateMaps(project.projectType || "manufacturing");
-  // rangeStart/rangeEnd intentionally excluded — advisory only, recalculated by IS via Smart Fill
+  const template = getProjectTemplate(project);
+  const { stageMap, sessionMap } = getImplementationTemplateMaps(template);
   return getPhaseStages(project, "implementation").map((stage) => [
     stage.key || "",
     stageMap.get(stage.key)?.label === stage.label ? "" : stage.label || "",
@@ -77,31 +79,37 @@ function decodeSessionTuple(stageKey, stageLabel, tuple, templateSession, index)
     return {
       ...tuple,
       phase: "implementation",
-      owner: "is",
+      owner: tuple?.owner || templateSession?.owner || "is",
       stageKey,
       order: Number.isFinite(tuple?.order) ? Number(tuple.order) : index,
+      phaseOrder: Number.isFinite(tuple?.phaseOrder) ? Number(tuple.phaseOrder) : index,
+      durationMinutes: Number(tuple?.durationMinutes ?? tuple?.duration) || templateSession?.durationMinutes || 90,
+      lockedDate: Boolean(tuple?.lockedDate ?? templateSession?.lockedDate),
     };
   }
 
-  const [id, key, date, time, name, duration, type, bodyKey] = tuple;
+  const [id, key, date, time, name, duration, type, bodyKey, owner, locked] = tuple;
   return {
     id: id || "",
     key: key || "",
-    bodyKey: bodyKey || templateSession?.bodyKey || key || "",
+    bodyKey: bodyKey === undefined ? (templateSession?.bodyKey || key || null) : bodyKey,
     name: name || templateSession?.name || key || stageLabel || "Implementation Session",
-    duration: Number(duration) || templateSession?.duration || 90,
+    duration: Number(duration) || templateSession?.durationMinutes || 90,
+    durationMinutes: Number(duration) || templateSession?.durationMinutes || 90,
     type: type || templateSession?.type || "external",
-    owner: "is",
+    owner: owner || templateSession?.owner || "is",
     phase: "implementation",
     stageKey,
     order: index,
+    phaseOrder: index,
     date: date || "",
     time: time || "",
+    lockedDate: Boolean(locked || templateSession?.lockedDate),
   };
 }
 
-function decodeImplementationStages(projectType, encodedStages) {
-  const { stageMap, sessionMap } = getImplementationTemplateMaps(projectType || "manufacturing");
+function decodeImplementationStages(templateSource, encodedStages) {
+  const { stageMap, sessionMap } = getImplementationTemplateMaps(templateSource);
   return (Array.isArray(encodedStages) ? encodedStages : []).map((encodedStage, stageIndex) => {
     if (!Array.isArray(encodedStage)) {
       const stageKey = encodedStage?.key || `implementation_stage_${stageIndex + 1}`;
@@ -134,8 +142,8 @@ function decodeImplementationStages(projectType, encodedStages) {
   });
 }
 
-function decodeLegacyImplementationSessions(projectType, encodedSessions) {
-  const { stageMap, sessionMap } = getImplementationTemplateMaps(projectType || "manufacturing");
+function decodeLegacyImplementationSessions(templateSource, encodedSessions) {
+  const { stageMap, sessionMap } = getImplementationTemplateMaps(templateSource);
   const stages = new Map();
 
   for (const templateStage of stageMap.values()) {
@@ -165,28 +173,32 @@ function decodeLegacyImplementationSessions(projectType, encodedSessions) {
           ? {
               id: "",
               key: sessionTuple[0] || "",
-              bodyKey: sessionTuple[1] || sessionTuple[0] || "",
+              bodyKey: sessionTuple[1] || sessionTuple[0] || null,
               name: sessionTuple[2] || templateSession?.name || "Implementation Session",
-              duration: Number(sessionTuple[3]) || templateSession?.duration || 90,
+              duration: Number(sessionTuple[3]) || templateSession?.durationMinutes || 90,
+              durationMinutes: Number(sessionTuple[3]) || templateSession?.durationMinutes || 90,
               type: sessionTuple[4] || templateSession?.type || "external",
-              owner: "is",
+              owner: templateSession?.owner || "is",
               phase: "implementation",
               stageKey,
               order: stages.get(stageKey).sessions.length,
+              phaseOrder: stages.get(stageKey).sessions.length,
               date: sessionTuple[5] || "",
               time: sessionTuple[6] || "",
             }
           : {
               id: sessionTuple.i || "",
               key: sessionTuple.k || "",
-              bodyKey: sessionTuple.b || sessionTuple.k || "",
+              bodyKey: sessionTuple.b || sessionTuple.k || null,
               name: sessionTuple.n || templateSession?.name || "Implementation Session",
-              duration: Number(sessionTuple.d) || templateSession?.duration || 90,
+              duration: Number(sessionTuple.d) || templateSession?.durationMinutes || 90,
+              durationMinutes: Number(sessionTuple.d) || templateSession?.durationMinutes || 90,
               type: sessionTuple.t || templateSession?.type || "external",
-              owner: "is",
+              owner: templateSession?.owner || "is",
               phase: "implementation",
               stageKey,
               order: stages.get(stageKey).sessions.length,
+              phaseOrder: stages.get(stageKey).sessions.length,
               date: sessionTuple.dt || "",
               time: sessionTuple.tm || "",
               graphEventId: sessionTuple.g || "",
@@ -199,10 +211,15 @@ function decodeLegacyImplementationSessions(projectType, encodedSessions) {
 
 export function getDeepLinkPayload(project) {
   return {
-    v: 2,
+    v: 3,
     id: project.id,
     c: project.clientName || "",
-    pt: project.projectType || "manufacturing",
+    pt: project.projectType || project.templateOriginKey || project.templateKey || "manufacturing",
+    tk: project.templateKey || project.projectType || "manufacturing",
+    tl: project.templateLabel || "",
+    tc: Boolean(project.templateCustomized),
+    to: project.templateOriginKey || project.projectType || project.templateKey || "manufacturing",
+    ts: project.templateSnapshot || null,
     pm: project.pmEmail || "",
     pn: project.pmName || "",
     is: project.isEmail || "",
@@ -234,14 +251,18 @@ export function decodeHandoffPayload(value) {
     throw new Error("Invalid handoff payload.");
   }
 
+  const templateSource = getTemplateDefinition(payload.tk || payload.pt || "manufacturing", {
+    templateSnapshot: payload.ts || null,
+  });
+
   if (Array.isArray(payload.impl)) {
     const looksLikeStageArray =
-      !payload.impl.length ||
-      (Array.isArray(payload.impl[0]) && Array.isArray(payload.impl[0][2])) ||
-      Array.isArray(payload.impl[0]?.sessions);
+      !payload.impl.length
+      || (Array.isArray(payload.impl[0]) && Array.isArray(payload.impl[0][2]))
+      || Array.isArray(payload.impl[0]?.sessions);
     payload.impl = looksLikeStageArray
-      ? decodeImplementationStages(payload.pt || "manufacturing", payload.impl)
-      : decodeLegacyImplementationSessions(payload.pt || "manufacturing", payload.impl);
+      ? decodeImplementationStages(templateSource, payload.impl)
+      : decodeLegacyImplementationSessions(templateSource, payload.impl);
   }
 
   return {
@@ -249,6 +270,11 @@ export function decodeHandoffPayload(value) {
     v: Number(payload.v) || 1,
     id: String(payload.id),
     projectStart: payload.ps || "",
+    templateKey: payload.tk || payload.pt || "manufacturing",
+    templateLabel: payload.tl || templateSource.label || "",
+    templateCustomized: Boolean(payload.tc || payload.ts),
+    templateOriginKey: payload.to || payload.pt || payload.tk || "manufacturing",
+    templateSnapshot: payload.ts || null,
   };
 }
 

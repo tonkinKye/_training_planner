@@ -69,6 +69,7 @@ test("IS fetch plan stays on the current mailbox", () => {
       userId: "me",
       mailbox: "is@example.com",
       phaseKey: "implementation",
+      phaseKeys: ["implementation"],
     },
   ]);
 });

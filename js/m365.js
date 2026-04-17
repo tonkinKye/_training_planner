@@ -986,7 +986,12 @@ export async function applyDeepLinkProject(payload) {
   const incomingProject = normalizeProject({
     id: payload.id,
     clientName: payload.c,
-    projectType: payload.pt,
+    projectType: payload.pt || payload.templateOriginKey || payload.templateKey,
+    templateKey: payload.templateKey || payload.tk || payload.pt,
+    templateLabel: payload.templateLabel || payload.tl || "",
+    templateCustomized: Boolean(payload.templateCustomized || payload.tc || payload.templateSnapshot || payload.ts),
+    templateOriginKey: payload.templateOriginKey || payload.to || payload.pt || payload.tk,
+    templateSnapshot: payload.templateSnapshot || payload.ts || null,
     pmEmail: payload.pm,
     pmName: payload.pn,
     isEmail: payload.is,
@@ -998,7 +1003,6 @@ export async function applyDeepLinkProject(payload) {
     location: payload.l,
     invitees: payload.a,
     phases: {
-      setup: { owner: "pm", stages: [] },
       implementation: {
         owner: "is",
         stages: (payload.impl || []).map((stage, stageIndex) => ({
@@ -1011,10 +1015,9 @@ export async function applyDeepLinkProject(payload) {
             owner: "is",
             stageKey: stage.key,
             order: Number.isFinite(session.order) ? Number(session.order) : sessionIndex,
-          })),
+            })),
         })),
       },
-      hypercare: { owner: "pm", stages: [] },
     },
   });
 

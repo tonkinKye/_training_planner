@@ -14,6 +14,7 @@ import {
   getProjectCardStatus,
   getProjectCounts,
   getProjectDateRange,
+  getProjectTemplateLabel,
   getTimelineSuggestion,
   getVisiblePhaseKeys,
   PHASE_META,
@@ -22,6 +23,7 @@ import {
   STATUS_META,
 } from "./projects.js";
 import { getSmartAvailabilityState, readyForHandoff } from "./scheduler.js";
+import { getTemplateEditorPreview } from "./template-editor.js";
 import { esc, fmt12, fmtDur, getTimeOptionsHTML, mondayOf, parseDate, timeAgo, toDateStr } from "./utils.js";
 
 const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
@@ -177,6 +179,29 @@ function renderWorkingDaysChips(days, scope) {
   </div>`;
 }
 
+function getTemplateOptionList() {
+  return (state.templateLibrary || []).map((template) => ({
+    key: template.key,
+    label: template.label,
+  }));
+}
+
+function getTemplateLabelForKey(templateKey) {
+  return getTemplateOptionList().find((template) => template.key === templateKey)?.label
+    || PROJECT_TYPE_META[templateKey]
+    || templateKey
+    || "Custom";
+}
+
+function renderTemplateOptions(selectedKey) {
+  return getTemplateOptionList()
+    .map(
+      (template) =>
+        `<option value="${template.key}"${selectedKey === template.key ? " selected" : ""}>${esc(template.label)}</option>`
+    )
+    .join("");
+}
+
 function renderStageOptions(source, phaseKey, selectedStageKey) {
   const stages = getPhaseStages(source, phaseKey);
   const hasSelected = stages.some((stage) => stage.key === selectedStageKey);
@@ -222,13 +247,17 @@ function renderSmartPreferenceToggle(selectedValue, actionName = "setSmartPrefer
 
 function topbar() {
   const project = getActiveProject();
+  const templateDraft = state.ui.templateEditor.draft;
   const name = state.graphAccount?.name || state.graphAccount?.username || "Microsoft 365";
   const inWorkspace = state.ui.screen === "workspace" && project;
+  const inTemplates = state.ui.screen === "templates";
   const projectStatus = inWorkspace ? deriveProjectStatus(project) : "";
   const canClose = inWorkspace && state.actor === "pm" && !["scheduling", "complete", "closed"].includes(projectStatus);
   const breadcrumb = inWorkspace
     ? `Projects / <span class="tp-nav-crumb-current">${esc(project.clientName || "Untitled Project")}</span>`
-    : '<span class="tp-nav-crumb-current">Projects</span>';
+    : inTemplates
+      ? `Templates / <span class="tp-nav-crumb-current">${esc(templateDraft?.label || "Template Editor")}</span>`
+      : '<span class="tp-nav-crumb-current">Projects</span>';
   const workspaceActions = !inWorkspace
     ? ""
     : `${state.actor === "pm" ? '<button class="btn-default" data-action="backToProjects">Projects</button>' : ""}${
@@ -244,6 +273,9 @@ function topbar() {
                 : ""
             }`
       }`;
+  const templateActions = !inTemplates
+    ? ""
+    : `<button class="btn-default" data-action="closeTemplateEditor">${state.ui.templateEditor.mode === "oneoff" ? "Back to Onboarding" : "Back to Projects"}</button>`;
   return `<header class="tp-nav">
     <div class="tp-nav-mark">TP</div>
     <div class="tp-nav-copy"><strong class="tp-nav-title">Training Planner</strong><span class="tp-nav-sub">${state.actor === "is" ? "IS View" : "PM View"}</span></div>
@@ -252,6 +284,7 @@ function topbar() {
     <div class="tp-nav-spacer"></div>
     <div class="tp-nav-actions">
       ${workspaceActions}
+      ${templateActions}
       ${renderThemeToggle()}
       <button class="btn-ghost" data-action="toggleAuth">${esc(name)} | Sign Out</button>
     </div>
@@ -395,7 +428,10 @@ function projectsScreen() {
         <div class="tp-eyebrow">Sentinel-backed Project Index</div>
         <h1>Projects</h1>
       </div>
-      <button class="btn-amber" data-action="openOnboarding">New Project</button>
+      <div class="tp-quick-row">
+        <button class="btn-default" data-action="openTemplates">Templates</button>
+        <button class="btn-amber" data-action="openOnboarding">New Project</button>
+      </div>
     </section>
     ${state.sentinel.malformed ? `<section class="alert alert-danger alert-split"><div><strong>Could not load projects.</strong><div>${esc(state.sentinel.error || "Malformed sentinel payload.")}</div></div><button class="btn-danger" data-action="resetSentinel">Reset Sentinel</button></section>` : ""}
     ${state.projects.length ? searchBar : ""}
@@ -474,7 +510,7 @@ function sidebar(project) {
   return `<aside class="tp-sidebar">
     <section class="tp-side-card">
       <div class="tp-card-top">
-        <span class="tp-pill">${esc(PROJECT_TYPE_META[project.projectType])}</span>
+        <span class="tp-pill">${esc(getProjectTemplateLabel(project))}</span>
         <span class="tp-pill tp-pill-muted">${esc(getProjectCardStatus(project))}</span>
       </div>
       <h2>${esc(project.clientName)}</h2>
@@ -645,7 +681,7 @@ function sessionPanel(project) {
   const visible = getVisiblePhaseKeys(state.actor);
   const context = getContextPhaseKeys(state.actor);
   return `<section class="tp-main">
-    <div class="tp-main-header"><div class="tp-main-title">${esc(project.clientName)}</div><div class="tp-main-sub">${esc(PROJECT_TYPE_META[project.projectType])} | ${esc(getProjectCardStatus(project))}</div></div>
+    <div class="tp-main-header"><div class="tp-main-title">${esc(project.clientName)}</div><div class="tp-main-sub">${esc(getProjectTemplateLabel(project))} | ${esc(getProjectCardStatus(project))}</div></div>
     <div class="tp-main-content">
       ${visible.map((phaseKey) => phaseSection(project, phaseKey, false, nextUpId)).join("")}
       ${
@@ -717,7 +753,7 @@ function onboardingStep() {
   const d = state.ui.onboarding.draft;
   if (!d) return "";
   const step = state.ui.onboarding.step;
-  if (step === 0) return `<label class="tp-field"><span>Client Name</span><input type="text" value="${esc(d.clientName)}" data-bind="onboarding.clientName"></label><label class="tp-field"><span>Project Type</span><select data-bind="onboarding.projectType">${Object.entries(PROJECT_TYPE_META).map(([v, l]) => `<option value="${v}"${d.projectType === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>`;
+  if (step === 0) return `<label class="tp-field"><span>Client Name</span><input type="text" value="${esc(d.clientName)}" data-bind="onboarding.clientName"></label><label class="tp-field"><span>Project Type</span><select data-bind="onboarding.projectType">${renderTemplateOptions(d.templateOriginKey || d.projectType)}</select><small class="tp-muted">Reusable templates are editable in the Templates screen.</small></label><div class="tp-field"><span>One-Off</span><button class="btn-default" data-action="openOnboardingTemplateEditor">Customize This Project Template</button></div>`;
   if (step === 1) return `<label class="tp-field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="onboarding.pmName"></label><label class="tp-field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="onboarding.pmEmail"></label><label class="tp-field"><span>IS Search / Email</span><input type="text" value="${esc(state.ui.peopleQuery)}" data-bind="peopleQuery"></label><div class="tp-quick-row"><button class="btn-default btn-sm" data-action="searchPeople">Search M365</button><span class="tp-muted">People.Read may prompt for re-consent.</span></div>${state.ui.peopleMatches.length ? `<div class="tp-people-list">${state.ui.peopleMatches.map((p) => `<button class="tp-people-pill" data-action="selectPerson" data-name="${esc(p.name)}" data-email="${esc(p.email)}">${esc(p.name || p.email)} <small>${esc(p.email)}</small></button>`).join("")}</div>` : ""}<label class="tp-field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="onboarding.isName"></label><label class="tp-field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="onboarding.isEmail"></label>`;
   if (step === 2) {
     const tl = getTimelineSuggestion(d);
@@ -750,7 +786,7 @@ function onboardingStep() {
   if (step === 3) return `<label class="tp-field tp-field-full"><span>Invitees</span><textarea rows="5" data-bind="onboarding.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea><small class="tp-muted">Use commas or new lines to separate attendee email addresses.</small></label>`;
   if (step === 4) return `<label class="tp-field"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="onboarding.location"><small class="tp-muted">Enter a room name or Teams URL.</small></label>`;
   if (step === 5) return `<div class="tp-settings-list">${PHASE_ORDER.map((phaseKey) => renderSessionRowsForStages(d, phaseKey, "moveOnboardingSession", "removeOnboardingSession")).join("")}</div><div class="tp-builder-grid"><label class="tp-field tp-field-compact"><span>Name</span><input type="text" value="${esc(d.customSession.name)}" data-bind="onboarding.customSession.name"></label><label class="tp-field tp-field-compact"><span>Duration</span><input class="tp-mono" type="number" min="15" step="15" value="${d.customSession.duration}" data-bind="onboarding.customSession.duration"></label><label class="tp-field tp-field-compact"><span>Phase</span><select data-bind="onboarding.customSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.customSession.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="tp-field tp-field-compact"><span>Stage</span><select data-bind="onboarding.customSession.stageKey">${renderStageOptions(d, d.customSession.phase, d.customSession.stageKey)}</select></label>${d.customSession.stageKey === "__new__" || !getPhaseStages(d, d.customSession.phase).length ? `<label class="tp-field tp-field-compact"><span>New Stage Label</span><input type="text" value="${esc(d.customSession.newStageLabel)}" data-bind="onboarding.customSession.newStageLabel"></label>` : ""}<label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="onboarding.customSession.owner"><option value="pm"${d.customSession.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.customSession.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="tp-field tp-field-compact"><span>Type</span><select data-bind="onboarding.customSession.type"><option value="external"${d.customSession.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.customSession.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-amber" data-action="addOnboardingSession">Add Session</button></div>`;
-  return `<div class="tp-summary-card"><h4>${esc(d.clientName || "New Project")}</h4><p>${esc(PROJECT_TYPE_META[d.projectType])} | ${esc(d.pmName || d.pmEmail)} -> ${esc(d.isName || d.isEmail)}</p><p>Implementation window: ${esc(fmtRange(d.implementationStart, d.goLiveDate))}</p><p>Smart Fill default: ${esc(smartPreferenceLabel(d.smartFillPreference))}</p><p>${getAllSessions(d).length} sessions will be written to the sentinel.</p></div><details class="tp-template-review"><summary>Template JSON</summary><pre>${esc(state.ui.onboarding.templateReviewJSON)}</pre></details>`;
+  return `<div class="tp-summary-card"><h4>${esc(d.clientName || "New Project")}</h4><p>${esc(d.templateLabel || getTemplateLabelForKey(d.templateOriginKey || d.projectType))} | ${esc(d.pmName || d.pmEmail)} -> ${esc(d.isName || d.isEmail)}</p><p>Implementation window: ${esc(fmtRange(d.implementationStart, d.goLiveDate))}</p><p>Smart Fill default: ${esc(smartPreferenceLabel(d.smartFillPreference))}</p><p>${getAllSessions(d).length} sessions will be written to the sentinel.</p></div><details class="tp-template-review"><summary>Template JSON</summary><pre>${esc(state.ui.onboarding.templateReviewJSON)}</pre></details>`;
 }
 
 function onboardingModal() {
@@ -762,7 +798,112 @@ function onboardingModal() {
 function settingsModal() {
   const d = state.ui.settings.draft;
   if (!state.ui.settings.open || !d) return "";
-  return `<div class="tp-modal-overlay is-open"><div class="tp-modal tp-modal-wide"><div class="tp-modal-head"><div><h3>Project Settings</h3><p>Edit metadata and sessions.</p></div><button class="btn-default btn-sm" data-action="closeSettings">Close</button></div><div class="tp-settings-grid"><label class="tp-field"><span>Client</span><input type="text" value="${esc(d.clientName)}" data-bind="settings.clientName"></label><label class="tp-field"><span>Type</span><select data-bind="settings.projectType">${Object.entries(PROJECT_TYPE_META).map(([v, l]) => `<option value="${v}"${d.projectType === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label><label class="tp-field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="settings.pmName"></label><label class="tp-field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="settings.pmEmail"></label><label class="tp-field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="settings.isName"></label><label class="tp-field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="settings.isEmail"></label><label class="tp-field"><span>Kick-Off Date</span><input class="tp-mono" type="date" value="${d.projectStart}" data-bind="settings.projectStart"></label><label class="tp-field"><span>Implementation Start</span><input class="tp-mono" type="date" value="${d.implementationStart}" data-bind="settings.implementationStart"></label><label class="tp-field"><span>Go-Live</span><input class="tp-mono" type="date" value="${d.goLiveDate}" data-bind="settings.goLiveDate"></label><label class="tp-field"><span>Hypercare</span><select data-bind="settings.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="tp-field"><span>Smart Fill Default</span><select data-bind="settings.smartFillPreference"><option value="am"${d.smartFillPreference === "am" ? " selected" : ""}>AM</option><option value="none"${d.smartFillPreference === "none" ? " selected" : ""}>No Preference</option><option value="pm"${d.smartFillPreference === "pm" ? " selected" : ""}>PM</option></select></label><div class="tp-field tp-field-full"><span>Working Days</span>${renderWorkingDaysChips(d.workingDays, "Settings")}</div><div class="tp-summary-card tp-field-full"><p><strong>Suggested Go-Live:</strong> ${esc(fmtDate(d.goLiveSuggestedDate || d.goLiveDate || ""))}</p><p><strong>Recommended Duration:</strong> ${esc(fmtPhaseSpan(d.goLiveRecommendedWeeks))}</p>${d.goLiveWarning ? `<p class="tp-warning-copy">${esc(d.goLiveWarning)}</p>` : '<p class="tp-muted">Suggestion updates when implementation start or working days change.</p>'}</div><label class="tp-field tp-field-full"><span>Invitees</span><textarea rows="3" data-bind="settings.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea></label><label class="tp-field tp-field-full"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="settings.location"></label></div><div class="tp-settings-list">${PHASE_ORDER.map((phaseKey) => renderSessionRowsForStages(d, phaseKey, "moveSettingsSession", "removeSettingsSession")).join("")}</div><div class="tp-builder-grid"><label class="tp-field tp-field-compact"><span>Name</span><input type="text" value="${esc(d.newSession?.name || "")}" data-bind="settings.newSession.name"></label><label class="tp-field tp-field-compact"><span>Duration</span><input class="tp-mono" type="number" min="15" step="15" value="${d.newSession?.duration || 90}" data-bind="settings.newSession.duration"></label><label class="tp-field tp-field-compact"><span>Phase</span><select data-bind="settings.newSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.newSession?.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="tp-field tp-field-compact"><span>Stage</span><select data-bind="settings.newSession.stageKey">${renderStageOptions(d, d.newSession?.phase || "implementation", d.newSession?.stageKey || "")}</select></label>${d.newSession?.stageKey === "__new__" || !getPhaseStages(d, d.newSession?.phase || "implementation").length ? `<label class="tp-field tp-field-compact"><span>New Stage Label</span><input type="text" value="${esc(d.newSession?.newStageLabel || "")}" data-bind="settings.newSession.newStageLabel"></label>` : ""}<label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="settings.newSession.owner"><option value="pm"${d.newSession?.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.newSession?.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="tp-field tp-field-compact"><span>Type</span><select data-bind="settings.newSession.type"><option value="external"${d.newSession?.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.newSession?.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-amber" data-action="addSettingsSession">Add Session</button></div><div class="tp-modal-actions"><button class="btn-default" data-action="closeSettings">Cancel</button><button class="btn-amber" data-action="saveSettings">Save Project</button></div></div></div>`;
+  return `<div class="tp-modal-overlay is-open"><div class="tp-modal tp-modal-wide"><div class="tp-modal-head"><div><h3>Project Settings</h3><p>Edit metadata and sessions.</p></div><button class="btn-default btn-sm" data-action="closeSettings">Close</button></div><div class="tp-settings-grid"><label class="tp-field"><span>Client</span><input type="text" value="${esc(d.clientName)}" data-bind="settings.clientName"></label><label class="tp-field"><span>Type</span><select data-bind="settings.projectType">${renderTemplateOptions(d.templateOriginKey || d.projectType)}</select></label><label class="tp-field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="settings.pmName"></label><label class="tp-field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="settings.pmEmail"></label><label class="tp-field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="settings.isName"></label><label class="tp-field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="settings.isEmail"></label><label class="tp-field"><span>Kick-Off Date</span><input class="tp-mono" type="date" value="${d.projectStart}" data-bind="settings.projectStart"></label><label class="tp-field"><span>Implementation Start</span><input class="tp-mono" type="date" value="${d.implementationStart}" data-bind="settings.implementationStart"></label><label class="tp-field"><span>Go-Live</span><input class="tp-mono" type="date" value="${d.goLiveDate}" data-bind="settings.goLiveDate"></label><label class="tp-field"><span>Hypercare</span><select data-bind="settings.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="tp-field"><span>Smart Fill Default</span><select data-bind="settings.smartFillPreference"><option value="am"${d.smartFillPreference === "am" ? " selected" : ""}>AM</option><option value="none"${d.smartFillPreference === "none" ? " selected" : ""}>No Preference</option><option value="pm"${d.smartFillPreference === "pm" ? " selected" : ""}>PM</option></select></label><div class="tp-field tp-field-full"><span>Working Days</span>${renderWorkingDaysChips(d.workingDays, "Settings")}</div><div class="tp-summary-card tp-field-full"><p><strong>Suggested Go-Live:</strong> ${esc(fmtDate(d.goLiveSuggestedDate || d.goLiveDate || ""))}</p><p><strong>Recommended Duration:</strong> ${esc(fmtPhaseSpan(d.goLiveRecommendedWeeks))}</p>${d.goLiveWarning ? `<p class="tp-warning-copy">${esc(d.goLiveWarning)}</p>` : '<p class="tp-muted">Suggestion updates when implementation start or working days change.</p>'}</div><label class="tp-field tp-field-full"><span>Invitees</span><textarea rows="3" data-bind="settings.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea></label><label class="tp-field tp-field-full"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="settings.location"></label></div><div class="tp-settings-list">${PHASE_ORDER.map((phaseKey) => renderSessionRowsForStages(d, phaseKey, "moveSettingsSession", "removeSettingsSession")).join("")}</div><div class="tp-builder-grid"><label class="tp-field tp-field-compact"><span>Name</span><input type="text" value="${esc(d.newSession?.name || "")}" data-bind="settings.newSession.name"></label><label class="tp-field tp-field-compact"><span>Duration</span><input class="tp-mono" type="number" min="15" step="15" value="${d.newSession?.duration || 90}" data-bind="settings.newSession.duration"></label><label class="tp-field tp-field-compact"><span>Phase</span><select data-bind="settings.newSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.newSession?.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="tp-field tp-field-compact"><span>Stage</span><select data-bind="settings.newSession.stageKey">${renderStageOptions(d, d.newSession?.phase || "implementation", d.newSession?.stageKey || "")}</select></label>${d.newSession?.stageKey === "__new__" || !getPhaseStages(d, d.newSession?.phase || "implementation").length ? `<label class="tp-field tp-field-compact"><span>New Stage Label</span><input type="text" value="${esc(d.newSession?.newStageLabel || "")}" data-bind="settings.newSession.newStageLabel"></label>` : ""}<label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="settings.newSession.owner"><option value="pm"${d.newSession?.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.newSession?.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="tp-field tp-field-compact"><span>Type</span><select data-bind="settings.newSession.type"><option value="external"${d.newSession?.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.newSession?.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-amber" data-action="addSettingsSession">Add Session</button></div><div class="tp-modal-actions"><button class="btn-default" data-action="closeSettings">Cancel</button><button class="btn-amber" data-action="saveSettings">Save Project</button></div></div></div>`;
+}
+
+function renderTemplateIssueList(title, issues, className = "") {
+  if (!issues.length) return "";
+  return `<div class="tp-summary-card ${className}"><h4>${esc(title)}</h4><ul class="tp-plain-list">${issues.map((issue) => `<li><strong>${esc(issue.path || "template")}</strong>: ${esc(issue.message)}</li>`).join("")}</ul></div>`;
+}
+
+function renderTemplateSessionEditor(draft, phaseIndex, stageIndex, sessionIndex) {
+  const session = draft?.phases?.[phaseIndex]?.stages?.[stageIndex]?.sessions?.[sessionIndex];
+  if (!session) return "";
+  const phase = draft.phases[phaseIndex];
+  const predecessorOptions = (phase.stages || [])
+    .flatMap((stage) => stage.sessions || [])
+    .filter((candidate) => candidate !== session && candidate.key)
+    .map((candidate) => `<option value="${candidate.key}"${session.gating?.ref === candidate.key ? " selected" : ""}>${esc(candidate.name || candidate.key)}</option>`)
+    .join("");
+
+  return `<div class="tp-summary-card">
+    <div class="tp-quick-row">
+      <strong>${esc(session.name || "Session")}</strong>
+      <button class="btn-default btn-sm" data-action="moveTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}" data-dir="-1">Up</button>
+      <button class="btn-default btn-sm" data-action="moveTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}" data-dir="1">Down</button>
+      <button class="btn-danger btn-sm" data-action="removeTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}">Remove</button>
+    </div>
+    <div class="tp-builder-grid">
+      <label class="tp-field tp-field-compact"><span>Key</span><input type="text" value="${esc(session.key || "")}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.key"></label>
+      <label class="tp-field tp-field-compact"><span>Name</span><input type="text" value="${esc(session.name || "")}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.name"></label>
+      <label class="tp-field tp-field-compact"><span>Duration</span><input class="tp-mono" type="number" min="15" step="15" value="${Number(session.durationMinutes || 90)}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.durationMinutes"></label>
+      <label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.owner"><option value="pm"${session.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${session.owner === "is" ? " selected" : ""}>IS</option><option value="shared"${session.owner === "shared" ? " selected" : ""}>Shared</option></select></label>
+      <label class="tp-field tp-field-compact"><span>Type</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.type"><option value="external"${session.type === "external" ? " selected" : ""}>External</option><option value="internal"${session.type === "internal" ? " selected" : ""}>Internal</option></select></label>
+      <label class="tp-field tp-field-compact"><span>bodyKey</span><input type="text" value="${esc(session.bodyKey || "")}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.bodyKey"></label>
+      <label class="tp-field tp-field-compact"><span>Locked</span><input type="checkbox" ${session.locked ? "checked" : ""} data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.locked"></label>
+      <label class="tp-field tp-field-compact"><span>Gating</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.gating.type"><option value="none"${!session.gating ? " selected" : ""}>None</option><option value="phase_gate"${session.gating?.type === "phase_gate" ? " selected" : ""}>Phase Gate</option><option value="predecessor"${session.gating?.type === "predecessor" ? " selected" : ""}>Predecessor</option></select></label>
+      ${session.gating?.type === "predecessor" ? `<label class="tp-field tp-field-compact"><span>Predecessor Ref</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.gating.ref"><option value="">Select</option>${predecessorOptions}</select></label>` : ""}
+    </div>
+  </div>`;
+}
+
+function renderTemplateStageEditor(draft, phaseIndex, stageIndex) {
+  const stage = draft?.phases?.[phaseIndex]?.stages?.[stageIndex];
+  if (!stage) return "";
+  return `<section class="tp-summary-card">
+    <div class="tp-quick-row">
+      <strong>${esc(stage.label || "Stage")}</strong>
+      <button class="btn-default btn-sm" data-action="moveTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-dir="-1">Up</button>
+      <button class="btn-default btn-sm" data-action="moveTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-dir="1">Down</button>
+      <button class="btn-danger btn-sm" data-action="removeTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">Remove Stage</button>
+    </div>
+    <div class="tp-builder-grid">
+      <label class="tp-field tp-field-compact"><span>Stage Key</span><input type="text" value="${esc(stage.key || "")}" data-bind="templateEditor.stage.${phaseIndex}.${stageIndex}.key"></label>
+      <label class="tp-field tp-field-compact"><span>Stage Label</span><input type="text" value="${esc(stage.label || "")}" data-bind="templateEditor.stage.${phaseIndex}.${stageIndex}.label"></label>
+      <div class="tp-field tp-field-full"><span>Sessions</span>${(stage.sessions || []).map((_, sessionIndex) => renderTemplateSessionEditor(draft, phaseIndex, stageIndex, sessionIndex)).join("")}<button class="btn-default" data-action="addTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">Add Session</button></div>
+    </div>
+  </section>`;
+}
+
+function renderTemplatePhaseEditor(draft, phaseIndex) {
+  const phase = draft?.phases?.[phaseIndex];
+  if (!phase) return "";
+  return `<section class="tp-summary-card">
+    <div class="tp-quick-row"><strong>${esc(phase.label || phase.key || `Phase ${phaseIndex + 1}`)}</strong><span class="tp-pill">${esc(phase.key || "")}</span></div>
+    <div class="tp-builder-grid">
+      <label class="tp-field tp-field-compact"><span>Phase Label</span><input type="text" value="${esc(phase.label || "")}" data-bind="templateEditor.phase.${phaseIndex}.label"></label>
+      <label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="templateEditor.phase.${phaseIndex}.owner"><option value="pm"${phase.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${phase.owner === "is" ? " selected" : ""}>IS</option><option value="shared"${phase.owner === "shared" ? " selected" : ""}>Shared</option></select></label>
+      <label class="tp-field tp-field-compact"><span>Calendar Source</span><select data-bind="templateEditor.phase.${phaseIndex}.calendarSource"><option value="pm"${phase.calendarSource === "pm" ? " selected" : ""}>PM</option><option value="is"${phase.calendarSource === "is" ? " selected" : ""}>IS</option><option value="shared"${phase.calendarSource === "shared" ? " selected" : ""}>Shared</option></select></label>
+      <label class="tp-field tp-field-compact"><span>Min Weeks</span><input class="tp-mono" type="number" min="0" step="1" value="${phase.durationWeeks?.min ?? ""}" data-bind="templateEditor.phase.${phaseIndex}.durationWeeks.min"></label>
+      <label class="tp-field tp-field-compact"><span>Max Weeks</span><input class="tp-mono" type="number" min="0" step="1" value="${phase.durationWeeks?.max ?? ""}" data-bind="templateEditor.phase.${phaseIndex}.durationWeeks.max"></label>
+      <div class="tp-field tp-field-full"><span>Stages</span>${(phase.stages || []).map((_, stageIndex) => renderTemplateStageEditor(draft, phaseIndex, stageIndex)).join("")}<button class="btn-default" data-action="addTemplateStage" data-phase-index="${phaseIndex}">Add Stage</button></div>
+    </div>
+  </section>`;
+}
+
+function templateEditorScreen() {
+  const draft = state.ui.templateEditor.draft;
+  const preview = getTemplateEditorPreview();
+  const templateOptions = getTemplateOptionList();
+  if (!draft) {
+    return `<main class="tp-screen"><section class="tp-empty-card"><h2>No template selected</h2><p>Choose a template to edit.</p></section></main>`;
+  }
+
+  return `<main class="tp-screen">
+    <section class="tp-screen-head">
+      <div>
+        <div class="tp-eyebrow">${state.ui.templateEditor.mode === "oneoff" ? "Onboarding One-Off Template" : "Template Library"}</div>
+        <h1>${esc(draft.label || "Template Editor")}</h1>
+      </div>
+      <div class="tp-quick-row">
+        ${state.ui.templateEditor.mode === "library" ? `<button class="btn-default" data-action="createTemplateEditorTemplate">New Template</button><button class="btn-default" data-action="duplicateTemplateEditorTemplate">Duplicate</button><button class="btn-amber" data-action="exportTemplateLibrary">Export session-templates.js</button>` : `<button class="btn-amber" data-action="applyOneOffTemplate">Apply To Project</button>`}
+      </div>
+    </section>
+    <section class="tp-settings-grid">
+      ${state.ui.templateEditor.mode === "library" ? `<label class="tp-field"><span>Template</span><select data-action="selectTemplateEditorTemplate">${templateOptions.map((template, index) => `<option value="${index}"${index === state.ui.templateEditor.activeTemplateIndex ? " selected" : ""}>${esc(template.label)}</option>`).join("")}</select></label>` : ""}
+      <label class="tp-field"><span>Template Key</span><input type="text" value="${esc(draft.key || "")}" data-bind="templateEditor.key"></label>
+      <label class="tp-field"><span>Template Label</span><input type="text" value="${esc(draft.label || "")}" data-bind="templateEditor.label"></label>
+      <label class="tp-field"><span>Version</span><input type="text" value="${esc(draft.metadata?.version || "")}" data-bind="templateEditor.metadata.version"></label>
+      <label class="tp-field"><span>Author</span><input type="text" value="${esc(draft.metadata?.author || "")}" data-bind="templateEditor.metadata.author"></label>
+      <label class="tp-field"><span>Created</span><input type="text" value="${esc(draft.metadata?.created || "")}" data-bind="templateEditor.metadata.created"></label>
+      <label class="tp-field"><span>Modified</span><input type="text" value="${esc(draft.metadata?.modified || "")}" data-bind="templateEditor.metadata.modified"></label>
+    </section>
+    <section class="tp-settings-list">${draft.phases.map((_, phaseIndex) => renderTemplatePhaseEditor(draft, phaseIndex)).join("")}</section>
+    ${renderTemplateIssueList("Validation Errors", state.ui.templateEditor.validation.errors, "is-danger")}
+    ${renderTemplateIssueList("Validation Warnings", state.ui.templateEditor.validation.warnings, "is-warning")}
+    ${preview ? `<section class="tp-summary-card"><h4>Preview</h4>${preview.phases.map((phase) => `<div class="tp-settings-phase"><h4>${esc(phase.label)}</h4><p>${esc(`${phase.ownerLabel || phase.owner} | ${fmtWeekRange(phase.durationWeeks?.min, phase.durationWeeks?.max) || "No duration"}`)}</p><p>${esc(`${phase.sessions.length} sessions | ${fmtDur(phase.totalMinutes)}`)}</p>${phase.stages.map((stage) => `<div class="tp-settings-row"><div><strong>${esc(stage.label)}</strong><small>${esc(stage.sessions.map((session) => session.name).join(" | "))}</small></div></div>`).join("")}</div>`).join("")}</section>` : ""}
+    ${state.ui.templateEditor.exportSource ? `<section class="tp-template-review"><h4>Export Preview</h4><pre>${esc(state.ui.templateEditor.exportSource)}</pre></section>` : ""}
+  </main>`;
 }
 
 function windowChangeDialog() {
@@ -909,7 +1050,14 @@ export function buildRenderSnapshot() {
   const project = getActiveProject();
   return {
     topbar: state.ui.screen === "auth" ? "" : topbar(),
-    main: state.ui.screen === "auth" ? authScreen() : state.ui.screen === "workspace" && project ? workspace(project) : projectsScreen(),
+    main:
+      state.ui.screen === "auth"
+        ? authScreen()
+        : state.ui.screen === "templates"
+          ? templateEditorScreen()
+          : state.ui.screen === "workspace" && project
+            ? workspace(project)
+            : projectsScreen(),
     overlays: `${onboardingModal()}${settingsModal()}${windowChangeDialog()}${shiftDialog()}${deleteProjectDialog()}${closeProjectDialog()}${projectErrorModal()}${renderDayViewModal()}`,
   };
 }

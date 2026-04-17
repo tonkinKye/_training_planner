@@ -275,7 +275,7 @@ test("internal setup session before kickoff can use buffer before projectStart",
   // The stage needs a kick_off_call session with a higher order for the buffer to apply
   project.phases.setup.stages[0].sessions = [
     session,
-    makeSession({ phase: "setup", key: "kick_off_call", order: 5 }),
+    makeSession({ phase: "setup", key: "kick_off_call", order: 5, gating: { type: "phase_gate" } }),
   ];
   // Should be able to go INTERNAL_SETUP_BUFFER_DAYS before projectStart
   // 2026-03-15 minus 10 days = 2026-03-05
