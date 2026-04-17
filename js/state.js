@@ -116,6 +116,8 @@ export const state = {
     lastHandoff: createLastHandoffState(),
     showArchived: false,
     projectSearch: "",
+    expandedPhaseSections: new Set(),
+    expandedStageSections: new Set(),
   },
   calendarAvailability: createCalendarAvailabilityState(),
   calStart: null,
@@ -273,6 +275,8 @@ export function resetUIState() {
   state.ui.lastHandoff = createLastHandoffState();
   state.ui.showArchived = false;
   state.ui.projectSearch = "";
+  state.ui.expandedPhaseSections = new Set();
+  state.ui.expandedStageSections = new Set();
 }
 
 export function resetAppState({ preserveAuth = false } = {}) {

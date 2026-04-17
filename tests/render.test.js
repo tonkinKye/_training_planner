@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { updateRenderSlot } from "../js/render.js";
+import { createOnboardingDraft, createProjectFromDraft, getPhaseStages } from "../js/projects.js";
+import { buildRenderSnapshot, getPhaseSectionKey, getStageSectionKey, updateRenderSlot } from "../js/render.js";
+import { state } from "../js/state.js";
+import { fmtDur } from "../js/utils.js";
 
 test("render slot updater skips rewriting unchanged markup", () => {
   const slot = {
@@ -22,4 +25,70 @@ test("render slot updater skips rewriting unchanged markup", () => {
   assert.equal(updateRenderSlot(slot, "<section>second</section>"), true);
   assert.equal(slot.innerHTML, "<section>second</section>");
   assert.equal(slot.dataset.renderHtml, "<section>second</section>");
+});
+
+test("workspace phase and stage panels are collapsed by default and expose summary metadata", () => {
+  const originalState = {
+    projects: state.projects,
+    activeProjectId: state.activeProjectId,
+    actor: state.actor,
+    screen: state.ui.screen,
+    expandedPhaseSections: state.ui.expandedPhaseSections,
+    expandedStageSections: state.ui.expandedStageSections,
+  };
+
+  try {
+    const draft = createOnboardingDraft("manufacturing");
+    draft.clientName = "Acciona 3";
+    draft.pmName = "Kye Tonkin";
+    draft.pmEmail = "kye@example.com";
+    draft.isName = "Jordan Smith";
+    draft.isEmail = "jordan@example.com";
+    draft.projectStart = "2026-04-20";
+    draft.implementationStart = "2026-04-27";
+    draft.goLiveDate = "2026-05-29";
+
+    const project = createProjectFromDraft(draft);
+    const setupStage = getPhaseStages(project, "setup")[0];
+    setupStage.sessions[0].date = "2026-04-20";
+    setupStage.sessions[0].time = "09:00";
+    setupStage.sessions[1].date = "2026-04-21";
+    setupStage.sessions[1].time = "13:30";
+    const setupSessions = getPhaseStages(project, "setup").flatMap((stage) => stage.sessions || []);
+
+    state.projects = [project];
+    state.activeProjectId = project.id;
+    state.actor = "pm";
+    state.ui.screen = "workspace";
+    state.ui.expandedPhaseSections = new Set();
+    state.ui.expandedStageSections = new Set();
+
+    const expectedStageDuration = fmtDur((setupStage.sessions || []).reduce((total, session) => total + session.duration, 0));
+    const expectedSetupScheduled = `${setupSessions.filter((session) => session.date && session.time).length} / ${setupSessions.length}`;
+    const expandedSessionField = `data-action="setSessionDate" data-id="${setupStage.sessions[0].id}"`;
+
+    let snapshot = buildRenderSnapshot();
+    assert.ok(snapshot.main.includes('data-action="togglePhaseSection"'));
+    assert.ok(snapshot.main.includes("Kye Tonkin"));
+    assert.ok(snapshot.main.includes(expectedSetupScheduled));
+    assert.ok(!snapshot.main.includes(expandedSessionField));
+
+    state.ui.expandedPhaseSections = new Set([getPhaseSectionKey(project.id, "setup")]);
+    snapshot = buildRenderSnapshot();
+    assert.ok(snapshot.main.includes('data-action="toggleStageSection"'));
+    assert.ok(snapshot.main.includes("Kick-Off &amp; Data Prep"));
+    assert.ok(snapshot.main.includes(expectedStageDuration));
+    assert.ok(!snapshot.main.includes(expandedSessionField));
+
+    state.ui.expandedStageSections = new Set([getStageSectionKey(project.id, "setup", setupStage.key)]);
+    snapshot = buildRenderSnapshot();
+    assert.ok(snapshot.main.includes(expandedSessionField));
+  } finally {
+    state.projects = originalState.projects;
+    state.activeProjectId = originalState.activeProjectId;
+    state.actor = originalState.actor;
+    state.ui.screen = originalState.screen;
+    state.ui.expandedPhaseSections = originalState.expandedPhaseSections;
+    state.ui.expandedStageSections = originalState.expandedStageSections;
+  }
 });

@@ -389,6 +389,30 @@ async function actionHandlers(action, element) {
       state.ui.showArchived = !state.ui.showArchived;
       rerender();
       return;
+    case "togglePhaseSection": {
+      const key = element.dataset.key || "";
+      if (key) {
+        if (state.ui.expandedPhaseSections.has(key)) {
+          state.ui.expandedPhaseSections.delete(key);
+        } else {
+          state.ui.expandedPhaseSections.add(key);
+        }
+      }
+      rerender();
+      return;
+    }
+    case "toggleStageSection": {
+      const key = element.dataset.key || "";
+      if (key) {
+        if (state.ui.expandedStageSections.has(key)) {
+          state.ui.expandedStageSections.delete(key);
+        } else {
+          state.ui.expandedStageSections.add(key);
+        }
+      }
+      rerender();
+      return;
+    }
     case "cleanUpCalendar": {
       const cleanupProject = getActiveProject();
       if (!cleanupProject) return;

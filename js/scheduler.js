@@ -1041,6 +1041,8 @@ export function openProject(projectId, { actor = "pm", mode = actor } = {}) {
   setScreen("workspace");
   setCalendarStartFromProject(project);
   resetSmartFillDefaults(project);
+  state.ui.expandedPhaseSections = new Set();
+  state.ui.expandedStageSections = new Set();
   return project;
 }
 

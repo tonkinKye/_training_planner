@@ -71,6 +71,59 @@ function fmtPhaseSpan(spanWeeks) {
   return `${spanWeeks} week${spanWeeks === 1 ? "" : "s"}`;
 }
 
+function getScheduledCount(sessions) {
+  return sessions.filter((session) => session.date && session.time).length;
+}
+
+function getDatedRange(sessions) {
+  const dated = sessions
+    .filter((session) => session.date)
+    .map((session) => session.date)
+    .sort((left, right) => left.localeCompare(right));
+
+  return {
+    start: dated[0] || "",
+    end: dated[dated.length - 1] || "",
+  };
+}
+
+function getDurationTotal(sessions) {
+  return sessions.reduce((total, session) => total + (Number(session.duration) || 0), 0);
+}
+
+function getOwnerSummary(project, sessions, fallbackOwner = "") {
+  const owners = [...new Set(sessions.map((session) => session.owner).filter(Boolean))];
+  if (!owners.length && fallbackOwner) owners.push(fallbackOwner);
+  return owners.map((owner) => getActorDisplayName(project, owner)).join(" + ");
+}
+
+function renderSummaryStat(label, value, emphasis = false) {
+  return `<span class="tp-summary-stat${emphasis ? " is-emphasis" : ""}"><span class="tp-summary-stat-label">${esc(label)}</span><strong>${esc(value)}</strong></span>`;
+}
+
+function renderSummaryRange(start, end) {
+  const label = start && end && start !== end ? "Range" : "Date";
+  return renderSummaryStat(label, fmtRange(start, end), true);
+}
+
+function renderDisclosureButton(action, key, title, statsHTML, className = "", extrasHTML = "", expanded = false) {
+  return `<button class="${className}" type="button" data-action="${action}" data-key="${key}" aria-expanded="${expanded ? "true" : "false"}">
+    <div class="tp-panel-title-row">
+      <div class="tp-panel-title-group"><span class="tp-panel-disclosure" aria-hidden="true"></span><span class="tp-panel-title">${esc(title)}</span></div>
+      ${extrasHTML}
+    </div>
+    <div class="tp-panel-stats">${statsHTML}</div>
+  </button>`;
+}
+
+export function getPhaseSectionKey(projectId, phaseKey, context = false) {
+  return `${projectId}:${context ? "context" : "main"}:phase:${phaseKey}`;
+}
+
+export function getStageSectionKey(projectId, phaseKey, stageKey, context = false) {
+  return `${getPhaseSectionKey(projectId, phaseKey, context)}:stage:${stageKey}`;
+}
+
 function getPhaseBadgeClass(phaseKey) {
   if (phaseKey === "setup") return "badge-setup";
   if (phaseKey === "implementation") return "badge-impl";
@@ -525,27 +578,60 @@ function sessionRow(project, session, context = false, isNextUp = false) {
   </article>`;
 }
 
+function renderStageSection(project, phaseKey, stage, context, nextUpId) {
+  const stageKey = getStageSectionKey(project.id, phaseKey, stage.key, context);
+  const expanded = state.ui.expandedStageSections?.has(stageKey);
+  const sessions = stage.sessions || [];
+  const scheduled = getScheduledCount(sessions);
+  const range = getDatedRange(sessions);
+  const stats = [
+    renderSummaryStat("Owner", getOwnerSummary(project, sessions, PHASE_META[phaseKey].owner)),
+    renderSummaryStat("Duration", fmtDur(getDurationTotal(sessions))),
+    renderSummaryStat("Scheduled", `${scheduled} / ${sessions.length}`),
+    renderSummaryRange(range.start, range.end),
+  ].join("");
+
+  return `<section class="tp-stage-group${expanded ? " is-open" : ""}">
+    ${renderDisclosureButton("toggleStageSection", stageKey, stage.label, stats, "tp-stage-toggle", "", expanded)}
+    ${
+      expanded
+        ? `<div class="tp-stage-body">${sessions
+            .map((currentSession) => sessionRow(project, currentSession, context, !context && currentSession.id === nextUpId))
+            .join("")}</div>`
+        : ""
+    }
+  </section>`;
+}
+
 function phaseSection(project, phaseKey, context = false, nextUpId = "") {
   const stages = getPhaseStages(project, phaseKey).filter((stage) => (stage.sessions || []).length);
   if (!stages.length) return "";
   const summary = getPhaseSummary(project, phaseKey);
-  const owner = getActorDisplayName(project, PHASE_META[phaseKey].owner);
-  const suggested = fmtWeekRange(summary.suggestedWeeksMin, summary.suggestedWeeksMax);
-  const header = phaseKey === "implementation"
-    ? `<div class="tp-phase-banner"><span class="tp-phase-banner-label">Implementation</span><span class="tp-phase-banner-meta">${esc(owner)} | ${summary.scheduled} / ${summary.total} scheduled${suggested ? ` | ${esc(suggested)}` : ""}</span></div>`
-    : `<header class="tp-phase-header">
-      <div><div class="tp-phase-title">${esc(PHASE_META[phaseKey].label)}</div><p class="tp-phase-meta">${esc(owner)} | ${summary.scheduled} / ${summary.total} scheduled</p></div>
-      <div class="tp-phase-range"><strong>${esc(fmtPhaseSpan(summary.spanWeeks))}</strong>${suggested ? ` <span>${esc(suggested)}</span>` : ""}${summary.exceedsSuggestedMax ? ' <span class="tp-pill tp-pill-warn">Over suggested</span>' : ""}</div>
-    </header>`;
-  return `<section class="tp-phase-section${context ? " tp-phase-context" : ""}">
-    ${header}
-    <div class="tp-phase-list">${stages
-      .map(
-        (stage) => `<section class="tp-stage-group"><header class="tp-stage-head"><h4>${esc(stage.label)}</h4>${stage.rangeStart || stage.rangeEnd ? `<span class="tp-stage-range">${esc(fmtRange(stage.rangeStart, stage.rangeEnd))}</span>` : ""}</header>${stage.sessions
-          .map((currentSession) => sessionRow(project, currentSession, context, !context && currentSession.id === nextUpId))
-          .join("")}</section>`
-      )
-      .join("")}</div>
+  const key = getPhaseSectionKey(project.id, phaseKey, context);
+  const expanded = state.ui.expandedPhaseSections?.has(key);
+  const sessions = stages.flatMap((stage) => stage.sessions || []);
+  const stats = [
+    renderSummaryStat("Owner", getOwnerSummary(project, sessions, PHASE_META[phaseKey].owner)),
+    renderSummaryStat("Duration", fmtDur(getDurationTotal(sessions))),
+    renderSummaryStat("Scheduled", `${summary.scheduled} / ${summary.total}`),
+    renderSummaryRange(summary.rangeStart, summary.rangeEnd),
+  ].join("");
+  const extras = [
+    summary.spanWeeks ? `<span class="tp-pill tp-pill-muted">${esc(fmtPhaseSpan(summary.spanWeeks))}</span>` : "",
+    summary.exceedsSuggestedMax ? '<span class="tp-pill tp-pill-warn">Over suggested</span>' : "",
+  ]
+    .filter(Boolean)
+    .join("");
+
+  return `<section class="tp-phase-section${context ? " tp-phase-context" : ""}${expanded ? " is-open" : ""}${phaseKey === "implementation" ? " is-implementation" : ""}">
+    ${renderDisclosureButton("togglePhaseSection", key, PHASE_META[phaseKey].label, stats, "tp-phase-toggle", extras, expanded)}
+    ${
+      expanded
+        ? `<div class="tp-phase-body"><div class="tp-phase-list">${stages
+            .map((stage) => renderStageSection(project, phaseKey, stage, context, nextUpId))
+            .join("")}</div></div>`
+        : ""
+    }
   </section>`;
 }
 
@@ -564,7 +650,7 @@ function sessionPanel(project) {
       ${visible.map((phaseKey) => phaseSection(project, phaseKey, false, nextUpId)).join("")}
       ${
         state.actor === "is"
-          ? `<section class="tp-phase-section tp-phase-context"><header class="tp-phase-header"><div><div class="tp-phase-title">Read-only Context</div><p class="tp-phase-meta">Setup and Hypercare remain visible for handoff context.</p></div></header>${context.map((phaseKey) => phaseSection(project, phaseKey, true)).join("")}</section>`
+          ? `<section class="tp-phase-section tp-phase-context is-open"><div class="tp-phase-static-head"><div class="tp-phase-title">Read-only Context</div><p class="tp-phase-meta">Setup and Hypercare remain visible for handoff context.</p></div><div class="tp-phase-body"><div class="tp-phase-list">${context.map((phaseKey) => phaseSection(project, phaseKey, true)).join("")}</div></div></section>`
           : ""
       }
     </div>
