@@ -35,6 +35,12 @@ function createTemplateEditorState() {
       errors: [],
       warnings: [],
     },
+    selection: {
+      kind: "template",
+      phaseIndex: -1,
+      stageIndex: -1,
+      sessionIndex: -1,
+    },
     returnScreen: "projects",
   };
 }

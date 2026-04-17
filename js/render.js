@@ -23,7 +23,7 @@ import {
   STATUS_META,
 } from "./projects.js";
 import { getSmartAvailabilityState, readyForHandoff } from "./scheduler.js";
-import { getTemplateEditorPreview } from "./template-editor.js";
+import { getTemplateEditorEntity, getTemplateEditorPreview, getTemplateEditorSelection } from "./template-editor.js";
 import { esc, fmt12, fmtDur, getTimeOptionsHTML, mondayOf, parseDate, timeAgo, toDateStr } from "./utils.js";
 
 const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
@@ -840,69 +840,281 @@ function renderTemplateIssueList(title, issues, className = "") {
   return `<div class="tp-summary-card ${className}"><h4>${esc(title)}</h4><ul class="tp-plain-list">${issues.map((issue) => `<li><strong>${esc(issue.path || "template")}</strong>: ${esc(issue.message)}</li>`).join("")}</ul></div>`;
 }
 
-function renderTemplateSessionEditor(draft, phaseIndex, stageIndex, sessionIndex) {
-  const session = draft?.phases?.[phaseIndex]?.stages?.[stageIndex]?.sessions?.[sessionIndex];
-  if (!session) return "";
-  const phase = draft.phases[phaseIndex];
-  const predecessorOptions = (phase.stages || [])
-    .flatMap((stage) => stage.sessions || [])
-    .filter((candidate) => candidate !== session && candidate.key)
-    .map((candidate) => `<option value="${candidate.key}"${session.gating?.ref === candidate.key ? " selected" : ""}>${esc(candidate.name || candidate.key)}</option>`)
-    .join("");
+function fmtTemplateOwner(value) {
+  if (value === "pm") return "PM";
+  if (value === "is") return "IS";
+  if (value === "shared") return "Shared";
+  return value || "Unassigned";
+}
 
-  return `<div class="tp-summary-card">
-    <div class="tp-quick-row">
-      <strong>${esc(session.name || "Session")}</strong>
-      <button class="btn-default btn-sm" data-action="moveTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}" data-dir="-1">Up</button>
-      <button class="btn-default btn-sm" data-action="moveTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}" data-dir="1">Down</button>
-      <button class="btn-danger btn-sm" data-action="removeTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}">Remove</button>
+function isTemplateSelection(selection, kind, phaseIndex = -1, stageIndex = -1, sessionIndex = -1) {
+  return selection.kind === kind
+    && selection.phaseIndex === phaseIndex
+    && selection.stageIndex === stageIndex
+    && selection.sessionIndex === sessionIndex;
+}
+
+function getTemplatePhaseTone(phaseKey) {
+  if (phaseKey === "setup") return "is-setup";
+  if (phaseKey === "implementation") return "is-implementation";
+  if (phaseKey === "hypercare") return "is-hypercare";
+  return "";
+}
+
+function getTemplatePhaseVisuals(phase) {
+  const sessions = [];
+  const sessionLookup = new Map();
+  let maxSessionCount = 0;
+
+  (phase.stages || []).forEach((stage, stageIndex) => {
+    const stageSessions = stage.sessions || [];
+    maxSessionCount = Math.max(maxSessionCount, stageSessions.length);
+    stageSessions.forEach((session, sessionIndex) => {
+      const descriptor = {
+        session,
+        stage,
+        stageIndex,
+        sessionIndex,
+      };
+      sessions.push(descriptor);
+      if (session.key) {
+        sessionLookup.set(session.key, descriptor);
+      }
+    });
+  });
+
+  const predecessorEdges = [];
+  const downstreamSessionKeys = new Set();
+  const phaseRails = [];
+  let gateActive = false;
+
+  sessions.forEach((descriptor) => {
+    const { session, stageIndex, sessionIndex } = descriptor;
+    if (gateActive && session.key) {
+      downstreamSessionKeys.add(session.key);
+    }
+    if (session.gating?.type === "phase_gate") {
+      gateActive = true;
+      phaseRails.push({
+        stageIndex,
+        sessionIndex,
+        sessionKey: session.key || `${phase.key}_${stageIndex}_${sessionIndex}`,
+      });
+    }
+    if (session.gating?.type === "predecessor" && session.gating.ref && sessionLookup.has(session.gating.ref)) {
+      predecessorEdges.push({
+        from: sessionLookup.get(session.gating.ref),
+        to: descriptor,
+      });
+    }
+  });
+
+  return {
+    maxSessionCount,
+    predecessorEdges,
+    downstreamSessionKeys,
+    phaseRails,
+  };
+}
+
+function renderTemplatePhaseEdges(phase, visuals, phaseIndex) {
+  const stageCount = Math.max(1, (phase.stages || []).length);
+  const rowCount = Math.max(1, visuals.maxSessionCount);
+  const viewWidth = stageCount * 160;
+  const viewHeight = 72 + rowCount * 104;
+  if (!visuals.predecessorEdges.length && !visuals.phaseRails.length) return "";
+
+  const edgeLines = visuals.predecessorEdges.map(({ from, to }) => {
+    const fromX = from.stageIndex * 160 + 80;
+    const fromY = 72 + from.sessionIndex * 104 + 42;
+    const toX = to.stageIndex * 160 + 80;
+    const toY = 72 + to.sessionIndex * 104 + 42;
+    const midX = fromX + (toX - fromX) / 2;
+    return `<path class="tp-template-edge-path" data-template-edge data-template-edge-from="${esc(from.session.key || "")}" data-template-edge-to="${esc(to.session.key || "")}" d="M ${fromX} ${fromY} C ${midX} ${fromY}, ${midX} ${toY}, ${toX} ${toY}" />`;
+  }).join("");
+
+  const rails = visuals.phaseRails.map((rail) => {
+    const startX = rail.stageIndex * 160 + 80;
+    const endX = viewWidth - 24;
+    const y = 72 + rail.sessionIndex * 104 + 24;
+    return `<line class="tp-template-phase-rail-line" data-template-phase-rail="${phase.key}:${esc(rail.sessionKey)}" x1="${startX}" y1="${y}" x2="${endX}" y2="${y}" />`;
+  }).join("");
+
+  return `<svg class="tp-template-phase-edges" viewBox="0 0 ${viewWidth} ${viewHeight}" preserveAspectRatio="none" aria-hidden="true">
+    ${rails}
+    ${edgeLines}
+  </svg>`;
+}
+
+function renderTemplateSessionCard(phase, phaseIndex, stage, stageIndex, session, sessionIndex, selection, visuals) {
+  const selected = isTemplateSelection(selection, "session", phaseIndex, stageIndex, sessionIndex);
+  const badges = [
+    `<span class="badge ${session.type === "internal" ? "badge-int" : "badge-ext"}">${esc(session.type)}</span>`,
+    `<span class="badge ${session.owner === "is" ? "badge-is" : session.owner === "shared" ? "badge-pm" : "badge-pm"}">${esc(fmtTemplateOwner(session.owner || phase.owner))}</span>`,
+    session.locked ? '<span class="badge badge-golive">Locked</span>' : "",
+    session.gating?.type === "phase_gate" ? '<span class="badge badge-next">Gate</span>' : "",
+    session.gating?.type === "predecessor" ? '<span class="badge badge-next">Depends On</span>' : "",
+  ].join("");
+
+  return `<article class="tp-template-session-card${selected ? " is-selected" : ""}${visuals.downstreamSessionKeys.has(session.key) ? " is-gated" : ""}" draggable="true" data-drag="template-session" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}" data-template-session-key="${esc(session.key || "")}">
+    <button class="tp-template-session-select" type="button" data-action="selectTemplateEditorEntity" data-entity-kind="session" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}">
+      <span class="tp-template-session-title">${esc(session.name || "Session")}</span>
+      <span class="tp-template-session-meta">${esc(`${fmtDur(Number(session.durationMinutes) || 0)} | ${session.key || "no_key"}`)}</span>
+      <span class="tp-template-session-badges">${badges}</span>
+    </button>
+    ${session.gating?.type === "phase_gate" ? '<span class="tp-template-gate-badge" data-template-phase-gate>Phase Gate</span>' : ""}
+  </article>`;
+}
+
+function renderTemplateStageColumn(phase, phaseIndex, stage, stageIndex, selection, visuals) {
+  const selected = isTemplateSelection(selection, "stage", phaseIndex, stageIndex);
+  const sessions = stage.sessions || [];
+  const dropSlots = [];
+  for (let slotIndex = 0; slotIndex <= sessions.length; slotIndex += 1) {
+    dropSlots.push(`<div class="tp-template-session-drop" data-drop-template-session data-phase-index="${phaseIndex}" data-target-stage-index="${stageIndex}" data-target-session-index="${slotIndex}"></div>`);
+    if (slotIndex < sessions.length) {
+      dropSlots.push(renderTemplateSessionCard(phase, phaseIndex, stage, stageIndex, sessions[slotIndex], slotIndex, selection, visuals));
+    }
+  }
+
+  return `<section class="tp-template-stage-column${selected ? " is-selected" : ""}" draggable="true" data-drag="template-stage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">
+    <button class="tp-template-stage-header" type="button" data-action="selectTemplateEditorEntity" data-entity-kind="stage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">
+      <span class="tp-template-stage-title">${esc(stage.label || "Stage")}</span>
+      <span class="tp-template-stage-meta">${esc(stage.key || "")}</span>
+      <span class="tp-template-stage-count">${esc(`${sessions.length} session${sessions.length === 1 ? "" : "s"}`)}</span>
+    </button>
+    <div class="tp-template-session-stack" data-template-stage-body>
+      ${dropSlots.join("") || `<div class="tp-template-session-drop" data-drop-template-session data-phase-index="${phaseIndex}" data-target-stage-index="${stageIndex}" data-target-session-index="0"></div>`}
     </div>
-    <div class="tp-builder-grid">
-      <label class="tp-field tp-field-compact"><span>Key</span><input type="text" value="${esc(session.key || "")}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.key"></label>
-      <label class="tp-field tp-field-compact"><span>Name</span><input type="text" value="${esc(session.name || "")}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.name"></label>
-      <label class="tp-field tp-field-compact"><span>Duration</span><input class="tp-mono" type="number" min="15" step="15" value="${Number(session.durationMinutes || 90)}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.durationMinutes"></label>
-      <label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.owner"><option value="pm"${session.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${session.owner === "is" ? " selected" : ""}>IS</option><option value="shared"${session.owner === "shared" ? " selected" : ""}>Shared</option></select></label>
-      <label class="tp-field tp-field-compact"><span>Type</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.type"><option value="external"${session.type === "external" ? " selected" : ""}>External</option><option value="internal"${session.type === "internal" ? " selected" : ""}>Internal</option></select></label>
-      <label class="tp-field tp-field-compact"><span>bodyKey</span><input type="text" value="${esc(session.bodyKey || "")}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.bodyKey"></label>
-      <label class="tp-field tp-field-compact"><span>Locked</span><input type="checkbox" ${session.locked ? "checked" : ""} data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.locked"></label>
-      <label class="tp-field tp-field-compact"><span>Gating</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.gating.type"><option value="none"${!session.gating ? " selected" : ""}>None</option><option value="phase_gate"${session.gating?.type === "phase_gate" ? " selected" : ""}>Phase Gate</option><option value="predecessor"${session.gating?.type === "predecessor" ? " selected" : ""}>Predecessor</option></select></label>
-      ${session.gating?.type === "predecessor" ? `<label class="tp-field tp-field-compact"><span>Predecessor Ref</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.gating.ref"><option value="">Select</option>${predecessorOptions}</select></label>` : ""}
+    <div class="tp-template-stage-footer"><button class="btn-default btn-sm" data-action="addTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">Add Session</button></div>
+  </section>`;
+}
+
+function renderTemplatePhaseLane(phase, phaseIndex, selection) {
+  const visuals = getTemplatePhaseVisuals(phase);
+  const stages = phase.stages || [];
+  const selected = isTemplateSelection(selection, "phase", phaseIndex);
+  const stageColumns = [];
+  for (let slotIndex = 0; slotIndex <= stages.length; slotIndex += 1) {
+    stageColumns.push(`<div class="tp-template-stage-drop" data-drop-template-stage data-phase-index="${phaseIndex}" data-target-index="${slotIndex}"></div>`);
+    if (slotIndex < stages.length) {
+      stageColumns.push(renderTemplateStageColumn(phase, phaseIndex, stages[slotIndex], slotIndex, selection, visuals));
+    }
+  }
+
+  return `<section class="tp-template-phase-lane ${getTemplatePhaseTone(phase.key)}" data-template-phase="${esc(phase.key)}">
+    <div class="tp-template-phase-head">
+      <button class="tp-template-phase-button${selected ? " is-selected" : ""}" type="button" data-action="selectTemplateEditorEntity" data-entity-kind="phase" data-phase-index="${phaseIndex}">
+        <span class="tp-template-phase-title">${esc(phase.label || phase.key || `Phase ${phaseIndex + 1}`)}</span>
+        <span class="tp-template-phase-meta">${esc(`${fmtTemplateOwner(phase.owner)} | ${phase.calendarSource?.toUpperCase?.() || phase.calendarSource || "PM"} calendar | ${fmtWeekRange(phase.durationWeeks?.min, phase.durationWeeks?.max) || "No duration"}`)}</span>
+      </button>
+      <div class="tp-template-phase-actions"><button class="btn-default btn-sm" data-action="addTemplateStage" data-phase-index="${phaseIndex}">Add Stage</button></div>
+    </div>
+    <div class="tp-template-phase-body">
+      ${renderTemplatePhaseEdges(phase, visuals, phaseIndex)}
+      <div class="tp-template-stage-grid">
+        ${stageColumns.join("")}
+      </div>
+    </div>
+  </section>`;
+}
+
+function renderTemplateMetadataInspector(draft) {
+  return `<div class="tp-template-inspector-fields">
+    <label class="tp-field"><span>Template Key</span><input type="text" value="${esc(draft.key || "")}" data-bind="templateEditor.key"></label>
+    <label class="tp-field"><span>Template Label</span><input type="text" value="${esc(draft.label || "")}" data-bind="templateEditor.label"></label>
+    <label class="tp-field"><span>Version</span><input type="text" value="${esc(draft.metadata?.version || "")}" data-bind="templateEditor.metadata.version"></label>
+    <label class="tp-field"><span>Author</span><input type="text" value="${esc(draft.metadata?.author || "")}" data-bind="templateEditor.metadata.author"></label>
+    <label class="tp-field"><span>Created</span><input type="text" value="${esc(draft.metadata?.created || "")}" data-bind="templateEditor.metadata.created"></label>
+    <label class="tp-field"><span>Modified</span><input type="text" value="${esc(draft.metadata?.modified || "")}" data-bind="templateEditor.metadata.modified"></label>
+  </div>`;
+}
+
+function renderTemplatePhaseInspector(phase, phaseIndex) {
+  if (!phase) return "";
+  return `<div class="tp-template-inspector-fields">
+    <label class="tp-field"><span>Phase Label</span><input type="text" value="${esc(phase.label || "")}" data-bind="templateEditor.phase.${phaseIndex}.label"></label>
+    <label class="tp-field"><span>Owner</span><select data-bind="templateEditor.phase.${phaseIndex}.owner"><option value="pm"${phase.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${phase.owner === "is" ? " selected" : ""}>IS</option><option value="shared"${phase.owner === "shared" ? " selected" : ""}>Shared</option></select></label>
+    <label class="tp-field"><span>Calendar Source</span><select data-bind="templateEditor.phase.${phaseIndex}.calendarSource"><option value="pm"${phase.calendarSource === "pm" ? " selected" : ""}>PM</option><option value="is"${phase.calendarSource === "is" ? " selected" : ""}>IS</option><option value="shared"${phase.calendarSource === "shared" ? " selected" : ""}>Shared</option></select></label>
+    <label class="tp-field"><span>Min Weeks</span><input class="tp-mono" type="number" min="0" step="1" value="${phase.durationWeeks?.min ?? ""}" data-bind="templateEditor.phase.${phaseIndex}.durationWeeks.min"></label>
+    <label class="tp-field"><span>Max Weeks</span><input class="tp-mono" type="number" min="0" step="1" value="${phase.durationWeeks?.max ?? ""}" data-bind="templateEditor.phase.${phaseIndex}.durationWeeks.max"></label>
+  </div>`;
+}
+
+function renderTemplateStageInspector(stage, phaseIndex, stageIndex) {
+  if (!stage) return "";
+  return `<div class="tp-template-inspector-fields">
+    <label class="tp-field"><span>Stage Key</span><input type="text" value="${esc(stage.key || "")}" data-bind="templateEditor.stage.${phaseIndex}.${stageIndex}.key"></label>
+    <label class="tp-field"><span>Stage Label</span><input type="text" value="${esc(stage.label || "")}" data-bind="templateEditor.stage.${phaseIndex}.${stageIndex}.label"></label>
+    <div class="tp-quick-row">
+      <button class="btn-default btn-sm" data-action="moveTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-dir="-1">Move Left</button>
+      <button class="btn-default btn-sm" data-action="moveTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-dir="1">Move Right</button>
+      <button class="btn-danger btn-sm" data-action="removeTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">Remove Stage</button>
     </div>
   </div>`;
 }
 
-function renderTemplateStageEditor(draft, phaseIndex, stageIndex) {
-  const stage = draft?.phases?.[phaseIndex]?.stages?.[stageIndex];
-  if (!stage) return "";
-  return `<section class="tp-summary-card">
+function renderTemplateSessionInspector(phase, stage, session, phaseIndex, stageIndex, sessionIndex) {
+  if (!session) return "";
+  const predecessorOptions = (phase.stages || [])
+    .flatMap((candidateStage) => candidateStage.sessions || [])
+    .filter((candidate) => candidate !== session && candidate.key)
+    .map((candidate) => `<option value="${candidate.key}"${session.gating?.ref === candidate.key ? " selected" : ""}>${esc(candidate.name || candidate.key)}</option>`)
+    .join("");
+
+  return `<div class="tp-template-inspector-fields">
+    <label class="tp-field"><span>Key</span><input type="text" value="${esc(session.key || "")}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.key"></label>
+    <label class="tp-field"><span>Name</span><input type="text" value="${esc(session.name || "")}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.name"></label>
+    <label class="tp-field"><span>Duration Minutes</span><input class="tp-mono" type="number" min="15" step="15" value="${Number(session.durationMinutes || 90)}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.durationMinutes"></label>
+    <label class="tp-field"><span>Owner</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.owner"><option value="pm"${session.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${session.owner === "is" ? " selected" : ""}>IS</option><option value="shared"${session.owner === "shared" ? " selected" : ""}>Shared</option></select></label>
+    <label class="tp-field"><span>Type</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.type"><option value="external"${session.type === "external" ? " selected" : ""}>External</option><option value="internal"${session.type === "internal" ? " selected" : ""}>Internal</option></select></label>
+    <label class="tp-field"><span>bodyKey</span><input type="text" value="${esc(session.bodyKey || "")}" data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.bodyKey"></label>
+    <label class="tp-field"><span>Locked</span><input type="checkbox" ${session.locked ? "checked" : ""} data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.locked"></label>
+    <label class="tp-field"><span>Gating</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.gating.type"><option value="none"${!session.gating ? " selected" : ""}>None</option><option value="phase_gate"${session.gating?.type === "phase_gate" ? " selected" : ""}>Phase Gate</option><option value="predecessor"${session.gating?.type === "predecessor" ? " selected" : ""}>Predecessor</option></select></label>
+    ${session.gating?.type === "predecessor" ? `<label class="tp-field"><span>Predecessor Ref</span><select data-bind="templateEditor.session.${phaseIndex}.${stageIndex}.${sessionIndex}.gating.ref"><option value="">Select</option>${predecessorOptions}</select></label>` : ""}
     <div class="tp-quick-row">
-      <strong>${esc(stage.label || "Stage")}</strong>
-      <button class="btn-default btn-sm" data-action="moveTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-dir="-1">Up</button>
-      <button class="btn-default btn-sm" data-action="moveTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-dir="1">Down</button>
-      <button class="btn-danger btn-sm" data-action="removeTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">Remove Stage</button>
+      <button class="btn-default btn-sm" data-action="moveTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}" data-dir="-1">Move Up</button>
+      <button class="btn-default btn-sm" data-action="moveTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}" data-dir="1">Move Down</button>
+      <button class="btn-danger btn-sm" data-action="removeTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}">Remove Session</button>
     </div>
-    <div class="tp-builder-grid">
-      <label class="tp-field tp-field-compact"><span>Stage Key</span><input type="text" value="${esc(stage.key || "")}" data-bind="templateEditor.stage.${phaseIndex}.${stageIndex}.key"></label>
-      <label class="tp-field tp-field-compact"><span>Stage Label</span><input type="text" value="${esc(stage.label || "")}" data-bind="templateEditor.stage.${phaseIndex}.${stageIndex}.label"></label>
-      <div class="tp-field tp-field-full"><span>Sessions</span>${(stage.sessions || []).map((_, sessionIndex) => renderTemplateSessionEditor(draft, phaseIndex, stageIndex, sessionIndex)).join("")}<button class="btn-default" data-action="addTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">Add Session</button></div>
-    </div>
-  </section>`;
+    <p class="tp-template-inspector-note">${esc(`Stage: ${stage?.label || stage?.key || "Unknown"} | Phase: ${phase?.label || phase?.key || "Unknown"}`)}</p>
+  </div>`;
 }
 
-function renderTemplatePhaseEditor(draft, phaseIndex) {
-  const phase = draft?.phases?.[phaseIndex];
-  if (!phase) return "";
-  return `<section class="tp-summary-card">
-    <div class="tp-quick-row"><strong>${esc(phase.label || phase.key || `Phase ${phaseIndex + 1}`)}</strong><span class="tp-pill">${esc(phase.key || "")}</span></div>
-    <div class="tp-builder-grid">
-      <label class="tp-field tp-field-compact"><span>Phase Label</span><input type="text" value="${esc(phase.label || "")}" data-bind="templateEditor.phase.${phaseIndex}.label"></label>
-      <label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="templateEditor.phase.${phaseIndex}.owner"><option value="pm"${phase.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${phase.owner === "is" ? " selected" : ""}>IS</option><option value="shared"${phase.owner === "shared" ? " selected" : ""}>Shared</option></select></label>
-      <label class="tp-field tp-field-compact"><span>Calendar Source</span><select data-bind="templateEditor.phase.${phaseIndex}.calendarSource"><option value="pm"${phase.calendarSource === "pm" ? " selected" : ""}>PM</option><option value="is"${phase.calendarSource === "is" ? " selected" : ""}>IS</option><option value="shared"${phase.calendarSource === "shared" ? " selected" : ""}>Shared</option></select></label>
-      <label class="tp-field tp-field-compact"><span>Min Weeks</span><input class="tp-mono" type="number" min="0" step="1" value="${phase.durationWeeks?.min ?? ""}" data-bind="templateEditor.phase.${phaseIndex}.durationWeeks.min"></label>
-      <label class="tp-field tp-field-compact"><span>Max Weeks</span><input class="tp-mono" type="number" min="0" step="1" value="${phase.durationWeeks?.max ?? ""}" data-bind="templateEditor.phase.${phaseIndex}.durationWeeks.max"></label>
-      <div class="tp-field tp-field-full"><span>Stages</span>${(phase.stages || []).map((_, stageIndex) => renderTemplateStageEditor(draft, phaseIndex, stageIndex)).join("")}<button class="btn-default" data-action="addTemplateStage" data-phase-index="${phaseIndex}">Add Stage</button></div>
+function renderTemplateInspector(draft) {
+  const entity = getTemplateEditorEntity();
+  const selection = getTemplateEditorSelection();
+  let title = "Template";
+  let meta = "Template metadata and export controls";
+  let body = renderTemplateMetadataInspector(draft);
+
+  if (entity.kind === "phase" && entity.phase) {
+    title = entity.phase.label || entity.phase.key || "Phase";
+    meta = `Phase ${selection.phaseIndex + 1}`;
+    body = renderTemplatePhaseInspector(entity.phase, selection.phaseIndex);
+  } else if (entity.kind === "stage" && entity.stage) {
+    title = entity.stage.label || entity.stage.key || "Stage";
+    meta = entity.phase?.label || entity.phase?.key || "Stage";
+    body = renderTemplateStageInspector(entity.stage, selection.phaseIndex, selection.stageIndex);
+  } else if (entity.kind === "session" && entity.session) {
+    title = entity.session.name || entity.session.key || "Session";
+    meta = entity.stage?.label || entity.stage?.key || "Session";
+    body = renderTemplateSessionInspector(entity.phase, entity.stage, entity.session, selection.phaseIndex, selection.stageIndex, selection.sessionIndex);
+  }
+
+  return `<aside class="tp-template-inspector">
+    <div class="tp-template-inspector-card">
+      <div class="tp-template-inspector-head">
+        <div class="tp-eyebrow">Inspector</div>
+        <h3>${esc(title)}</h3>
+        <p>${esc(meta)}</p>
+      </div>
+      ${body}
+      <div class="tp-template-inspector-actions">
+        ${state.ui.templateEditor.mode === "library" ? `<button class="btn-amber" data-action="exportTemplateLibrary">Export session-templates.js</button>` : `<button class="btn-amber" data-action="applyOneOffTemplate">Apply To Project</button>`}
+      </div>
     </div>
-  </section>`;
+  </aside>`;
 }
 
 function templateEditorScreen() {
@@ -920,23 +1132,28 @@ function templateEditorScreen() {
         <h1>${esc(draft.label || "Template Editor")}</h1>
       </div>
       <div class="tp-quick-row">
-        ${state.ui.templateEditor.mode === "library" ? `<button class="btn-default" data-action="createTemplateEditorTemplate">New Template</button><button class="btn-default" data-action="duplicateTemplateEditorTemplate">Duplicate</button><button class="btn-amber" data-action="exportTemplateLibrary">Export session-templates.js</button>` : `<button class="btn-amber" data-action="applyOneOffTemplate">Apply To Project</button>`}
+        ${state.ui.templateEditor.mode === "library" ? `<button class="btn-default" data-action="createTemplateEditorTemplate">New Template</button><button class="btn-default" data-action="duplicateTemplateEditorTemplate">Duplicate</button>` : ""}
       </div>
     </section>
-    <section class="tp-settings-grid">
-      ${state.ui.templateEditor.mode === "library" ? `<label class="tp-field"><span>Template</span><select data-action="selectTemplateEditorTemplate">${templateOptions.map((template, index) => `<option value="${index}"${index === state.ui.templateEditor.activeTemplateIndex ? " selected" : ""}>${esc(template.label)}</option>`).join("")}</select></label>` : ""}
-      <label class="tp-field"><span>Template Key</span><input type="text" value="${esc(draft.key || "")}" data-bind="templateEditor.key"></label>
-      <label class="tp-field"><span>Template Label</span><input type="text" value="${esc(draft.label || "")}" data-bind="templateEditor.label"></label>
-      <label class="tp-field"><span>Version</span><input type="text" value="${esc(draft.metadata?.version || "")}" data-bind="templateEditor.metadata.version"></label>
-      <label class="tp-field"><span>Author</span><input type="text" value="${esc(draft.metadata?.author || "")}" data-bind="templateEditor.metadata.author"></label>
-      <label class="tp-field"><span>Created</span><input type="text" value="${esc(draft.metadata?.created || "")}" data-bind="templateEditor.metadata.created"></label>
-      <label class="tp-field"><span>Modified</span><input type="text" value="${esc(draft.metadata?.modified || "")}" data-bind="templateEditor.metadata.modified"></label>
+    <section class="tp-template-editor">
+      <div class="tp-template-canvas-pane">
+        <div class="tp-summary-card tp-template-toolbar">
+          ${state.ui.templateEditor.mode === "library" ? `<label class="tp-field"><span>Template</span><select data-action="selectTemplateEditorTemplate">${templateOptions.map((template, index) => `<option value="${index}"${index === state.ui.templateEditor.activeTemplateIndex ? " selected" : ""}>${esc(template.label)}</option>`).join("")}</select></label>` : `<div class="tp-template-toolbar-note"><strong>${esc(draft.label || "Template")}</strong><span>One-off customization mode</span></div>`}
+          <div class="tp-template-toolbar-copy">
+            <strong>Graph Builder</strong>
+            <span>Phases are fixed. Drag stages and sessions within their phase lanes, then refine details in the inspector.</span>
+          </div>
+        </div>
+        <section class="tp-template-graph" data-template-graph>
+          ${draft.phases.map((phase, phaseIndex) => renderTemplatePhaseLane(phase, phaseIndex, getTemplateEditorSelection())).join("")}
+        </section>
+        ${renderTemplateIssueList("Validation Errors", state.ui.templateEditor.validation.errors, "is-danger")}
+        ${renderTemplateIssueList("Validation Warnings", state.ui.templateEditor.validation.warnings, "is-warning")}
+        ${preview ? `<section class="tp-summary-card"><h4>Preview</h4>${preview.phases.map((phase) => `<div class="tp-settings-phase"><h4>${esc(phase.label)}</h4><p>${esc(`${phase.ownerLabel || phase.owner} | ${fmtWeekRange(phase.durationWeeks?.min, phase.durationWeeks?.max) || "No duration"}`)}</p><p>${esc(`${phase.sessions.length} sessions | ${fmtDur(phase.totalMinutes)}`)}</p>${phase.stages.map((stage) => `<div class="tp-settings-row"><div><strong>${esc(stage.label)}</strong><small>${esc(stage.sessions.map((session) => session.name).join(" | "))}</small></div></div>`).join("")}</div>`).join("")}</section>` : ""}
+        ${state.ui.templateEditor.exportSource ? `<section class="tp-template-review"><h4>Export Preview</h4><pre>${esc(state.ui.templateEditor.exportSource)}</pre></section>` : ""}
+      </div>
+      ${renderTemplateInspector(draft)}
     </section>
-    <section class="tp-settings-list">${draft.phases.map((_, phaseIndex) => renderTemplatePhaseEditor(draft, phaseIndex)).join("")}</section>
-    ${renderTemplateIssueList("Validation Errors", state.ui.templateEditor.validation.errors, "is-danger")}
-    ${renderTemplateIssueList("Validation Warnings", state.ui.templateEditor.validation.warnings, "is-warning")}
-    ${preview ? `<section class="tp-summary-card"><h4>Preview</h4>${preview.phases.map((phase) => `<div class="tp-settings-phase"><h4>${esc(phase.label)}</h4><p>${esc(`${phase.ownerLabel || phase.owner} | ${fmtWeekRange(phase.durationWeeks?.min, phase.durationWeeks?.max) || "No duration"}`)}</p><p>${esc(`${phase.sessions.length} sessions | ${fmtDur(phase.totalMinutes)}`)}</p>${phase.stages.map((stage) => `<div class="tp-settings-row"><div><strong>${esc(stage.label)}</strong><small>${esc(stage.sessions.map((session) => session.name).join(" | "))}</small></div></div>`).join("")}</div>`).join("")}</section>` : ""}
-    ${state.ui.templateEditor.exportSource ? `<section class="tp-template-review"><h4>Export Preview</h4><pre>${esc(state.ui.templateEditor.exportSource)}</pre></section>` : ""}
   </main>`;
 }
 

@@ -20,6 +20,20 @@ function ensureMetadata(template) {
   return template.metadata;
 }
 
+function createSelection(kind = "template", phaseIndex = -1, stageIndex = -1, sessionIndex = -1) {
+  return {
+    kind,
+    phaseIndex,
+    stageIndex,
+    sessionIndex,
+  };
+}
+
+function updateSelection(kind = "template", phaseIndex = -1, stageIndex = -1, sessionIndex = -1) {
+  state.ui.templateEditor.selection = createSelection(kind, phaseIndex, stageIndex, sessionIndex);
+  return state.ui.templateEditor.selection;
+}
+
 function syncTemplateEditorValidation() {
   const draft = state.ui.templateEditor.draft;
   if (!draft) {
@@ -48,6 +62,8 @@ function selectTemplateIndex(index) {
   state.ui.templateEditor.activeTemplateIndex = index;
   state.ui.templateEditor.draft = cloneValue(template);
   state.ui.templateEditor.originKey = template.key || "";
+  state.ui.templateEditor.exportSource = "";
+  updateSelection("template");
   syncTemplateEditorValidation();
   return state.ui.templateEditor.draft;
 }
@@ -140,6 +156,14 @@ export function getTemplateEditorDraft() {
   return state.ui.templateEditor.draft;
 }
 
+export function getTemplateEditorSelection() {
+  return state.ui.templateEditor.selection || createSelection();
+}
+
+export function selectTemplateEditorEntity(kind = "template", phaseIndex = -1, stageIndex = -1, sessionIndex = -1) {
+  return updateSelection(kind, Number(phaseIndex), Number(stageIndex), Number(sessionIndex));
+}
+
 export function openTemplateLibraryEditor(index = 0) {
   state.ui.templateEditor = {
     mode: "library",
@@ -149,6 +173,7 @@ export function openTemplateLibraryEditor(index = 0) {
     dirty: false,
     exportSource: "",
     validation: { errors: [], warnings: [] },
+    selection: createSelection(),
     returnScreen: state.ui.screen === "auth" ? "projects" : state.ui.screen,
   };
   selectTemplateIndex(index);
@@ -167,6 +192,7 @@ export function openTemplateOneOffEditor({ template = null, originKey = "", retu
     dirty: false,
     exportSource: "",
     validation: { errors: [], warnings: [] },
+    selection: createSelection(),
     returnScreen,
   };
   syncTemplateEditorValidation();
@@ -183,6 +209,7 @@ export function closeTemplateEditor() {
     dirty: false,
     exportSource: "",
     validation: { errors: [], warnings: [] },
+    selection: createSelection(),
     returnScreen: "projects",
   };
   setScreen(returnScreen);
@@ -220,16 +247,41 @@ export function removeTemplateEditorStage(phaseIndex, stageIndex) {
   updateDraft((draft) => {
     draft.phases[phaseIndex]?.stages?.splice(stageIndex, 1);
   });
+  const selection = getTemplateEditorSelection();
+  if (selection.kind === "stage" && selection.phaseIndex === phaseIndex && selection.stageIndex === stageIndex) {
+    updateSelection("phase", phaseIndex);
+  }
+  if (selection.kind === "session" && selection.phaseIndex === phaseIndex && selection.stageIndex === stageIndex) {
+    updateSelection("phase", phaseIndex);
+  }
+}
+
+export function moveTemplateEditorStageToIndex(phaseIndex, stageIndex, targetSlotIndex) {
+  updateDraft((draft) => {
+    const stages = draft.phases[phaseIndex]?.stages || [];
+    if (targetSlotIndex < 0 || targetSlotIndex > stages.length) return;
+    const [stage] = stages.splice(stageIndex, 1);
+    if (!stage) return;
+    const insertIndex = targetSlotIndex > stageIndex ? targetSlotIndex - 1 : targetSlotIndex;
+    if (insertIndex === stageIndex) {
+      stages.splice(stageIndex, 0, stage);
+      return;
+    }
+    stages.splice(insertIndex, 0, stage);
+  });
+  const nextStageIndex = targetSlotIndex > stageIndex ? targetSlotIndex - 1 : targetSlotIndex;
+  const selection = getTemplateEditorSelection();
+  if (selection.phaseIndex !== phaseIndex) return;
+  if (selection.kind === "stage" && selection.stageIndex === stageIndex) {
+    updateSelection("stage", phaseIndex, nextStageIndex);
+  }
+  if (selection.kind === "session" && selection.stageIndex === stageIndex) {
+    updateSelection("session", phaseIndex, nextStageIndex, selection.sessionIndex);
+  }
 }
 
 export function moveTemplateEditorStage(phaseIndex, stageIndex, direction) {
-  updateDraft((draft) => {
-    const stages = draft.phases[phaseIndex]?.stages || [];
-    const targetIndex = stageIndex + direction;
-    if (targetIndex < 0 || targetIndex >= stages.length) return;
-    const [stage] = stages.splice(stageIndex, 1);
-    stages.splice(targetIndex, 0, stage);
-  });
+  moveTemplateEditorStageToIndex(phaseIndex, stageIndex, stageIndex + (direction > 0 ? 2 : -1));
 }
 
 export function addTemplateEditorStage(phaseIndex) {
@@ -244,6 +296,8 @@ export function addTemplateEditorStage(phaseIndex) {
       sessions: [],
     });
   });
+  const nextStageIndex = (getPhaseRef(phaseIndex)?.stages || []).length - 1;
+  updateSelection("stage", phaseIndex, nextStageIndex);
 }
 
 export function addTemplateEditorSession(phaseIndex, stageIndex) {
@@ -263,22 +317,68 @@ export function addTemplateEditorSession(phaseIndex, stageIndex) {
       gating: null,
     });
   });
+  const nextSessionIndex = (getStageRef(phaseIndex, stageIndex)?.sessions || []).length - 1;
+  updateSelection("session", phaseIndex, stageIndex, nextSessionIndex);
 }
 
 export function removeTemplateEditorSession(phaseIndex, stageIndex, sessionIndex) {
   updateDraft((draft) => {
     draft.phases[phaseIndex]?.stages?.[stageIndex]?.sessions?.splice(sessionIndex, 1);
   });
+  const selection = getTemplateEditorSelection();
+  if (
+    selection.kind === "session"
+    && selection.phaseIndex === phaseIndex
+    && selection.stageIndex === stageIndex
+    && selection.sessionIndex === sessionIndex
+  ) {
+    updateSelection("stage", phaseIndex, stageIndex);
+  }
 }
 
 export function moveTemplateEditorSession(phaseIndex, stageIndex, sessionIndex, direction) {
+  moveTemplateEditorSessionToTarget(
+    phaseIndex,
+    stageIndex,
+    sessionIndex,
+    stageIndex,
+    sessionIndex + (direction > 0 ? 2 : -1)
+  );
+}
+
+export function moveTemplateEditorSessionToTarget(
+  phaseIndex,
+  stageIndex,
+  sessionIndex,
+  targetStageIndex,
+  targetSlotIndex
+) {
   updateDraft((draft) => {
-    const sessions = draft.phases[phaseIndex]?.stages?.[stageIndex]?.sessions || [];
-    const targetIndex = sessionIndex + direction;
-    if (targetIndex < 0 || targetIndex >= sessions.length) return;
-    const [session] = sessions.splice(sessionIndex, 1);
-    sessions.splice(targetIndex, 0, session);
+    const sourceSessions = draft.phases[phaseIndex]?.stages?.[stageIndex]?.sessions || [];
+    const destinationStage = draft.phases[phaseIndex]?.stages?.[targetStageIndex];
+    if (!sourceSessions.length || !destinationStage || targetStageIndex < 0) return;
+    const destinationSessions = destinationStage.sessions || [];
+    if (sessionIndex < 0 || sessionIndex >= sourceSessions.length) return;
+    const rawTargetIndex = Number.isFinite(targetSlotIndex) ? targetSlotIndex : destinationSessions.length;
+    const boundedTargetIndex = Math.max(0, Math.min(rawTargetIndex, destinationSessions.length));
+    const [session] = sourceSessions.splice(sessionIndex, 1);
+    if (!session) return;
+    const insertIndex = stageIndex === targetStageIndex && boundedTargetIndex > sessionIndex
+      ? boundedTargetIndex - 1
+      : boundedTargetIndex;
+    if (insertIndex === sessionIndex && stageIndex === targetStageIndex) {
+      sourceSessions.splice(sessionIndex, 0, session);
+      return;
+    }
+    destinationSessions.splice(insertIndex, 0, session);
+    destinationStage.sessions = destinationSessions;
   });
+  const nextStageIndex = targetStageIndex;
+  const nextSessionIndex = stageIndex === targetStageIndex && targetSlotIndex > sessionIndex
+    ? targetSlotIndex - 1
+    : targetSlotIndex;
+  const actualLength = (getStageRef(phaseIndex, nextStageIndex)?.sessions || []).length;
+  updateSelection("session", phaseIndex, nextStageIndex, Math.max(0, Math.min(nextSessionIndex, Math.max(0, actualLength - 1))));
 }
 
 export function updateTemplateEditorField(field, value) {
@@ -368,6 +468,44 @@ export function updateTemplateEditorField(field, value) {
       session[fieldKey] = String(value || "").trim();
     }
   });
+}
+
+export function getTemplateEditorEntity() {
+  const selection = getTemplateEditorSelection();
+  const draft = state.ui.templateEditor.draft;
+  if (!draft) return { kind: "template", template: null };
+  if (selection.kind === "phase") {
+    return {
+      kind: "phase",
+      template: draft,
+      phase: getPhaseRef(selection.phaseIndex),
+      selection,
+    };
+  }
+  if (selection.kind === "stage") {
+    return {
+      kind: "stage",
+      template: draft,
+      phase: getPhaseRef(selection.phaseIndex),
+      stage: getStageRef(selection.phaseIndex, selection.stageIndex),
+      selection,
+    };
+  }
+  if (selection.kind === "session") {
+    return {
+      kind: "session",
+      template: draft,
+      phase: getPhaseRef(selection.phaseIndex),
+      stage: getStageRef(selection.phaseIndex, selection.stageIndex),
+      session: getSessionRef(selection.phaseIndex, selection.stageIndex, selection.sessionIndex),
+      selection,
+    };
+  }
+  return {
+    kind: "template",
+    template: draft,
+    selection,
+  };
 }
 
 export function getTemplateEditorPreview() {

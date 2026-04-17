@@ -79,11 +79,14 @@ import {
   createTemplateEditorTemplate,
   duplicateTemplateEditorTemplate,
   moveTemplateEditorSession,
+  moveTemplateEditorSessionToTarget,
   moveTemplateEditorStage,
+  moveTemplateEditorStageToIndex,
   openTemplateLibraryEditor,
   openTemplateOneOffEditor,
   removeTemplateEditorSession,
   removeTemplateEditorStage,
+  selectTemplateEditorEntity,
   selectTemplateEditorTemplate,
   templateEditorHasUnsavedChanges,
   updateTemplateEditorField,
@@ -272,6 +275,7 @@ async function actionHandlers(action, element) {
     "removeTemplateSession",
     "exportTemplateLibrary",
     "applyOneOffTemplate",
+    "selectTemplateEditorEntity",
     "toggleTheme",
   ]);
 
@@ -325,6 +329,15 @@ async function actionHandlers(action, element) {
       return;
     case "selectTemplateEditorTemplate":
       selectTemplateEditorTemplate(Number(element.value));
+      rerender();
+      return;
+    case "selectTemplateEditorEntity":
+      selectTemplateEditorEntity(
+        element.dataset.entityKind || "template",
+        Number(element.dataset.phaseIndex ?? -1),
+        Number(element.dataset.stageIndex ?? -1),
+        Number(element.dataset.sessionIndex ?? -1)
+      );
       rerender();
       return;
     case "addTemplateStage":
@@ -881,10 +894,30 @@ function bindEvents() {
   document.addEventListener("dragstart", (event) => {
     const element = event.target.closest("[data-drag]");
     if (!element) return;
-    state.dragData = {
-      sessionId: element.dataset.id,
-      type: element.dataset.drag,
-    };
+    if (element.dataset.drag === "template-stage") {
+      state.dragData = {
+        type: "template-stage",
+        phaseIndex: Number(element.dataset.phaseIndex),
+        stageIndex: Number(element.dataset.stageIndex),
+      };
+    } else if (element.dataset.drag === "template-session") {
+      state.dragData = {
+        type: "template-session",
+        phaseIndex: Number(element.dataset.phaseIndex),
+        stageIndex: Number(element.dataset.stageIndex),
+        sessionIndex: Number(element.dataset.sessionIndex),
+      };
+    } else {
+      state.dragData = {
+        sessionId: element.dataset.id,
+        type: element.dataset.drag,
+      };
+    }
+    try {
+      event.dataTransfer?.setData("text/plain", state.dragData.type || "");
+    } catch (error) {
+      // Ignore browsers that restrict custom drag payloads.
+    }
     element.classList.add("is-dragging");
   });
 
@@ -894,13 +927,41 @@ function bindEvents() {
   });
 
   document.addEventListener("dragover", (event) => {
-    const dropTarget = event.target.closest("[data-drop],[data-drop-dv]");
+    const dropTarget = event.target.closest("[data-drop],[data-drop-dv],[data-drop-template-stage],[data-drop-template-session]");
     if (!dropTarget || !state.dragData) return;
     event.preventDefault();
   });
 
   document.addEventListener("drop", async (event) => {
     if (!state.dragData) return;
+    const templateStageDrop = event.target.closest("[data-drop-template-stage]");
+    if (templateStageDrop && state.dragData.type === "template-stage") {
+      event.preventDefault();
+      moveTemplateEditorStageToIndex(
+        Number(templateStageDrop.dataset.phaseIndex),
+        Number(state.dragData.stageIndex),
+        Number(templateStageDrop.dataset.targetIndex)
+      );
+      rerender();
+      state.dragData = null;
+      return;
+    }
+
+    const templateSessionDrop = event.target.closest("[data-drop-template-session]");
+    if (templateSessionDrop && state.dragData.type === "template-session") {
+      event.preventDefault();
+      moveTemplateEditorSessionToTarget(
+        Number(templateSessionDrop.dataset.phaseIndex),
+        Number(state.dragData.stageIndex),
+        Number(state.dragData.sessionIndex),
+        Number(templateSessionDrop.dataset.targetStageIndex),
+        Number(templateSessionDrop.dataset.targetSessionIndex)
+      );
+      rerender();
+      state.dragData = null;
+      return;
+    }
+
     const calendarDrop = event.target.closest("[data-drop]");
     if (calendarDrop) {
       event.preventDefault();

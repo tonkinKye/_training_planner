@@ -10,8 +10,11 @@ import {
   applyOneOffTemplateToOnboarding,
   buildTemplateLibraryExport,
   createTemplateEditorTemplate,
+  moveTemplateEditorSessionToTarget,
+  moveTemplateEditorStageToIndex,
   openTemplateLibraryEditor,
   openTemplateOneOffEditor,
+  selectTemplateEditorEntity,
   templateEditorHasUnsavedChanges,
   updateTemplateEditorField,
 } from "../js/template-editor.js";
@@ -63,12 +66,86 @@ test("one-off template application stores a customized snapshot on the onboardin
   assert.equal(state.ui.onboarding.draft.templateSnapshot.phases[0].stages[0].sessions[0].name, "Sales Handover Custom");
 });
 
-test("templates screen renders the editor form and export affordance", () => {
+test("templates screen renders the graph builder and inspector", () => {
   resetAppState();
   openTemplateLibraryEditor();
   const snapshot = buildRenderSnapshot();
 
   assert.ok(snapshot.main.includes("Template Library"));
-  assert.ok(snapshot.main.includes("Export session-templates.js"));
+  assert.ok(snapshot.main.includes('data-template-graph'));
+  assert.ok(snapshot.main.includes("Inspector"));
   assert.ok(snapshot.main.includes('data-bind="templateEditor.key"'));
+  assert.ok(snapshot.main.indexOf('data-template-phase="setup"') < snapshot.main.indexOf('data-template-phase="implementation"'));
+  assert.ok(snapshot.main.indexOf('data-template-phase="implementation"') < snapshot.main.indexOf('data-template-phase="hypercare"'));
+});
+
+test("template graph renders custom stages and session cards", () => {
+  resetAppState();
+  openTemplateLibraryEditor();
+  createTemplateEditorTemplate();
+
+  updateTemplateEditorField("label", "Graph Template");
+  addTemplateEditorStage(0);
+  updateTemplateEditorField("stage.0.0.label", "Discovery");
+  addTemplateEditorSession(0, 0);
+  updateTemplateEditorField("session.0.0.0.name", "Discovery Workshop");
+
+  const snapshot = buildRenderSnapshot();
+  assert.ok(snapshot.main.includes("Discovery"));
+  assert.ok(snapshot.main.includes("Discovery Workshop"));
+});
+
+test("selection drives the template inspector", () => {
+  resetAppState();
+  openTemplateLibraryEditor();
+  selectTemplateEditorEntity("session", 0, 0, 0);
+
+  const snapshot = buildRenderSnapshot();
+  assert.ok(snapshot.main.includes("Sales Handover"));
+  assert.ok(snapshot.main.includes('data-bind="templateEditor.session.0.0.0.durationMinutes"'));
+});
+
+test("template editor can reorder stages and move sessions between stages", () => {
+  resetAppState();
+  openTemplateLibraryEditor();
+  createTemplateEditorTemplate();
+
+  addTemplateEditorStage(1);
+  updateTemplateEditorField("stage.1.0.label", "Stage A");
+  addTemplateEditorSession(1, 0);
+  updateTemplateEditorField("session.1.0.0.name", "Session A");
+
+  addTemplateEditorStage(1);
+  updateTemplateEditorField("stage.1.1.label", "Stage B");
+  addTemplateEditorSession(1, 1);
+  updateTemplateEditorField("session.1.1.0.name", "Session B");
+
+  moveTemplateEditorStageToIndex(1, 0, 2);
+  moveTemplateEditorSessionToTarget(1, 1, 0, 0, 1);
+
+  const implementationStages = state.ui.templateEditor.draft.phases[1].stages;
+  assert.deepEqual(implementationStages.map((stage) => stage.label), ["Stage B", "Stage A"]);
+  assert.deepEqual(implementationStages[0].sessions.map((session) => session.name), ["Session B", "Session A"]);
+});
+
+test("template graph renders predecessor edges and phase gate markers", () => {
+  resetAppState();
+  openTemplateLibraryEditor();
+  createTemplateEditorTemplate();
+
+  addTemplateEditorStage(0);
+  updateTemplateEditorField("stage.0.0.label", "Setup Lane");
+  addTemplateEditorSession(0, 0);
+  updateTemplateEditorField("session.0.0.0.key", "kickoff");
+  updateTemplateEditorField("session.0.0.0.name", "Kickoff");
+  updateTemplateEditorField("session.0.0.0.gating.type", "phase_gate");
+  addTemplateEditorSession(0, 0);
+  updateTemplateEditorField("session.0.0.1.key", "follow_up");
+  updateTemplateEditorField("session.0.0.1.name", "Follow Up");
+  updateTemplateEditorField("session.0.0.1.gating.type", "predecessor");
+  updateTemplateEditorField("session.0.0.1.gating.ref", "kickoff");
+
+  const snapshot = buildRenderSnapshot();
+  assert.ok(snapshot.main.includes('data-template-phase-rail="setup:kickoff"'));
+  assert.ok(snapshot.main.includes('data-template-edge-from="kickoff"'));
 });
