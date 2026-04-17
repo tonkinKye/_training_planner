@@ -2,6 +2,7 @@
 :root {
   --font-base: 'DM Sans', system-ui, sans-serif;
   --font-mono: 'DM Mono', monospace;
+  --nav-height: 46px;
 
   --nav: #18181A;
   --nav-border: #2a2a2e;

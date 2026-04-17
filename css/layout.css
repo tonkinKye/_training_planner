@@ -6,7 +6,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 46px;
+  height: var(--nav-height);
   padding: 0 18px;
   background: var(--nav);
   border-bottom: 1px solid var(--nav-border);
@@ -375,7 +375,7 @@
 
 .tp-main-header {
   position: sticky;
-  top: 46px;
+  top: var(--nav-height);
   z-index: 20;
   display: grid;
   gap: 4px;
@@ -389,7 +389,7 @@
   display: grid;
   gap: 18px;
   min-width: 0;
-  padding-top: 18px;
+  padding-top: calc(var(--nav-height) + 18px);
 }
 
 .tp-main-content > .tp-phase-section {
