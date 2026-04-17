@@ -173,7 +173,7 @@ test("close notification HTML escapes user-controlled project fields", () => {
   assert.doesNotMatch(html, /<script>alert/);
 });
 
-test("pushSessionToCalendar rolls back session state when persistence fails", async () => {
+test("pushSessionToCalendar rolls back session state when persistence fails", async (t) => {
   const session = makeSession({
     phase: "setup",
     owner: "pm",
@@ -183,6 +183,7 @@ test("pushSessionToCalendar rolls back session state when persistence fails", as
     graphActioned: false,
   });
   const project = makeProject({ setupSessions: [session] });
+  t.mock.method(console, "error", () => {});
 
   const result = await pushSessionToCalendar(session.id, {
     project,
