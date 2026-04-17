@@ -5,13 +5,47 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { EXPECTED_TEMPLATE_RUNTIME_PARITY } from "./fixtures/template-runtime-parity.js";
 import {
   BUILT_IN_TEMPLATES,
   createBlankTemplate,
   getTemplateDefinition,
+  normalizeTemplate,
+  normalizeTemplateLibrary,
   serializeTemplateLibrarySource,
   validateTemplate,
 } from "../js/session-templates.js";
+
+function projectTemplateRuntimeShape(template) {
+  return {
+    key: template.key,
+    label: template.label,
+    phases: template.phases.map((phase) => ({
+      key: phase.key,
+      label: phase.label,
+      owner: phase.owner,
+      calendarSource: phase.calendarSource,
+      durationWeeks: {
+        min: phase.durationWeeks?.min ?? null,
+        max: phase.durationWeeks?.max ?? null,
+      },
+      stages: phase.stages.map((stage) => ({
+        key: stage.key,
+        label: stage.label,
+        sessions: stage.sessions.map((session) => ({
+          key: session.key,
+          name: session.name,
+          durationMinutes: session.durationMinutes,
+          owner: session.owner,
+          type: session.type,
+          locked: Boolean(session.locked),
+          gating: session.gating ? { ...session.gating } : null,
+          bodyKey: session.bodyKey ?? null,
+        })),
+      })),
+    })),
+  };
+}
 
 test("normalized built-in templates preserve declarative gating, locking, and routing", () => {
   const manufacturing = getTemplateDefinition("manufacturing");
@@ -52,11 +86,32 @@ test("validateTemplate reports broken predecessor refs", () => {
   assert.match(result.errors[0].message, /does not exist/i);
 });
 
+test("manufacturing template normalization matches the locked runtime parity snapshot", () => {
+  const rawTemplate = BUILT_IN_TEMPLATES.find((template) => template.key === "manufacturing");
+  const normalized = normalizeTemplate(rawTemplate);
+
+  assert.deepEqual(
+    projectTemplateRuntimeShape(normalized),
+    EXPECTED_TEMPLATE_RUNTIME_PARITY.manufacturing
+  );
+});
+
+test("warehousing template normalization matches the locked runtime parity snapshot", () => {
+  const rawTemplate = BUILT_IN_TEMPLATES.find((template) => template.key === "warehousing");
+  const normalized = normalizeTemplate(rawTemplate);
+
+  assert.deepEqual(
+    projectTemplateRuntimeShape(normalized),
+    EXPECTED_TEMPLATE_RUNTIME_PARITY.warehousing
+  );
+});
+
 test("serializeTemplateLibrarySource produces a module that round-trips the template library", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "tp-template-export-"));
   const modulePath = path.join(tmpDir, "session-templates.js");
   const schemaPath = path.join(tmpDir, "template-schema.js");
   const bodiesPath = path.join(tmpDir, "session-bodies.js");
+  const baseline = normalizeTemplateLibrary(BUILT_IN_TEMPLATES);
 
   try {
     const source = serializeTemplateLibrarySource(BUILT_IN_TEMPLATES);
@@ -65,10 +120,10 @@ test("serializeTemplateLibrarySource produces a module that round-trips the temp
     await writeFile(bodiesPath, await readFile(path.resolve("js/session-bodies.js"), "utf8"), "utf8");
 
     const exported = await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`);
+    const roundTripped = normalizeTemplateLibrary(exported.BUILT_IN_TEMPLATES);
 
     assert.equal(exported.BUILT_IN_TEMPLATES.length, BUILT_IN_TEMPLATES.length);
-    assert.equal(exported.getTemplateDefinition("manufacturing").phaseMap.setup.label, "Setup");
-    assert.equal(exported.getTemplateDefinition("manufacturing").sessionMap.go_live.lockedDate, true);
+    assert.deepEqual(roundTripped, baseline);
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }

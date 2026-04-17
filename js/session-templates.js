@@ -7,9 +7,6 @@ import {
   validateTemplate,
 } from "./template-schema.js";
 
-export const GO_LIVE_SESSION_KEY = "go_live";
-export const KICK_OFF_SESSION_KEY = "kick_off_call";
-
 export const BUILT_IN_TEMPLATES = [
   {
     key: "manufacturing",
@@ -217,7 +214,7 @@ export const BUILT_IN_TEMPLATES = [
           },
           {
             key: "go_live_prep",
-            label: "Go Live Prep",
+            label: "Go-Live Prep",
             sessions: [
               {
                 key: "go_live_prep",
@@ -509,7 +506,7 @@ export const BUILT_IN_TEMPLATES = [
           },
           {
             key: "go_live_prep",
-            label: "Go Live Prep",
+            label: "Go-Live Prep",
             sessions: [
               {
                 key: "go_live_prep",

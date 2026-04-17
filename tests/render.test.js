@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createOnboardingDraft, createProjectFromDraft, getPhaseStages } from "../js/projects.js";
-import { buildRenderSnapshot, getPhaseSectionKey, getStageSectionKey, updateRenderSlot } from "../js/render.js";
+import { createBlankTemplate } from "../js/session-templates.js";
+import { buildRenderSnapshot, getKanbanColumns, getPhaseSectionKey, getStageSectionKey, updateRenderSlot } from "../js/render.js";
 import { state } from "../js/state.js";
 import { fmtDur } from "../js/utils.js";
 
@@ -91,4 +92,90 @@ test("workspace phase and stage panels are collapsed by default and expose summa
     state.ui.expandedPhaseSections = originalState.expandedPhaseSections;
     state.ui.expandedStageSections = originalState.expandedStageSections;
   }
+});
+
+test("kanban columns come from custom implementation stages instead of hardcoded keys", () => {
+  const rawTemplate = createBlankTemplate({ key: "custom_board", label: "Custom Board" });
+  rawTemplate.phases[1].stages = [
+    {
+      key: "discovery",
+      label: "Discovery",
+      sessions: [
+        {
+          key: "discovery_session",
+          name: "Discovery Session",
+          durationMinutes: 60,
+          owner: "is",
+          type: "external",
+          bodyKey: null,
+        },
+      ],
+    },
+    {
+      key: "build",
+      label: "Build",
+      sessions: [
+        {
+          key: "build_session",
+          name: "Build Session",
+          durationMinutes: 90,
+          owner: "is",
+          type: "external",
+          bodyKey: null,
+        },
+      ],
+    },
+    {
+      key: "launch_pad",
+      label: "Launch Pad",
+      sessions: [
+        {
+          key: "launch_session",
+          name: "Launch Session",
+          durationMinutes: 120,
+          owner: "is",
+          type: "external",
+          bodyKey: null,
+          locked: true,
+        },
+      ],
+    },
+  ];
+
+  const draft = createOnboardingDraft("custom_board", {
+    templateSnapshot: rawTemplate,
+    templateCustomized: true,
+    templateOriginKey: "custom_board",
+    templateLabel: rawTemplate.label,
+  });
+  const project = createProjectFromDraft(draft);
+
+  assert.deepEqual(
+    getKanbanColumns([project]).map((column) => ({ key: column.key, label: column.label })),
+    [
+      { key: "scheduling", label: "Scheduling" },
+      { key: "setup", label: "Setup" },
+      { key: "discovery", label: "Discovery" },
+      { key: "build", label: "Build" },
+      { key: "launch_pad", label: "Launch Pad" },
+      { key: "hypercare", label: "Hypercare" },
+    ]
+  );
+});
+
+test("built-in manufacturing template preserves the existing kanban column sequence", () => {
+  const draft = createOnboardingDraft("manufacturing");
+  const project = createProjectFromDraft(draft);
+
+  assert.deepEqual(
+    getKanbanColumns([project]).map((column) => ({ key: column.key, label: column.label })),
+    [
+      { key: "scheduling", label: "Scheduling" },
+      { key: "setup", label: "Setup" },
+      { key: "training", label: "Training" },
+      { key: "go_live_prep", label: "Go-Live Prep" },
+      { key: "go_live", label: "Go-Live" },
+      { key: "hypercare", label: "Hypercare" },
+    ]
+  );
 });

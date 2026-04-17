@@ -30,12 +30,11 @@ const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
 const STATUS_PRIORITY = { scheduling: 0, pending_is_commit: 1, active: 2, complete: 3, closed: 4 };
 const ARCHIVE_STATUSES = new Set(["complete", "closed"]);
 const RENDER_SHELL_HTML = '<div id="tp-slot-topbar"></div><div id="tp-slot-main"></div><div id="tp-slot-overlays"></div><div class="tp-toast" id="toast"></div>';
-const KANBAN_COLUMNS = [
+const KANBAN_STATIC_LEADING_COLUMNS = [
   { key: "scheduling", label: "Scheduling", phase: "scheduling" },
   { key: "setup", label: "Setup", phase: "setup" },
-  { key: "training", label: "Training", phase: "implementation" },
-  { key: "go_live_prep", label: "Go-Live Prep", phase: "implementation" },
-  { key: "go_live", label: "Go-Live", phase: "implementation" },
+];
+const KANBAN_STATIC_TRAILING_COLUMNS = [
   { key: "hypercare", label: "Hypercare", phase: "hypercare" },
 ];
 
@@ -58,6 +57,36 @@ function smartPreferenceLabel(value) {
   if (value === "am") return "AM";
   if (value === "pm") return "PM";
   return "No Preference";
+}
+
+function getImplementationStageColumn(stage) {
+  const key = String(stage?.key || "").trim();
+  if (!key) return null;
+  return {
+    key,
+    label: String(stage?.label || key).trim() || key,
+    phase: "implementation",
+    isMilestone: (stage.sessions || []).some((session) => session.lockedDate),
+  };
+}
+
+export function getKanbanColumns(projects = state.projects) {
+  const columns = [
+    ...KANBAN_STATIC_LEADING_COLUMNS.map((column) => ({ ...column })),
+  ];
+  const seenImplementationStageKeys = new Set();
+
+  for (const project of projects || []) {
+    for (const stage of getPhaseStages(project, "implementation")) {
+      const column = getImplementationStageColumn(stage);
+      if (!column || seenImplementationStageKeys.has(column.key)) continue;
+      seenImplementationStageKeys.add(column.key);
+      columns.push(column);
+    }
+  }
+
+  columns.push(...KANBAN_STATIC_TRAILING_COLUMNS.map((column) => ({ ...column })));
+  return columns;
 }
 
 function fmtWeekRange(minWeeks, maxWeeks) {
@@ -133,11 +162,10 @@ function getPhaseBadgeClass(phaseKey) {
   return "badge-int";
 }
 
-function getColumnBadgeClass(columnKey) {
-  if (columnKey === "setup") return "badge-setup";
-  if (columnKey === "training" || columnKey === "go_live_prep") return "badge-training";
-  if (columnKey === "go_live") return "badge-golive";
-  if (columnKey === "hypercare") return "badge-hypercare";
+function getColumnBadgeClass(column) {
+  if (column.phase === "setup") return "badge-setup";
+  if (column.phase === "implementation") return column.isMilestone ? "badge-golive" : "badge-training";
+  if (column.phase === "hypercare") return "badge-hypercare";
   return "is-scheduling";
 }
 
@@ -314,16 +342,21 @@ function getProjectKanbanColumn(project) {
   if (status === "scheduling") return "scheduling";
   const today = toDateStr(new Date());
   const allSessions = getAllSessions(project);
+  const defaultImplementationStageKey = getPhaseStages(project, "implementation").find((stage) => stage?.key)?.key || "";
   const future = allSessions
     .filter((s) => s.date && s.date >= today)
     .sort((a, b) => a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99"));
   const next = future[0];
   if (!next) {
     const undated = allSessions.filter((s) => !s.date);
-    if (undated.length) return undated[0].phase === "implementation" ? (undated[0].stageKey || "training") : undated[0].phase;
+    if (undated.length) {
+      return undated[0].phase === "implementation"
+        ? (undated[0].stageKey || defaultImplementationStageKey)
+        : undated[0].phase;
+    }
     return "hypercare";
   }
-  return next.phase === "implementation" ? (next.stageKey || "training") : next.phase;
+  return next.phase === "implementation" ? (next.stageKey || defaultImplementationStageKey) : next.phase;
 }
 
 function getNextAppointment(project) {
@@ -379,6 +412,7 @@ function projectsScreen() {
       return true;
     })
     .sort((a, b) => (a.goLiveDate || "9999").localeCompare(b.goLiveDate || "9999"));
+  const kanbanColumns = getKanbanColumns(visible);
 
   const isGroups = new Map();
   for (const project of visible) {
@@ -395,17 +429,17 @@ function projectsScreen() {
   let groupsHTML = "";
   for (const [isName, projects] of isGroups) {
     const columns = new Map();
-    for (const col of KANBAN_COLUMNS) columns.set(col.key, []);
+    for (const col of kanbanColumns) columns.set(col.key, []);
     for (const project of projects) {
       const colKey = getProjectKanbanColumn(project);
-      const target = columns.get(colKey) || columns.get("setup");
-      target.push(project);
+      const target = columns.get(colKey);
+      if (target) target.push(project);
     }
 
-    const boardHTML = KANBAN_COLUMNS.map((col) => {
+    const boardHTML = kanbanColumns.map((col) => {
       const cards = columns.get(col.key) || [];
       return `<div class="tp-kanban-column">
-        <div class="tp-kanban-header ${getColumnBadgeClass(col.key)}"><span>${esc(col.label)}</span>${cards.length ? `<span class="tp-kanban-count">${cards.length}</span>` : ""}</div>
+        <div class="tp-kanban-header ${getColumnBadgeClass(col)}"><span>${esc(col.label)}</span>${cards.length ? `<span class="tp-kanban-count">${cards.length}</span>` : ""}</div>
         ${cards.map((p) => kanbanCard(p, ARCHIVE_STATUSES.has(p.status))).join("")}
       </div>`;
     }).join("");
