@@ -560,12 +560,14 @@ function sessionPanel(project) {
   const context = getContextPhaseKeys(state.actor);
   return `<section class="tp-main">
     <div class="tp-main-header"><div class="tp-main-title">${esc(project.clientName)}</div><div class="tp-main-sub">${esc(PROJECT_TYPE_META[project.projectType])} | ${esc(getProjectCardStatus(project))}</div></div>
-    ${visible.map((phaseKey) => phaseSection(project, phaseKey, false, nextUpId)).join("")}
-    ${
-      state.actor === "is"
-        ? `<section class="tp-phase-section tp-phase-context"><header class="tp-phase-header"><div><div class="tp-phase-title">Read-only Context</div><p class="tp-phase-meta">Setup and Hypercare remain visible for handoff context.</p></div></header>${context.map((phaseKey) => phaseSection(project, phaseKey, true)).join("")}</section>`
-        : ""
-    }
+    <div class="tp-main-content">
+      ${visible.map((phaseKey) => phaseSection(project, phaseKey, false, nextUpId)).join("")}
+      ${
+        state.actor === "is"
+          ? `<section class="tp-phase-section tp-phase-context"><header class="tp-phase-header"><div><div class="tp-phase-title">Read-only Context</div><p class="tp-phase-meta">Setup and Hypercare remain visible for handoff context.</p></div></header>${context.map((phaseKey) => phaseSection(project, phaseKey, true)).join("")}</section>`
+          : ""
+      }
+    </div>
   </section>`;
 }
 
