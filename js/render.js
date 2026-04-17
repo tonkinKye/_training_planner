@@ -27,6 +27,7 @@ import { esc, fmt12, fmtDur, getTimeOptionsHTML, mondayOf, parseDate, timeAgo, t
 const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
 const STATUS_PRIORITY = { scheduling: 0, pending_is_commit: 1, active: 2, complete: 3, closed: 4 };
 const ARCHIVE_STATUSES = new Set(["complete", "closed"]);
+const RENDER_SHELL_HTML = '<div id="tp-slot-topbar"></div><div id="tp-slot-main"></div><div id="tp-slot-overlays"></div><div class="tp-toast" id="toast"></div>';
 const KANBAN_COLUMNS = [
   { key: "scheduling", label: "Scheduling", phase: "scheduling" },
   { key: "setup", label: "Setup", phase: "setup" },
@@ -705,10 +706,133 @@ function projectErrorModal() {
   return `<div class="tp-modal-overlay is-open"><div class="tp-modal"><div class="tp-modal-head"><div><h3>Could Not Load Projects</h3><p>${esc(state.ui.projectError.message)}</p></div><button class="btn-default btn-sm" data-action="dismissProjectError">Close</button></div><pre class="tp-error-pre">${esc(state.ui.projectError.details || "No diagnostic detail available.")}</pre><div class="tp-modal-actions"><button class="btn-default" data-action="dismissProjectError">Close</button><button class="btn-danger" data-action="resetSentinel">Reset Sentinel</button></div></div></div>`;
 }
 
+function escapeSelectorValue(value) {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function captureSlotFocus(slot) {
+  if (typeof document === "undefined" || !slot || typeof slot.contains !== "function") return null;
+
+  const active = document.activeElement;
+  if (!active || !slot.contains(active) || typeof active.matches !== "function") return null;
+  if (!active.matches("input, textarea, select")) return null;
+
+  let selectionStart = null;
+  let selectionEnd = null;
+  try {
+    if (typeof active.selectionStart === "number" && typeof active.selectionEnd === "number") {
+      selectionStart = active.selectionStart;
+      selectionEnd = active.selectionEnd;
+    }
+  } catch (error) {
+    // Ignore controls that do not expose selection APIs.
+  }
+
+  return {
+    id: active.id || "",
+    dataBind: active.getAttribute("data-bind") || "",
+    dataAction: active.getAttribute("data-action") || "",
+    dataId: active.getAttribute("data-id") || "",
+    selectionStart,
+    selectionEnd,
+  };
+}
+
+function findFocusedReplacement(slot, focusState) {
+  if (!slot || !focusState) return null;
+
+  if (focusState.id) {
+    return slot.querySelector(`#${escapeSelectorValue(focusState.id)}`);
+  }
+
+  if (focusState.dataBind) {
+    return slot.querySelector(`[data-bind="${escapeSelectorValue(focusState.dataBind)}"]`);
+  }
+
+  if (focusState.dataAction && focusState.dataId) {
+    return slot.querySelector(`[data-action="${escapeSelectorValue(focusState.dataAction)}"][data-id="${escapeSelectorValue(focusState.dataId)}"]`);
+  }
+
+  if (focusState.dataAction) {
+    return slot.querySelector(`[data-action="${escapeSelectorValue(focusState.dataAction)}"]`);
+  }
+
+  return null;
+}
+
+function restoreSlotFocus(slot, focusState) {
+  const next = findFocusedReplacement(slot, focusState);
+  if (!next || typeof next.focus !== "function") return;
+
+  next.focus({ preventScroll: true });
+  if (
+    typeof next.setSelectionRange === "function"
+    && typeof focusState.selectionStart === "number"
+    && typeof focusState.selectionEnd === "number"
+  ) {
+    try {
+      next.setSelectionRange(focusState.selectionStart, focusState.selectionEnd);
+    } catch (error) {
+      // Ignore controls that cannot restore selection.
+    }
+  }
+}
+
+export function updateRenderSlot(slot, html) {
+  if (!slot) return false;
+
+  const nextHTML = html || "";
+  if ((slot.dataset?.renderHtml || "") === nextHTML) return false;
+
+  const focusState = captureSlotFocus(slot);
+  slot.innerHTML = nextHTML;
+  if (slot.dataset) {
+    slot.dataset.renderHtml = nextHTML;
+  }
+  if (focusState) {
+    restoreSlotFocus(slot, focusState);
+  }
+  return true;
+}
+
+function ensureRenderShell(app) {
+  if (
+    app.dataset.renderShell !== "1"
+    || !app.querySelector("#tp-slot-topbar")
+    || !app.querySelector("#tp-slot-main")
+    || !app.querySelector("#tp-slot-overlays")
+    || !app.querySelector("#toast")
+  ) {
+    app.innerHTML = RENDER_SHELL_HTML;
+    app.dataset.renderShell = "1";
+  }
+
+  return {
+    topbar: app.querySelector("#tp-slot-topbar"),
+    main: app.querySelector("#tp-slot-main"),
+    overlays: app.querySelector("#tp-slot-overlays"),
+  };
+}
+
+export function buildRenderSnapshot() {
+  const project = getActiveProject();
+  return {
+    topbar: state.ui.screen === "auth" ? "" : topbar(),
+    main: state.ui.screen === "auth" ? authScreen() : state.ui.screen === "workspace" && project ? workspace(project) : projectsScreen(),
+    overlays: `${onboardingModal()}${settingsModal()}${windowChangeDialog()}${shiftDialog()}${deleteProjectDialog()}${closeProjectDialog()}${projectErrorModal()}${renderDayViewModal()}`,
+  };
+}
+
 export function render() {
   const app = document.getElementById("app");
   if (!app) return;
-  const project = getActiveProject();
-  const main = state.ui.screen === "auth" ? authScreen() : state.ui.screen === "workspace" && project ? workspace(project) : projectsScreen();
-  app.innerHTML = `${state.ui.screen === "auth" ? "" : topbar()}${main}${onboardingModal()}${settingsModal()}${windowChangeDialog()}${shiftDialog()}${deleteProjectDialog()}${closeProjectDialog()}${projectErrorModal()}${renderDayViewModal()}<div class="tp-toast" id="toast"></div>`;
+
+  const slots = ensureRenderShell(app);
+  const snapshot = buildRenderSnapshot();
+  updateRenderSlot(slots.topbar, snapshot.topbar);
+  updateRenderSlot(slots.main, snapshot.main);
+  updateRenderSlot(slots.overlays, snapshot.overlays);
 }

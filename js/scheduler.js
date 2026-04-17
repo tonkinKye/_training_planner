@@ -30,12 +30,14 @@ import {
   getProjectDateRange,
   getPushableSessions,
   getSuggestedGoLive,
+  getStageForSession,
   getWindowForPhase,
   isDateWithinPhaseWindow,
   moveSession,
   normalizeProject,
   PHASE_ORDER,
   projectHasImplementationReady,
+  recomputeStageRange,
   removeSession,
   touchProject,
 } from "./projects.js";
@@ -96,6 +98,38 @@ function getCurrentProjectOrToast() {
 
 function ensureFutureDate(value) {
   return !value || value >= getTodayString();
+}
+
+export function validateSessionDateChange(project, session, value) {
+  if (!ensureFutureDate(value)) {
+    return {
+      ok: false,
+      reason: "past",
+      message: "Cannot schedule in the past",
+    };
+  }
+
+  if (session?.lockedDate && value && value !== session.date) {
+    return {
+      ok: false,
+      reason: "locked",
+      message: "This session date is managed by the system",
+    };
+  }
+
+  if (value && !isDateWithinPhaseWindow(project, session, value)) {
+    return {
+      ok: false,
+      reason: "phase_window",
+      message: "Date is outside the phase window",
+    };
+  }
+
+  return {
+    ok: true,
+    reason: "",
+    message: "",
+  };
 }
 
 function setCalendarStartFromProject(project) {
@@ -305,6 +339,12 @@ function clearSessionScheduling(session, { preserveGraphEventId = false } = {}) 
   session.time = "";
   session.availabilityConflict = false;
   invalidateSessionInviteState(session, { preserveGraphEventId });
+}
+
+function recomputeAffectedStages(stages = []) {
+  for (const stage of new Set(stages.filter(Boolean))) {
+    recomputeStageRange(stage);
+  }
 }
 
 function groupDatesByWeek(eligibleDates) {
@@ -1130,12 +1170,15 @@ export function confirmWindowChangeClear() {
   const { nextProject, affectedSessionIds } = state.ui.windowChangeDialog;
   if (!nextProject) return null;
 
+  const affectedStages = [];
   for (const sessionId of affectedSessionIds) {
     const found = findSession(nextProject, sessionId);
     if (found) {
       clearSessionScheduling(found.session, { preserveGraphEventId: false });
+      affectedStages.push(found.stage);
     }
   }
+  recomputeAffectedStages(affectedStages);
 
   nextProject.status = deriveProjectStatus(nextProject);
   state.ui.smartOpen = true;
@@ -1156,18 +1199,15 @@ export function setSessionDate(sessionId, value) {
   const found = findSession(project, sessionId);
   if (!found || !canEditSession(project, found.session, state.actor)) return false;
 
-  if (!ensureFutureDate(value)) {
-    toast("Cannot schedule in the past");
+  const validation = validateSessionDateChange(project, found.session, value);
+  if (!validation.ok) {
+    toast(
+      validation.reason === "phase_window"
+        ? `${validation.message} \u2014 check conflicts`
+        : validation.message,
+      4000
+    );
     return false;
-  }
-
-  if (found.session.lockedDate && value && value !== found.session.date) {
-    toast("This session date is managed by the system", 4000);
-    return false;
-  }
-
-  if (value && !isDateWithinPhaseWindow(project, found.session, value)) {
-    toast("Date is outside the phase window \u2014 check conflicts", 4000);
   }
 
   const nextValue = value || "";
@@ -1181,16 +1221,7 @@ export function setSessionDate(sessionId, value) {
     invalidateSessionInviteState(found.session);
   }
 
-  // Refresh stage range from actual session dates
-  const stage = found.stage;
-  if (stage) {
-    const dates = stage.sessions
-      .filter((s) => s.key !== GO_LIVE_SESSION_KEY && s.date)
-      .map((s) => s.date)
-      .sort();
-    stage.rangeStart = dates[0] || "";
-    stage.rangeEnd = dates.at(-1) || "";
-  }
+  recomputeStageRange(found.stage);
 
   touchProject(project);
   project.status = deriveProjectStatus(project);
@@ -1255,6 +1286,7 @@ export function unscheduleSession(sessionId) {
   const found = findSession(project, sessionId);
   if (!found || !canEditSession(project, found.session, state.actor) || found.session.lockedDate) return false;
   clearSessionScheduling(found.session, { preserveGraphEventId: false });
+  recomputeStageRange(found.stage);
   touchProject(project);
   project.status = deriveProjectStatus(project);
   return true;
@@ -1482,9 +1514,12 @@ export function confirmShiftRemaining() {
 
   const phaseSessions = getPhaseSessions(project, phaseKey)
     .filter((s) => s.id !== sessionId && s.date && s.date >= newDate && !s.lockedDate);
+  const affectedStages = [];
   for (const session of phaseSessions) {
     clearSessionScheduling(session, { preserveGraphEventId: false });
+    affectedStages.push(getStageForSession(project, session));
   }
+  recomputeAffectedStages(affectedStages);
 
   const result = { datedCount: 0, timedCount: 0, availabilityCount: 0, unplacedCount: 0, pass2Skipped: false, pass2SkipReason: "", unplacedSessionIds: [], availabilitySessionIds: [], rangeCount: 0 };
   runPhaseSmartFill(project, phaseKey, state.actor, dayBefore(newDate), result);
@@ -1501,14 +1536,17 @@ export function clearSmartFillDates() {
   const project = getCurrentProjectOrToast();
   if (!project) return 0;
   let cleared = 0;
+  const affectedStages = [];
   for (const session of getAllSessions(project)) {
     if (!canEditSession(project, session, state.actor)) continue;
     if (session.lockedDate) continue;
     if (!session.date) continue;
     clearSessionScheduling(session, { preserveGraphEventId: false });
+    affectedStages.push(getStageForSession(project, session));
     cleared += 1;
   }
   if (cleared) {
+    recomputeAffectedStages(affectedStages);
     touchProject(project);
     project.status = deriveProjectStatus(project);
   }

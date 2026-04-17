@@ -1,4 +1,4 @@
-import { getConflicts } from "./conflicts.js";
+import { getConflicts, getSessionConflicts } from "./conflicts.js";
 import {
   closeDayView,
   confirmConflict,
@@ -608,6 +608,13 @@ async function actionHandlers(action, element) {
       rerender();
       return;
     case "pushSession":
+      await refreshProjectContext();
+      if (getSessionConflicts(element.dataset.id, { project: getActiveProject(), actor: state.actor, scope: "review", blockingOnly: true }).length) {
+        startConflictReview({ focusSessionId: element.dataset.id });
+        rerender();
+        toast("Resolve conflicts before pushing this session", 4000);
+        return;
+      }
       await pushSessionToCalendar(element.dataset.id);
       rerender();
       return;

@@ -454,7 +454,7 @@ export function navigateConflict(direction) {
   dayViewState.open = true;
 }
 
-export function startConflictReview({ pendingCommit = false } = {}) {
+export function startConflictReview({ pendingCommit = false, focusSessionId = "" } = {}) {
   const queue = buildConflictQueue();
   if (!queue.length) {
     toast("No conflicts found");
@@ -464,7 +464,7 @@ export function startConflictReview({ pendingCommit = false } = {}) {
   dayViewState.open = true;
   dayViewState.review.queue = queue;
   dayViewState.review.pendingCommit = pendingCommit;
-  setCurrentReviewSession(queue[0]);
+  setCurrentReviewSession(queue.includes(focusSessionId) ? focusSessionId : queue[0]);
   return true;
 }
 

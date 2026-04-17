@@ -501,6 +501,19 @@ export function getStageForSession(project, sessionOrId) {
   return found?.stage || null;
 }
 
+export function recomputeStageRange(stage) {
+  if (!stage) return null;
+
+  const dates = (stage.sessions || [])
+    .filter((session) => session.key !== GO_LIVE_SESSION_KEY && session.date)
+    .map((session) => session.date)
+    .sort(compareByDate);
+
+  stage.rangeStart = dates[0] || "";
+  stage.rangeEnd = dates[dates.length - 1] || "";
+  return stage;
+}
+
 function createManualStage(project, phaseKey, label) {
   const stage = makeStage(
     {
@@ -553,6 +566,7 @@ export function removeSession(project, sessionId) {
   if (!found) return;
 
   found.stage.sessions.splice(found.index, 1);
+  recomputeStageRange(found.stage);
   normalizePhaseOrders(project, found.phaseKey);
   touchProject(project);
   project.status = deriveProjectStatus(project);

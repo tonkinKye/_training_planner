@@ -16,7 +16,7 @@ import {
   normalizeProject,
   serializeSentinelProjects,
 } from "./projects.js";
-import { getLocalTimeZone, pad, toast, toDateStr } from "./utils.js";
+import { esc, getLocalTimeZone, pad, toast, toDateStr } from "./utils.js";
 
 const MSAL_CDN_URLS = [
   "https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js",
@@ -171,6 +171,25 @@ async function getAccessToken(scopes = GRAPH_SCOPES) {
 
 function getGraphBase(userId = "me") {
   return userId === "me" ? `${GRAPH_ROOT}/me` : `${GRAPH_ROOT}/users/${encodeURIComponent(userId)}`;
+}
+
+export function normalizeCalendarEvents(rawEvents = [], source = {}) {
+  const owner = source?.owner || "";
+
+  return (rawEvents || [])
+    .filter((event) => !event?.isCancelled)
+    .filter((event) => String(event?.showAs || "").toLowerCase() !== "free")
+    .filter((event) => !String(event?.subject || "").startsWith(SENTINEL_SUBJECT))
+    .map((event) => ({
+      id: `${owner}:${event.id}`,
+      graphId: event.id,
+      subject: event.subject || "Busy",
+      start: event.start?.dateTime,
+      end: event.end?.dateTime,
+      showAs: String(event.showAs || "").toLowerCase(),
+      calendarOwner: owner,
+      kind: "calendar",
+    }));
 }
 
 async function graphRequest(path, { method = "GET", body, headers = {}, extraHeaders = {}, scopes = GRAPH_SCOPES } = {}) {
@@ -577,37 +596,70 @@ async function pushGraphEvent(session, project) {
   }
 }
 
-export async function pushSessionToCalendar(sessionId) {
-  const project = getActiveProject();
+function snapshotSessionPushState(session) {
+  return {
+    graphEventId: session.graphEventId,
+    graphActioned: session.graphActioned,
+  };
+}
+
+function applySessionPushResult(session, payload) {
+  if (payload?.id) {
+    session.graphEventId = payload.id;
+  }
+  session.graphActioned = true;
+}
+
+function restoreSessionPushState(session, snapshot) {
+  session.graphEventId = snapshot.graphEventId;
+  session.graphActioned = snapshot.graphActioned;
+}
+
+export async function pushSessionToCalendar(
+  sessionId,
+  {
+    project = getActiveProject(),
+    persist = true,
+    notify = true,
+    pushGraphEventImpl = pushGraphEvent,
+    persistActiveProjectsImpl = persistActiveProjects,
+    toastImpl = toast,
+  } = {}
+) {
   if (!project) return false;
   const found = findSession(project, sessionId);
   if (!found?.session || !found.session.date || !found.session.time) {
-    toast("Set a date and time first");
+    if (notify) {
+      toastImpl("Set a date and time first");
+    }
     return false;
   }
 
   try {
-    const payload = await pushGraphEvent(found.session, project);
-    const previousEventId = found.session.graphEventId;
-    const previousActioned = found.session.graphActioned;
-    if (payload?.id) {
-      found.session.graphEventId = payload.id;
-    }
-    found.session.graphActioned = true;
+    const previousState = snapshotSessionPushState(found.session);
+    const payload = await pushGraphEventImpl(found.session, project);
+    applySessionPushResult(found.session, payload);
     project.status = deriveProjectStatus(project);
-    try {
-      await persistActiveProjects();
-    } catch (persistError) {
-      found.session.graphEventId = previousEventId;
-      found.session.graphActioned = previousActioned;
-      project.status = deriveProjectStatus(project);
-      throw persistError;
+
+    if (persist) {
+      try {
+        await persistActiveProjectsImpl();
+      } catch (persistError) {
+        restoreSessionPushState(found.session, previousState);
+        project.status = deriveProjectStatus(project);
+        throw persistError;
+      }
     }
-    toast(`"${found.session.name}" synced to calendar`, 3500);
+
+    if (notify) {
+      toastImpl(`"${found.session.name}" synced to calendar`, 3500);
+    }
     return true;
   } catch (error) {
     console.error("pushSessionToCalendar failed:", error);
-    toast(`Graph error: ${error.message || error}`, 5000);
+    if (notify) {
+      toastImpl(`Graph error: ${error.message || error}`, 5000);
+    }
     return false;
   }
 }
@@ -681,20 +733,7 @@ export async function fetchCalendarEvents({ project = getActiveProject(), startD
       nextLink = data?.["@odata.nextLink"] || "";
     }
 
-    return rawEvents
-      .filter((event) => !event.isCancelled)
-      .filter((event) => event.showAs !== "free" && event.showAs !== "oof")
-      .filter((event) => !String(event.subject || "").startsWith(SENTINEL_SUBJECT))
-      .map((event) => ({
-        id: `${source.owner}:${event.id}`,
-        graphId: event.id,
-        subject: event.subject || "Busy",
-        start: event.start?.dateTime,
-        end: event.end?.dateTime,
-        showAs: event.showAs || "",
-        calendarOwner: source.owner,
-        kind: "calendar",
-      }));
+    return normalizeCalendarEvents(rawEvents, source);
   }
 
   const results = await Promise.all(
@@ -762,52 +801,66 @@ export async function fetchCalendarEvents({ project = getActiveProject(), startD
   return events;
 }
 
-export async function pushOwnedSessions({ actor = state.actor } = {}) {
-  const project = getActiveProject();
+export async function pushOwnedSessions({
+  actor = state.actor,
+  project = getActiveProject(),
+  pushSessionToCalendarImpl = pushSessionToCalendar,
+  persistActiveProjectsImpl = persistActiveProjects,
+  fetchCalendarEventsImpl = fetchCalendarEvents,
+  syncProjectToPartnerSentinelImpl = syncProjectToPartnerSentinel,
+  toastImpl = toast,
+} = {}) {
   if (!project) return 0;
 
   const sessions = getPushableSessions(project, actor);
   if (!sessions.length) {
-    toast(actor === "is" ? "No implementation sessions are ready to commit" : "No sessions are ready to push");
+    toastImpl(actor === "is" ? "No implementation sessions are ready to commit" : "No sessions are ready to push");
     return 0;
   }
 
   let pushed = 0;
   for (const session of sessions) {
-    const result = await pushSessionToCalendar(session.id);
+    const result = await pushSessionToCalendarImpl(session.id, { project, persist: false, notify: false });
     if (result) pushed += 1;
   }
 
-  if (actor === "is" && pushed) {
-    project.isCommittedAt = project.isCommittedAt || new Date().toISOString();
+  if (pushed) {
+    if (actor === "is") {
+      project.isCommittedAt = project.isCommittedAt || new Date().toISOString();
+    }
     project.status = deriveProjectStatus(project);
-    await persistActiveProjects();
-    await syncProjectToPartnerSentinel(project, "pm");
-  } else if (actor === "pm") {
-    const pmSessions = [...getPhaseSessions(project, "setup"), ...getPhaseSessions(project, "hypercare")];
-    if (pmSessions.length && pmSessions.every((session) => session.graphActioned || session.type === "internal")) {
-      project.status = deriveProjectStatus(project);
-      await persistActiveProjects();
+
+    try {
+      await persistActiveProjectsImpl();
+    } catch (error) {
+      console.error("Batch push persistence failed:", error);
+      toastImpl(`Calendar updated, but project index could not be saved: ${error.message || error}`, 6000);
+      await fetchCalendarEventsImpl({ project });
+      return pushed;
+    }
+
+    if (actor === "is") {
+      await syncProjectToPartnerSentinelImpl(project, "pm");
     }
   }
 
-  await fetchCalendarEvents({ project });
+  await fetchCalendarEventsImpl({ project });
   return pushed;
 }
 
-function buildHandoffBody(project, deepLinkUrl) {
+export function buildHandoffBody(project, deepLinkUrl) {
   const implementationCount = getPhaseSessions(project, "implementation").length;
   return `<!DOCTYPE html>
 <html>
 <body style="font-family:'Trebuchet MS','Segoe UI',sans-serif;font-size:14px;color:#1f2933;">
-  <h2 style="margin-bottom:8px;">${project.clientName} Implementation Handoff</h2>
+  <h2 style="margin-bottom:8px;">${esc(project.clientName || "Project")} Implementation Handoff</h2>
   <p>The implementation phase is ready for review.</p>
   <ul>
-    <li>Implementation window: ${project.implementationStart || "TBC"} to ${project.goLiveDate || "TBC"}</li>
-    <li>Implementation sessions: ${implementationCount}</li>
-    <li>Calendar owner: ${project.isName || project.isEmail || "Implementation Specialist"}</li>
+    <li>Implementation window: ${esc(project.implementationStart || "TBC")} to ${esc(project.goLiveDate || "TBC")}</li>
+    <li>Implementation sessions: ${esc(implementationCount)}</li>
+    <li>Calendar owner: ${esc(project.isName || project.isEmail || "Implementation Specialist")}</li>
   </ul>
-  <p><a href="${deepLinkUrl}">Open this project in Training Planner</a></p>
+  <p><a href="${esc(deepLinkUrl)}">Open this project in Training Planner</a></p>
 </body>
 </html>`;
 }
@@ -1006,15 +1059,19 @@ export async function deleteFutureProjectEvents(project) {
   return { deleted, failed, total: futureSessions.length };
 }
 
+export function buildCloseNotificationBody(project, closedDate = "today") {
+  return `<!DOCTYPE html>
+<html><body style="font-family:'Trebuchet MS','Segoe UI',sans-serif;font-size:14px;color:#1f2933;">
+<h2>${esc(project.clientName || "Project")} - Closed</h2>
+<p>This project was closed by <strong>${esc(project.closedBy || "the Project Manager")}</strong> on ${esc(closedDate)}.</p>
+<p>Future calendar events from the PM's calendar have been removed. Please review your own calendar and remove any remaining sessions for this project.</p>
+</body></html>`;
+}
+
 async function createCloseNotificationEvent(project) {
   const subject = `${PRODUCT_NAME} | ${project.clientName || "Project"} | Project Closed`;
   const closedDate = project.closedAt ? new Date(project.closedAt).toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" }) : "today";
-  const body = `<!DOCTYPE html>
-<html><body style="font-family:'Trebuchet MS','Segoe UI',sans-serif;font-size:14px;color:#1f2933;">
-<h2>${project.clientName || "Project"} - Closed</h2>
-<p>This project was closed by <strong>${project.closedBy || "the Project Manager"}</strong> on ${closedDate}.</p>
-<p>Future calendar events from the PM's calendar have been removed. Please review your own calendar and remove any remaining sessions for this project.</p>
-</body></html>`;
+  const body = buildCloseNotificationBody(project, closedDate);
   const now = new Date();
   const end = new Date(now.getTime() + 15 * 60000);
   try {

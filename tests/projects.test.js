@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   isDateWithinPhaseWindow,
   INTERNAL_SETUP_BUFFER_DAYS,
+  removeSession,
 } from "../js/projects.js";
 
 let nextId = 1;
@@ -280,4 +281,22 @@ test("internal setup session before kickoff can use buffer before projectStart",
   // 2026-03-15 minus 10 days = 2026-03-05
   assert.equal(isDateWithinPhaseWindow(project, session, "2026-03-05"), true);
   assert.equal(isDateWithinPhaseWindow(project, session, "2026-03-04"), false);
+});
+
+test("removing a session recomputes the stage date range", () => {
+  const first = makeSession({ phase: "setup", date: "2026-04-22", order: 0 });
+  const second = makeSession({ phase: "setup", date: "2026-04-24", order: 1 });
+  const project = makeProject({ setupSessions: [first, second] });
+  const stage = project.phases.setup.stages[0];
+
+  stage.rangeStart = "2026-04-22";
+  stage.rangeEnd = "2026-04-24";
+
+  removeSession(project, second.id);
+  assert.equal(stage.rangeStart, "2026-04-22");
+  assert.equal(stage.rangeEnd, "2026-04-22");
+
+  removeSession(project, first.id);
+  assert.equal(stage.rangeStart, "");
+  assert.equal(stage.rangeEnd, "");
 });
