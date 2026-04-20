@@ -596,6 +596,72 @@ async function pushGraphEvent(session, project) {
   }
 }
 
+function normalizeEmailAddress(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function buildSharedCalendarOption(calendar = {}) {
+  const ownerEmail = normalizeEmailAddress(calendar?.owner?.address);
+  const ownerName = String(calendar?.owner?.name || ownerEmail || "").trim();
+  const calendarName = String(calendar?.name || "").trim();
+  const primaryLike = Boolean(ownerName) && normalizeEmailAddress(calendarName) === normalizeEmailAddress(ownerName);
+  const label = primaryLike || !calendarName
+    ? `${ownerName || ownerEmail} | ${ownerEmail}`
+    : `${ownerName || ownerEmail} | ${calendarName} | ${ownerEmail}`;
+  return {
+    id: String(calendar?.id || ""),
+    name: calendarName,
+    ownerName,
+    ownerEmail,
+    canEdit: Boolean(calendar?.canEdit),
+    isPrimaryLike: primaryLike,
+    label,
+  };
+}
+
+export async function loadSharedCalendars() {
+  state.ui.sharedCalendarOptions = [];
+  state.ui.sharedCalendarStatus = "loading";
+  state.ui.sharedCalendarError = "";
+
+  try {
+    const ownEmail = normalizeEmailAddress(state.graphAccount?.username);
+    const calendars = [];
+    let nextLink = `${getGraphBase()}/calendars`;
+
+    while (nextLink) {
+      const response = await graphRequest(nextLink, {
+        scopes: GRAPH_SCOPES,
+      });
+      calendars.push(...(response?.value || []));
+      nextLink = response?.["@odata.nextLink"] || "";
+    }
+
+    const options = calendars
+      .map((calendar) => buildSharedCalendarOption(calendar))
+      .filter((calendar) => calendar.id && calendar.ownerEmail && calendar.ownerEmail !== ownEmail)
+      .sort((left, right) => {
+        if (left.isPrimaryLike !== right.isPrimaryLike) return left.isPrimaryLike ? -1 : 1;
+        if (left.canEdit !== right.canEdit) return left.canEdit ? -1 : 1;
+        return left.label.localeCompare(right.label);
+      });
+
+    state.ui.sharedCalendarOptions = options;
+    state.ui.sharedCalendarStatus = "ready";
+    if (!options.some((calendar) => calendar.id === state.ui.selectedSharedCalendarId)) {
+      state.ui.selectedSharedCalendarId = "";
+    }
+    return options;
+  } catch (error) {
+    console.error("Shared calendar lookup failed:", error);
+    state.ui.sharedCalendarStatus = "error";
+    state.ui.sharedCalendarError = error.message || String(error);
+    state.ui.sharedCalendarOptions = [];
+    state.ui.selectedSharedCalendarId = "";
+    return [];
+  }
+}
+
 function snapshotSessionPushState(session) {
   return {
     graphEventId: session.graphEventId,

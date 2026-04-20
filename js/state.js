@@ -137,6 +137,10 @@ export const state = {
     peopleMatches: [],
     peopleStatus: "idle",
     peopleError: "",
+    sharedCalendarOptions: [],
+    sharedCalendarStatus: "idle",
+    sharedCalendarError: "",
+    selectedSharedCalendarId: "",
     projectError: createProjectErrorState(),
     lastHandoff: createLastHandoffState(),
     showArchived: false,
@@ -303,6 +307,10 @@ export function resetUIState() {
   state.ui.peopleMatches = [];
   state.ui.peopleStatus = "idle";
   state.ui.peopleError = "";
+  state.ui.sharedCalendarOptions = [];
+  state.ui.sharedCalendarStatus = "idle";
+  state.ui.sharedCalendarError = "";
+  state.ui.selectedSharedCalendarId = "";
   state.ui.projectError = createProjectErrorState();
   state.ui.lastHandoff = createLastHandoffState();
   state.ui.showArchived = false;

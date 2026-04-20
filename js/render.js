@@ -793,7 +793,19 @@ function onboardingStep() {
   if (!d) return "";
   const step = state.ui.onboarding.step;
   if (step === 0) return `<label class="tp-field"><span>Client Name</span><input type="text" value="${esc(d.clientName)}" data-bind="onboarding.clientName"></label><label class="tp-field"><span>Project Type</span><select data-bind="onboarding.projectType">${renderTemplateOptions(d.templateOriginKey || d.projectType)}</select><small class="tp-muted">Reusable templates are editable in the Templates screen.</small></label><div class="tp-field"><span>One-Off</span><button class="btn-default" data-action="openOnboardingTemplateEditor">Customize This Project Template</button></div>`;
-  if (step === 1) return `<label class="tp-field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="onboarding.pmName"></label><label class="tp-field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="onboarding.pmEmail"></label><label class="tp-field"><span>IS Search / Email</span><input type="text" value="${esc(state.ui.peopleQuery)}" data-bind="peopleQuery"></label><div class="tp-quick-row"><button class="btn-default btn-sm" data-action="searchPeople">Search M365</button><span class="tp-muted">People.Read may prompt for re-consent.</span></div>${state.ui.peopleMatches.length ? `<div class="tp-people-list">${state.ui.peopleMatches.map((p) => `<button class="tp-people-pill" data-action="selectPerson" data-name="${esc(p.name)}" data-email="${esc(p.email)}">${esc(p.name || p.email)} <small>${esc(p.email)}</small></button>`).join("")}</div>` : ""}<label class="tp-field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="onboarding.isName"></label><label class="tp-field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="onboarding.isEmail"></label>`;
+  if (step === 1) {
+    const sharedCalendarOptions = state.ui.sharedCalendarOptions || [];
+    const sharedCalendarStatus = state.ui.sharedCalendarStatus || "idle";
+    const sharedCalendarHint = sharedCalendarStatus === "loading"
+      ? '<small class="tp-muted">Loading shared calendars from Outlook...</small>'
+      : sharedCalendarStatus === "error"
+        ? `<small class="tp-warning-copy">${esc(state.ui.sharedCalendarError || "Could not load shared calendars. Enter the IS details manually.")}</small>`
+        : sharedCalendarStatus === "ready" && !sharedCalendarOptions.length
+          ? '<small class="tp-muted">No shared calendars were found for this PM. Enter the IS details manually.</small>'
+          : '<small class="tp-muted">Choose an existing shared Outlook calendar to prefill the IS details, or enter them manually below.</small>';
+
+    return `<label class="tp-field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="onboarding.pmName"></label><label class="tp-field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="onboarding.pmEmail"></label><label class="tp-field"><span>IS Shared Calendar</span><select data-action="selectSharedCalendar"><option value="">Choose shared calendar</option>${sharedCalendarOptions.map((calendar) => `<option value="${esc(calendar.id)}"${calendar.id === state.ui.selectedSharedCalendarId ? " selected" : ""}>${esc(calendar.label)}</option>`).join("")}</select>${sharedCalendarHint}</label><div class="tp-quick-row"><button class="btn-default btn-sm" data-action="loadSharedCalendars"${sharedCalendarStatus === "loading" ? " disabled" : ""}>Refresh Shared Calendars</button><span class="tp-muted">Uses calendars already shared with the PM.</span></div><label class="tp-field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="onboarding.isName"></label><label class="tp-field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="onboarding.isEmail"></label>`;
+  }
   if (step === 2) {
     const tl = getTimelineSuggestion(d);
     const fmtWk = (min, max) => min && max && min !== max ? `${min}\u2013${max} weeks` : `${min || max || "?"} week${(min || max) === 1 ? "" : "s"}`;

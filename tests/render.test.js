@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createOnboardingDraft, createProjectFromDraft, getPhaseStages } from "../js/projects.js";
 import { createBlankTemplate } from "../js/session-templates.js";
 import { buildRenderSnapshot, getKanbanColumns, getPhaseSectionKey, getStageSectionKey, getTemplatePhaseTimelineLayout, updateRenderSlot } from "../js/render.js";
-import { state } from "../js/state.js";
+import { resetAppState, state } from "../js/state.js";
 import { fmtDur } from "../js/utils.js";
 
 test("render slot updater skips rewriting unchanged markup", () => {
@@ -194,4 +194,32 @@ test("template timeline layout uses the fixed weekly scale and stage width clamp
   assert.deepEqual(layout.stageLayouts.map((stage) => stage.stageDays), [1, 5]);
   assert.deepEqual(layout.stageLayouts.map((stage) => stage.width), [180, 267]);
   assert.equal(layout.phaseWidth, 501);
+});
+
+test("onboarding team step renders shared calendar selection alongside manual IS fields", () => {
+  resetAppState();
+  state.ui.screen = "projects";
+  state.ui.onboarding.open = true;
+  state.ui.onboarding.step = 1;
+  state.ui.onboarding.draft = createOnboardingDraft("manufacturing");
+  state.ui.sharedCalendarStatus = "ready";
+  state.ui.selectedSharedCalendarId = "calendar-2";
+  state.ui.sharedCalendarOptions = [
+    {
+      id: "calendar-1",
+      label: "Alex Wilber | alex@example.com",
+    },
+    {
+      id: "calendar-2",
+      label: "Jordan Smith | jordan@example.com",
+    },
+  ];
+
+  const snapshot = buildRenderSnapshot();
+  assert.ok(snapshot.overlays.includes("IS Shared Calendar"));
+  assert.ok(snapshot.overlays.includes('data-action="selectSharedCalendar"'));
+  assert.ok(snapshot.overlays.includes('data-action="loadSharedCalendars"'));
+  assert.ok(snapshot.overlays.includes('option value="calendar-2" selected'));
+  assert.ok(snapshot.overlays.includes('data-bind="onboarding.isName"'));
+  assert.ok(snapshot.overlays.includes('data-bind="onboarding.isEmail"'));
 });

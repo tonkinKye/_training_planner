@@ -18,10 +18,10 @@ import {
   createHandoffEvent,
   deleteFutureProjectEvents,
   fetchCalendarEvents,
+  loadSharedCalendars,
   persistActiveProjects,
   pushSessionToCalendar,
   resetSentinel,
-  searchPeople,
   toggleAuth,
 } from "./m365.js";
 import { render } from "./render.js";
@@ -247,6 +247,10 @@ function applyBinding(binding, value) {
     state.ui.peopleQuery = value;
     return;
   }
+  if (scope === "sharedCalendarSelection") {
+    state.ui.selectedSharedCalendarId = value;
+    return;
+  }
 }
 
 function confirmTemplateEditorLeave() {
@@ -331,6 +335,12 @@ async function actionHandlers(action, element) {
       return;
     case "openOnboarding":
       openOnboarding();
+      state.ui.sharedCalendarOptions = [];
+      state.ui.sharedCalendarStatus = "loading";
+      state.ui.sharedCalendarError = "";
+      state.ui.selectedSharedCalendarId = "";
+      rerender();
+      await loadSharedCalendars();
       rerender();
       return;
     case "openOnboardingTemplateEditor":
@@ -862,16 +872,21 @@ async function actionHandlers(action, element) {
       toast("Client plan downloaded", 3000);
       return;
     }
-    case "searchPeople":
-      await searchPeople(state.ui.peopleQuery);
+    case "loadSharedCalendars":
+      await loadSharedCalendars();
       rerender();
       return;
-    case "selectPerson":
-      updateOnboardingField("isName", element.dataset.name || "");
-      updateOnboardingField("isEmail", element.dataset.email || "");
-      state.ui.peopleQuery = element.dataset.email || "";
+    case "selectSharedCalendar": {
+      const selectedId = element.value || "";
+      state.ui.selectedSharedCalendarId = selectedId;
+      const selectedCalendar = state.ui.sharedCalendarOptions.find((calendar) => calendar.id === selectedId) || null;
+      if (selectedCalendar) {
+        updateOnboardingField("isName", selectedCalendar.ownerName || "");
+        updateOnboardingField("isEmail", selectedCalendar.ownerEmail || "");
+      }
       rerender();
       return;
+    }
     case "toggleTheme":
       toggleThemePreference();
       return;
@@ -912,7 +927,7 @@ function bindEvents() {
     }
 
     const actionable = event.target.closest("[data-action]");
-    if (actionable && ["setSmartStart", "setSessionDate", "setSessionTime", "setSessionDuration", "selectTemplateEditorTemplate"].includes(actionable.dataset.action)) {
+    if (actionable && ["setSmartStart", "setSessionDate", "setSessionTime", "setSessionDuration", "selectTemplateEditorTemplate", "selectSharedCalendar"].includes(actionable.dataset.action)) {
       actionHandlers(actionable.dataset.action, actionable).catch((error) => {
         console.error(`Change action ${actionable.dataset.action} failed:`, error);
         toast(error.message || String(error), 5000);
