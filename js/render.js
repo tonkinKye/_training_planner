@@ -298,12 +298,8 @@ function topbar() {
           ? ""
           : `${conflictButton(project)}<button class="btn-amber" data-action="pushOwned">${state.actor === "is" ? "Commit to Calendar" : "Push All"}</button>${
               state.actor === "pm" && readyForHandoff(project) ? '<button class="btn-default" data-action="handoffToIs">Hand Off to IS</button>' : ""
-            }${state.actor === "pm" ? '<button class="btn-ghost" data-action="generateClientPlan">Client Plan</button>' : ""}<button class="btn-ghost" data-action="openSettings">Project Settings</button>${
+            }${state.actor === "pm" ? '<button class="btn-ghost" data-action="generateClientPlan">Client Plan</button>' : ""}${
               canClose ? `<button class="btn-danger btn-sm" data-action="closeProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled Project")}">Close Project</button>` : ""
-            }${
-              state.actor === "pm" && projectStatus === "scheduling"
-                ? `<button class="btn-danger btn-sm" data-action="deleteProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled Project")}">Delete</button>`
-                : ""
             }`
       }`;
   const templateActions = !inTemplates
@@ -542,11 +538,22 @@ function getAvailabilityMessage(project, availability) {
   return "No availability loaded; Smart Fill will assign dates only";
 }
 
+function renderProjectSummaryActions(project) {
+  if (!project || project.closedAt) return "";
+  const status = deriveProjectStatus(project);
+  const showDelete = state.actor === "pm" && status === "scheduling";
+  return `<div class="tp-side-actions" role="group" aria-label="Project actions">
+    <button class="btn-ghost btn-sm" data-action="openSettings">Project Settings</button>
+    ${showDelete ? `<button class="btn-danger btn-sm" data-action="deleteProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled Project")}">Delete</button>` : ""}
+  </div>`;
+}
+
 function sidebar(project) {
   const range = getProjectDateRange(project);
   const availability = getSmartAvailabilityState(project, state.actor);
   const availabilityMessage = getAvailabilityMessage(project, availability);
   return `<aside class="tp-sidebar">
+    ${renderProjectSummaryActions(project)}
     <section class="tp-side-card">
       <div class="tp-card-top">
         <span class="tp-pill">${esc(getProjectTemplateLabel(project))}</span>

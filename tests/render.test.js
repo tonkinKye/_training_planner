@@ -94,6 +94,43 @@ test("workspace phase and stage panels are collapsed by default and expose summa
   }
 });
 
+test("workspace moves project settings and scheduling delete controls above the project summary", () => {
+  const originalState = {
+    projects: state.projects,
+    activeProjectId: state.activeProjectId,
+    actor: state.actor,
+    screen: state.ui.screen,
+  };
+
+  try {
+    const draft = createOnboardingDraft("manufacturing");
+    draft.clientName = "Pizza Hut";
+    draft.pmName = "Kye Tonkin";
+    draft.pmEmail = "kye@example.com";
+    draft.isName = "Yana B.";
+    draft.isEmail = "yana@example.com";
+    const project = createProjectFromDraft(draft);
+
+    state.projects = [project];
+    state.activeProjectId = project.id;
+    state.actor = "pm";
+    state.ui.screen = "workspace";
+
+    const snapshot = buildRenderSnapshot();
+    assert.ok(!snapshot.topbar.includes('data-action="openSettings"'));
+    assert.ok(!snapshot.topbar.includes('data-action="deleteProject"'));
+    assert.ok(snapshot.main.includes('class="tp-side-actions"'));
+    assert.ok(snapshot.main.includes('data-action="openSettings"'));
+    assert.ok(snapshot.main.includes('data-action="deleteProject"'));
+    assert.ok(snapshot.main.indexOf('data-action="openSettings"') < snapshot.main.indexOf("<h2>Pizza Hut</h2>"));
+  } finally {
+    state.projects = originalState.projects;
+    state.activeProjectId = originalState.activeProjectId;
+    state.actor = originalState.actor;
+    state.ui.screen = originalState.screen;
+  }
+});
+
 test("kanban columns come from custom implementation stages instead of hardcoded keys", () => {
   const rawTemplate = createBlankTemplate({ key: "custom_board", label: "Custom Board" });
   rawTemplate.phases[1].stages = [
