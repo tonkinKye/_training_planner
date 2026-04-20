@@ -1,5 +1,5 @@
 import { createCalendarAvailabilityState } from "./calendar-sources.js";
-import { getBuiltInTemplates } from "./session-templates.js";
+import { getBuiltInTemplates, normalizeEditableTemplateLibrary } from "./session-templates.js";
 
 export const STORAGE_EXCEPTION_NOTE = "MSAL may use sessionStorage; application data must not.";
 export const SENTINEL_SUBJECT = "TP-ProjectIndex";
@@ -167,7 +167,9 @@ export function setGraphAccount(account) {
 }
 
 export function setTemplateLibrary(templates) {
-  state.templateLibrary = Array.isArray(templates) ? [...templates] : getBuiltInTemplates();
+  state.templateLibrary = Array.isArray(templates)
+    ? normalizeEditableTemplateLibrary(templates)
+    : getBuiltInTemplates();
 }
 
 export function setScreen(screen) {

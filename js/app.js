@@ -105,6 +105,43 @@ function rerender() {
   afterRender();
 }
 
+let activeTemplateDropTarget = null;
+
+function clearActiveTemplateDropTarget() {
+  if (!activeTemplateDropTarget) return;
+  activeTemplateDropTarget.classList.remove("is-active-drop");
+  activeTemplateDropTarget = null;
+}
+
+function setTemplateDragMode(type = "") {
+  document.body?.classList.toggle("is-template-stage-drag", type === "template-stage");
+  document.body?.classList.toggle("is-template-session-drag", type === "template-session");
+}
+
+function clearTemplateDragMode() {
+  clearActiveTemplateDropTarget();
+  setTemplateDragMode("");
+}
+
+function isValidTemplateStageDropTarget(dropTarget) {
+  if (!dropTarget || state.dragData?.type !== "template-stage") return false;
+  const targetPhaseIndex = Number(dropTarget.dataset.targetPhaseIndex ?? dropTarget.dataset.phaseIndex);
+  return Number.isFinite(targetPhaseIndex) && targetPhaseIndex === Number(state.dragData.phaseIndex);
+}
+
+function isValidTemplateSessionDropTarget(dropTarget) {
+  if (!dropTarget || state.dragData?.type !== "template-session") return false;
+  const targetPhaseIndex = Number(dropTarget.dataset.targetPhaseIndex ?? dropTarget.dataset.phaseIndex);
+  return Number.isFinite(targetPhaseIndex) && targetPhaseIndex === Number(state.dragData.phaseIndex);
+}
+
+function activateTemplateDropTarget(dropTarget) {
+  if (activeTemplateDropTarget === dropTarget) return;
+  clearActiveTemplateDropTarget();
+  activeTemplateDropTarget = dropTarget;
+  activeTemplateDropTarget.classList.add("is-active-drop");
+}
+
 function applyTheme(theme) {
   if (theme === "dark") {
     document.documentElement.setAttribute("data-theme", "dark");
@@ -915,31 +952,89 @@ function bindEvents() {
     }
     try {
       event.dataTransfer?.setData("text/plain", state.dragData.type || "");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+      }
     } catch (error) {
       // Ignore browsers that restrict custom drag payloads.
     }
+    setTemplateDragMode(state.dragData?.type || "");
     element.classList.add("is-dragging");
   });
 
   document.addEventListener("dragend", (event) => {
     event.target.closest("[data-drag]")?.classList.remove("is-dragging");
     state.dragData = null;
+    clearTemplateDragMode();
+  });
+
+  document.addEventListener("dragenter", (event) => {
+    if (!state.dragData) return;
+    const templateStageDrop = event.target.closest("[data-drop-template-stage]");
+    if (isValidTemplateStageDropTarget(templateStageDrop)) {
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+      activateTemplateDropTarget(templateStageDrop);
+      return;
+    }
+
+    const templateSessionDrop = event.target.closest("[data-drop-template-session]");
+    if (isValidTemplateSessionDropTarget(templateSessionDrop)) {
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+      activateTemplateDropTarget(templateSessionDrop);
+    }
   });
 
   document.addEventListener("dragover", (event) => {
-    const dropTarget = event.target.closest("[data-drop],[data-drop-dv],[data-drop-template-stage],[data-drop-template-session]");
-    if (!dropTarget || !state.dragData) return;
+    if (!state.dragData) return;
+
+    const templateStageDrop = event.target.closest("[data-drop-template-stage]");
+    if (isValidTemplateStageDropTarget(templateStageDrop)) {
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+      activateTemplateDropTarget(templateStageDrop);
+      return;
+    }
+
+    const templateSessionDrop = event.target.closest("[data-drop-template-session]");
+    if (isValidTemplateSessionDropTarget(templateSessionDrop)) {
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+      activateTemplateDropTarget(templateSessionDrop);
+      return;
+    }
+
+    const dropTarget = event.target.closest("[data-drop],[data-drop-dv]");
+    if (!dropTarget) return;
     event.preventDefault();
+  });
+
+  document.addEventListener("dragleave", (event) => {
+    const templateDrop = event.target.closest("[data-drop-template-stage],[data-drop-template-session]");
+    if (!templateDrop || activeTemplateDropTarget !== templateDrop) return;
+    if (event.relatedTarget && templateDrop.contains(event.relatedTarget)) return;
+    clearActiveTemplateDropTarget();
   });
 
   document.addEventListener("drop", async (event) => {
     if (!state.dragData) return;
     const templateStageDrop = event.target.closest("[data-drop-template-stage]");
-    if (templateStageDrop && state.dragData.type === "template-stage") {
+    if (isValidTemplateStageDropTarget(templateStageDrop)) {
       event.preventDefault();
+      clearTemplateDragMode();
       moveTemplateEditorStageToIndex(
-        Number(templateStageDrop.dataset.phaseIndex),
+        Number(state.dragData.phaseIndex),
         Number(state.dragData.stageIndex),
+        Number(templateStageDrop.dataset.targetPhaseIndex ?? templateStageDrop.dataset.phaseIndex),
         Number(templateStageDrop.dataset.targetIndex)
       );
       rerender();
@@ -948,12 +1043,14 @@ function bindEvents() {
     }
 
     const templateSessionDrop = event.target.closest("[data-drop-template-session]");
-    if (templateSessionDrop && state.dragData.type === "template-session") {
+    if (isValidTemplateSessionDropTarget(templateSessionDrop)) {
       event.preventDefault();
+      clearTemplateDragMode();
       moveTemplateEditorSessionToTarget(
-        Number(templateSessionDrop.dataset.phaseIndex),
+        Number(state.dragData.phaseIndex),
         Number(state.dragData.stageIndex),
         Number(state.dragData.sessionIndex),
+        Number(templateSessionDrop.dataset.targetPhaseIndex ?? templateSessionDrop.dataset.phaseIndex),
         Number(templateSessionDrop.dataset.targetStageIndex),
         Number(templateSessionDrop.dataset.targetSessionIndex)
       );

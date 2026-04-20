@@ -482,14 +482,24 @@
   font-size: 12px;
 }
 
+.tp-template-graph-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+}
+
 .tp-template-graph {
-  display: grid;
+  display: flex;
   gap: 14px;
+  align-items: stretch;
+  min-width: max-content;
 }
 
 .tp-template-phase-lane {
   position: relative;
+  flex: 0 0 auto;
   display: grid;
+  grid-template-rows: auto 1fr;
   gap: 12px;
   padding: 14px;
   border: 1px solid var(--border);
@@ -500,17 +510,17 @@
 }
 
 .tp-template-phase-lane.is-setup {
-  background: linear-gradient(180deg, var(--teal-bg) 0, var(--surface) 96px);
+  background: linear-gradient(180deg, var(--teal-bg) 0, var(--surface) 108px);
   border-color: var(--teal-border);
 }
 
 .tp-template-phase-lane.is-implementation {
-  background: linear-gradient(180deg, var(--purple-bg) 0, var(--surface) 96px);
+  background: linear-gradient(180deg, var(--purple-bg) 0, var(--surface) 108px);
   border-color: var(--purple-border);
 }
 
 .tp-template-phase-lane.is-hypercare {
-  background: linear-gradient(180deg, var(--green-bg) 0, var(--surface) 96px);
+  background: linear-gradient(180deg, var(--green-bg) 0, var(--surface) 108px);
   border-color: var(--green-border);
 }
 
@@ -565,73 +575,55 @@
 }
 
 .tp-template-phase-body {
-  position: relative;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-
-.tp-template-phase-edges {
-  position: absolute;
-  inset: 0 0 0 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.tp-template-edge-path,
-.tp-template-phase-rail-line {
-  fill: none;
-  stroke-width: 2.5;
-}
-
-.tp-template-edge-path {
-  stroke: color-mix(in srgb, var(--nav) 65%, white);
-  stroke-dasharray: 5 6;
-}
-
-.tp-template-phase-rail-line {
-  stroke: color-mix(in srgb, var(--amber-btn) 85%, white);
+  min-width: 0;
 }
 
 .tp-template-stage-grid {
-  position: relative;
-  z-index: 1;
   display: flex;
-  gap: 10px;
-  align-items: start;
-  min-width: min-content;
+  align-items: stretch;
+  min-height: 100%;
 }
 
 .tp-template-stage-drop,
 .tp-template-session-drop {
-  border-radius: 999px;
+  opacity: 0;
+  border-radius: 12px;
   background: transparent;
   border: 1px dashed transparent;
-  transition: border-color 120ms ease, background 120ms ease;
+  transition: opacity 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.is-template-stage-drag .tp-template-stage-drop,
+.is-template-session-drag .tp-template-session-drop {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--amber-btn) 42%, transparent);
+  background: color-mix(in srgb, var(--amber-btn) 6%, transparent);
+}
+
+.tp-template-stage-drop.is-active-drop,
+.tp-template-session-drop.is-active-drop {
+  opacity: 1;
+  border-color: var(--amber-btn);
+  background: color-mix(in srgb, var(--amber-btn) 16%, white);
 }
 
 .tp-template-stage-drop {
   width: 18px;
   flex: 0 0 18px;
   align-self: stretch;
-  min-height: 120px;
+  min-height: 180px;
 }
 
 .tp-template-session-drop {
-  min-height: 12px;
-}
-
-.tp-template-stage-drop:hover,
-.tp-template-session-drop:hover {
-  border-color: var(--amber-btn);
-  background: color-mix(in srgb, var(--amber-btn) 12%, transparent);
+  min-height: 14px;
 }
 
 .tp-template-stage-column {
   display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-content: start;
+  align-self: stretch;
   gap: 10px;
-  flex: 0 0 260px;
   min-width: 0;
   padding: 12px;
   border: 1px solid var(--border-md);
@@ -647,49 +639,44 @@
 
 .tp-template-session-stack {
   display: grid;
+  align-content: start;
   gap: 8px;
+  min-height: 100%;
 }
 
 .tp-template-session-card {
-  position: relative;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
 }
 
-.tp-template-session-card.is-gated {
-  background: color-mix(in srgb, var(--amber-soft) 65%, white);
-  border-color: var(--amber-btn);
-}
-
 .tp-template-session-select {
   display: grid;
+  grid-template-rows: auto auto 1fr;
+  align-content: start;
   gap: 6px;
+  height: 100%;
   padding: 0;
+}
+
+.tp-template-session-title,
+.tp-template-session-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tp-template-session-badges {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
+  overflow: hidden;
+  align-items: flex-end;
 }
 
-.tp-template-gate-badge {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  display: inline-flex;
-  align-items: center;
-  min-height: 18px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: var(--amber-btn);
-  color: var(--nav-mark-text);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+.tp-template-session-badges .badge {
+  flex: 0 0 auto;
 }
 
 .tp-template-stage-footer,

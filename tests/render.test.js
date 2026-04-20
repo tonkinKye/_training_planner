@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { createOnboardingDraft, createProjectFromDraft, getPhaseStages } from "../js/projects.js";
 import { createBlankTemplate } from "../js/session-templates.js";
-import { buildRenderSnapshot, getKanbanColumns, getPhaseSectionKey, getStageSectionKey, updateRenderSlot } from "../js/render.js";
+import { buildRenderSnapshot, getKanbanColumns, getPhaseSectionKey, getStageSectionKey, getTemplatePhaseTimelineLayout, updateRenderSlot } from "../js/render.js";
 import { state } from "../js/state.js";
 import { fmtDur } from "../js/utils.js";
 
@@ -178,4 +178,20 @@ test("built-in manufacturing template preserves the existing kanban column seque
       { key: "hypercare", label: "Hypercare" },
     ]
   );
+});
+
+test("template timeline layout uses the fixed weekly scale and stage width clamps", () => {
+  const layout = getTemplatePhaseTimelineLayout({
+    durationWeeks: { min: 3, max: 3 },
+    stages: [
+      { durationDays: 1 },
+      { durationDays: 5 },
+    ],
+  });
+
+  assert.equal(layout.phaseWeeks, 3);
+  assert.equal(layout.phaseBaseWidth, 320);
+  assert.deepEqual(layout.stageLayouts.map((stage) => stage.stageDays), [1, 5]);
+  assert.deepEqual(layout.stageLayouts.map((stage) => stage.width), [180, 267]);
+  assert.equal(layout.phaseWidth, 501);
 });

@@ -9,7 +9,9 @@ import { EXPECTED_TEMPLATE_RUNTIME_PARITY } from "./fixtures/template-runtime-pa
 import {
   BUILT_IN_TEMPLATES,
   createBlankTemplate,
+  getBuiltInTemplates,
   getTemplateDefinition,
+  normalizeEditableTemplate,
   normalizeTemplate,
   normalizeTemplateLibrary,
   serializeTemplateLibrarySource,
@@ -32,6 +34,7 @@ function projectTemplateRuntimeShape(template) {
       stages: phase.stages.map((stage) => ({
         key: stage.key,
         label: stage.label,
+        durationDays: stage.durationDays,
         sessions: stage.sessions.map((session) => ({
           key: session.key,
           name: session.name,
@@ -84,6 +87,43 @@ test("validateTemplate reports broken predecessor refs", () => {
   const result = validateTemplate(template);
   assert.equal(result.valid, false);
   assert.match(result.errors[0].message, /does not exist/i);
+});
+
+test("validateTemplate reports invalid stage durationDays", () => {
+  const template = createBlankTemplate({ key: "invalid_duration", label: "Invalid Duration" });
+  template.phases[0].stages.push({
+    key: "setup_stage",
+    label: "Setup Stage",
+    durationDays: 0,
+    sessions: [],
+  });
+
+  const result = validateTemplate(template);
+  assert.equal(result.valid, false);
+  assert.match(result.errors[0].message, /durationDays/i);
+});
+
+test("editable template normalization defaults missing stage durationDays to 1", () => {
+  const template = createBlankTemplate({ key: "editable_default", label: "Editable Default" });
+  template.phases[0].stages.push({
+    key: "setup_stage",
+    label: "Setup Stage",
+    sessions: [],
+  });
+
+  const normalized = normalizeEditableTemplate(template);
+  assert.equal(normalized.phases[0].stages[0].durationDays, 1);
+});
+
+test("built-in editable templates load with durationDays populated", () => {
+  const templates = getBuiltInTemplates();
+  assert.ok(
+    templates.every((template) =>
+      template.phases.every((phase) =>
+        phase.stages.every((stage) => Number.isInteger(stage.durationDays) && stage.durationDays >= 1)
+      )
+    )
+  );
 });
 
 test("manufacturing template normalization matches the locked runtime parity snapshot", () => {

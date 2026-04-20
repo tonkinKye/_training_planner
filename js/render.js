@@ -37,6 +37,11 @@ const KANBAN_STATIC_LEADING_COLUMNS = [
 const KANBAN_STATIC_TRAILING_COLUMNS = [
   { key: "hypercare", label: "Hypercare", phase: "hypercare" },
 ];
+const TEMPLATE_TIMELINE_WEEK_WIDTH = 80;
+const TEMPLATE_TIMELINE_MIN_PHASE_WIDTH = 320;
+const TEMPLATE_TIMELINE_MIN_STAGE_WIDTH = 180;
+const TEMPLATE_TIMELINE_STAGE_DROP_WIDTH = 18;
+const TEMPLATE_TIMELINE_SESSION_CARD_HEIGHT = 88;
 
 function fmtDate(value) {
   if (!value) return "Not set";
@@ -861,157 +866,110 @@ function getTemplatePhaseTone(phaseKey) {
   return "";
 }
 
-function getTemplatePhaseVisuals(phase) {
-  const sessions = [];
-  const sessionLookup = new Map();
-  let maxSessionCount = 0;
+function getTemplatePhaseWeeks(phase) {
+  const maxWeeks = Number(phase?.durationWeeks?.max);
+  if (Number.isFinite(maxWeeks) && maxWeeks > 0) return maxWeeks;
+  const minWeeks = Number(phase?.durationWeeks?.min);
+  if (Number.isFinite(minWeeks) && minWeeks > 0) return minWeeks;
+  return 1;
+}
 
-  (phase.stages || []).forEach((stage, stageIndex) => {
-    const stageSessions = stage.sessions || [];
-    maxSessionCount = Math.max(maxSessionCount, stageSessions.length);
-    stageSessions.forEach((session, sessionIndex) => {
-      const descriptor = {
-        session,
-        stage,
-        stageIndex,
-        sessionIndex,
-      };
-      sessions.push(descriptor);
-      if (session.key) {
-        sessionLookup.set(session.key, descriptor);
-      }
-    });
+function getTemplateStageDays(stage) {
+  const durationDays = Number(stage?.durationDays);
+  if (!Number.isFinite(durationDays)) return 1;
+  return Math.max(1, Math.round(durationDays));
+}
+
+export function getTemplatePhaseTimelineLayout(phase) {
+  const stages = phase?.stages || [];
+  const phaseWeeks = getTemplatePhaseWeeks(phase);
+  const phaseBaseWidth = Math.max(phaseWeeks * TEMPLATE_TIMELINE_WEEK_WIDTH, TEMPLATE_TIMELINE_MIN_PHASE_WIDTH);
+  const totalStageDays = Math.max(1, stages.reduce((total, stage) => total + getTemplateStageDays(stage), 0));
+  const stageLayouts = stages.map((stage) => {
+    const stageDays = getTemplateStageDays(stage);
+    const idealWidth = phaseBaseWidth * (stageDays / totalStageDays);
+    return {
+      stageDays,
+      width: Math.max(TEMPLATE_TIMELINE_MIN_STAGE_WIDTH, Math.round(idealWidth)),
+    };
   });
-
-  const predecessorEdges = [];
-  const downstreamSessionKeys = new Set();
-  const phaseRails = [];
-  let gateActive = false;
-
-  sessions.forEach((descriptor) => {
-    const { session, stageIndex, sessionIndex } = descriptor;
-    if (gateActive && session.key) {
-      downstreamSessionKeys.add(session.key);
-    }
-    if (session.gating?.type === "phase_gate") {
-      gateActive = true;
-      phaseRails.push({
-        stageIndex,
-        sessionIndex,
-        sessionKey: session.key || `${phase.key}_${stageIndex}_${sessionIndex}`,
-      });
-    }
-    if (session.gating?.type === "predecessor" && session.gating.ref && sessionLookup.has(session.gating.ref)) {
-      predecessorEdges.push({
-        from: sessionLookup.get(session.gating.ref),
-        to: descriptor,
-      });
-    }
-  });
+  const phaseWidth = Math.max(
+    phaseBaseWidth,
+    stageLayouts.reduce((total, layout) => total + layout.width, 0) + ((stages.length + 1) * TEMPLATE_TIMELINE_STAGE_DROP_WIDTH)
+  );
 
   return {
-    maxSessionCount,
-    predecessorEdges,
-    downstreamSessionKeys,
-    phaseRails,
+    phaseWeeks,
+    phaseBaseWidth,
+    phaseWidth,
+    totalStageDays,
+    stageLayouts,
   };
 }
 
-function renderTemplatePhaseEdges(phase, visuals, phaseIndex) {
-  const stageCount = Math.max(1, (phase.stages || []).length);
-  const rowCount = Math.max(1, visuals.maxSessionCount);
-  const viewWidth = stageCount * 160;
-  const viewHeight = 72 + rowCount * 104;
-  if (!visuals.predecessorEdges.length && !visuals.phaseRails.length) return "";
-
-  const edgeLines = visuals.predecessorEdges.map(({ from, to }) => {
-    const fromX = from.stageIndex * 160 + 80;
-    const fromY = 72 + from.sessionIndex * 104 + 42;
-    const toX = to.stageIndex * 160 + 80;
-    const toY = 72 + to.sessionIndex * 104 + 42;
-    const midX = fromX + (toX - fromX) / 2;
-    return `<path class="tp-template-edge-path" data-template-edge data-template-edge-from="${esc(from.session.key || "")}" data-template-edge-to="${esc(to.session.key || "")}" d="M ${fromX} ${fromY} C ${midX} ${fromY}, ${midX} ${toY}, ${toX} ${toY}" />`;
-  }).join("");
-
-  const rails = visuals.phaseRails.map((rail) => {
-    const startX = rail.stageIndex * 160 + 80;
-    const endX = viewWidth - 24;
-    const y = 72 + rail.sessionIndex * 104 + 24;
-    return `<line class="tp-template-phase-rail-line" data-template-phase-rail="${phase.key}:${esc(rail.sessionKey)}" x1="${startX}" y1="${y}" x2="${endX}" y2="${y}" />`;
-  }).join("");
-
-  return `<svg class="tp-template-phase-edges" viewBox="0 0 ${viewWidth} ${viewHeight}" preserveAspectRatio="none" aria-hidden="true">
-    ${rails}
-    ${edgeLines}
-  </svg>`;
-}
-
-function renderTemplateSessionCard(phase, phaseIndex, stage, stageIndex, session, sessionIndex, selection, visuals) {
+function renderTemplateSessionCard(phase, phaseIndex, stageIndex, session, sessionIndex, selection) {
   const selected = isTemplateSelection(selection, "session", phaseIndex, stageIndex, sessionIndex);
   const badges = [
     `<span class="badge ${session.type === "internal" ? "badge-int" : "badge-ext"}">${esc(session.type)}</span>`,
     `<span class="badge ${session.owner === "is" ? "badge-is" : session.owner === "shared" ? "badge-pm" : "badge-pm"}">${esc(fmtTemplateOwner(session.owner || phase.owner))}</span>`,
     session.locked ? '<span class="badge badge-golive">Locked</span>' : "",
     session.gating?.type === "phase_gate" ? '<span class="badge badge-next">Gate</span>' : "",
-    session.gating?.type === "predecessor" ? '<span class="badge badge-next">Depends On</span>' : "",
   ].join("");
 
-  return `<article class="tp-template-session-card${selected ? " is-selected" : ""}${visuals.downstreamSessionKeys.has(session.key) ? " is-gated" : ""}" draggable="true" data-drag="template-session" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}" data-template-session-key="${esc(session.key || "")}">
+  return `<article class="tp-template-session-card${selected ? " is-selected" : ""}" draggable="true" data-drag="template-session" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}" data-template-session-key="${esc(session.key || "")}" style="height:${TEMPLATE_TIMELINE_SESSION_CARD_HEIGHT}px;min-height:${TEMPLATE_TIMELINE_SESSION_CARD_HEIGHT}px;">
     <button class="tp-template-session-select" type="button" data-action="selectTemplateEditorEntity" data-entity-kind="session" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-session-index="${sessionIndex}">
       <span class="tp-template-session-title">${esc(session.name || "Session")}</span>
       <span class="tp-template-session-meta">${esc(`${fmtDur(Number(session.durationMinutes) || 0)} | ${session.key || "no_key"}`)}</span>
       <span class="tp-template-session-badges">${badges}</span>
     </button>
-    ${session.gating?.type === "phase_gate" ? '<span class="tp-template-gate-badge" data-template-phase-gate>Phase Gate</span>' : ""}
   </article>`;
 }
 
-function renderTemplateStageColumn(phase, phaseIndex, stage, stageIndex, selection, visuals) {
+function renderTemplateStageColumn(phase, phaseIndex, stage, stageIndex, selection, layout) {
   const selected = isTemplateSelection(selection, "stage", phaseIndex, stageIndex);
   const sessions = stage.sessions || [];
   const dropSlots = [];
   for (let slotIndex = 0; slotIndex <= sessions.length; slotIndex += 1) {
-    dropSlots.push(`<div class="tp-template-session-drop" data-drop-template-session data-phase-index="${phaseIndex}" data-target-stage-index="${stageIndex}" data-target-session-index="${slotIndex}"></div>`);
+    dropSlots.push(`<div class="tp-template-session-drop" data-drop-template-session data-phase-index="${phaseIndex}" data-target-phase-index="${phaseIndex}" data-target-stage-index="${stageIndex}" data-target-session-index="${slotIndex}" aria-hidden="true"></div>`);
     if (slotIndex < sessions.length) {
-      dropSlots.push(renderTemplateSessionCard(phase, phaseIndex, stage, stageIndex, sessions[slotIndex], slotIndex, selection, visuals));
+      dropSlots.push(renderTemplateSessionCard(phase, phaseIndex, stageIndex, sessions[slotIndex], slotIndex, selection));
     }
   }
 
-  return `<section class="tp-template-stage-column${selected ? " is-selected" : ""}" draggable="true" data-drag="template-stage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">
+  return `<section class="tp-template-stage-column${selected ? " is-selected" : ""}" draggable="true" data-drag="template-stage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-template-stage-days="${layout.stageDays}" data-template-stage-width="${layout.width}" style="width:${layout.width}px;min-width:${TEMPLATE_TIMELINE_MIN_STAGE_WIDTH}px;">
     <button class="tp-template-stage-header" type="button" data-action="selectTemplateEditorEntity" data-entity-kind="stage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">
       <span class="tp-template-stage-title">${esc(stage.label || "Stage")}</span>
       <span class="tp-template-stage-meta">${esc(stage.key || "")}</span>
-      <span class="tp-template-stage-count">${esc(`${sessions.length} session${sessions.length === 1 ? "" : "s"}`)}</span>
+      <span class="tp-template-stage-count">${esc(`${layout.stageDays} day${layout.stageDays === 1 ? "" : "s"} | ${sessions.length} session${sessions.length === 1 ? "" : "s"}`)}</span>
     </button>
     <div class="tp-template-session-stack" data-template-stage-body>
-      ${dropSlots.join("") || `<div class="tp-template-session-drop" data-drop-template-session data-phase-index="${phaseIndex}" data-target-stage-index="${stageIndex}" data-target-session-index="0"></div>`}
+      ${dropSlots.join("") || `<div class="tp-template-session-drop" data-drop-template-session data-phase-index="${phaseIndex}" data-target-phase-index="${phaseIndex}" data-target-stage-index="${stageIndex}" data-target-session-index="0" aria-hidden="true"></div>`}
     </div>
     <div class="tp-template-stage-footer"><button class="btn-default btn-sm" data-action="addTemplateSession" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}">Add Session</button></div>
   </section>`;
 }
 
 function renderTemplatePhaseLane(phase, phaseIndex, selection) {
-  const visuals = getTemplatePhaseVisuals(phase);
+  const layout = getTemplatePhaseTimelineLayout(phase);
   const stages = phase.stages || [];
   const selected = isTemplateSelection(selection, "phase", phaseIndex);
   const stageColumns = [];
   for (let slotIndex = 0; slotIndex <= stages.length; slotIndex += 1) {
-    stageColumns.push(`<div class="tp-template-stage-drop" data-drop-template-stage data-phase-index="${phaseIndex}" data-target-index="${slotIndex}"></div>`);
+    stageColumns.push(`<div class="tp-template-stage-drop" data-drop-template-stage data-phase-index="${phaseIndex}" data-target-phase-index="${phaseIndex}" data-target-index="${slotIndex}" aria-hidden="true"></div>`);
     if (slotIndex < stages.length) {
-      stageColumns.push(renderTemplateStageColumn(phase, phaseIndex, stages[slotIndex], slotIndex, selection, visuals));
+      stageColumns.push(renderTemplateStageColumn(phase, phaseIndex, stages[slotIndex], slotIndex, selection, layout.stageLayouts[slotIndex]));
     }
   }
 
-  return `<section class="tp-template-phase-lane ${getTemplatePhaseTone(phase.key)}" data-template-phase="${esc(phase.key)}">
+  return `<section class="tp-template-phase-lane ${getTemplatePhaseTone(phase.key)}" data-template-phase="${esc(phase.key)}" data-template-phase-weeks="${layout.phaseWeeks}" data-template-phase-base-width="${layout.phaseBaseWidth}" data-template-phase-width="${layout.phaseWidth}" style="width:${layout.phaseWidth}px;min-width:${layout.phaseWidth}px;">
     <div class="tp-template-phase-head">
       <button class="tp-template-phase-button${selected ? " is-selected" : ""}" type="button" data-action="selectTemplateEditorEntity" data-entity-kind="phase" data-phase-index="${phaseIndex}">
         <span class="tp-template-phase-title">${esc(phase.label || phase.key || `Phase ${phaseIndex + 1}`)}</span>
-        <span class="tp-template-phase-meta">${esc(`${fmtTemplateOwner(phase.owner)} | ${phase.calendarSource?.toUpperCase?.() || phase.calendarSource || "PM"} calendar | ${fmtWeekRange(phase.durationWeeks?.min, phase.durationWeeks?.max) || "No duration"}`)}</span>
+        <span class="tp-template-phase-meta">${esc(`${fmtTemplateOwner(phase.owner)} | ${phase.calendarSource?.toUpperCase?.() || phase.calendarSource || "PM"} calendar | ${fmtWeekRange(phase.durationWeeks?.min, phase.durationWeeks?.max) || "No duration"} | ${layout.phaseWeeks}w scale`)}</span>
       </button>
       <div class="tp-template-phase-actions"><button class="btn-default btn-sm" data-action="addTemplateStage" data-phase-index="${phaseIndex}">Add Stage</button></div>
     </div>
     <div class="tp-template-phase-body">
-      ${renderTemplatePhaseEdges(phase, visuals, phaseIndex)}
       <div class="tp-template-stage-grid">
         ${stageColumns.join("")}
       </div>
@@ -1046,6 +1004,7 @@ function renderTemplateStageInspector(stage, phaseIndex, stageIndex) {
   return `<div class="tp-template-inspector-fields">
     <label class="tp-field"><span>Stage Key</span><input type="text" value="${esc(stage.key || "")}" data-bind="templateEditor.stage.${phaseIndex}.${stageIndex}.key"></label>
     <label class="tp-field"><span>Stage Label</span><input type="text" value="${esc(stage.label || "")}" data-bind="templateEditor.stage.${phaseIndex}.${stageIndex}.label"></label>
+    <label class="tp-field"><span>Duration Days</span><input class="tp-mono" type="number" min="1" step="1" value="${Number(stage.durationDays || 1)}" data-bind="templateEditor.stage.${phaseIndex}.${stageIndex}.durationDays"></label>
     <div class="tp-quick-row">
       <button class="btn-default btn-sm" data-action="moveTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-dir="-1">Move Left</button>
       <button class="btn-default btn-sm" data-action="moveTemplateStage" data-phase-index="${phaseIndex}" data-stage-index="${stageIndex}" data-dir="1">Move Right</button>
@@ -1139,15 +1098,17 @@ function templateEditorScreen() {
       <div class="tp-template-canvas-pane">
         <div class="tp-summary-card tp-template-toolbar">
           ${state.ui.templateEditor.mode === "library" ? `<label class="tp-field"><span>Template</span><select data-action="selectTemplateEditorTemplate">${templateOptions.map((template, index) => `<option value="${index}"${index === state.ui.templateEditor.activeTemplateIndex ? " selected" : ""}>${esc(template.label)}</option>`).join("")}</select></label>` : `<div class="tp-template-toolbar-note"><strong>${esc(draft.label || "Template")}</strong><span>One-off customization mode</span></div>`}
-          <div class="tp-template-toolbar-copy">
-            <strong>Graph Builder</strong>
-            <span>Phases are fixed. Drag stages and sessions within their phase lanes, then refine details in the inspector.</span>
-          </div>
+        <div class="tp-template-toolbar-copy">
+          <strong>Graph Builder</strong>
+          <span>Time flows left to right. Drag stages and sessions within their phase timeline, then refine details in the inspector.</span>
         </div>
+      </div>
+      <div class="tp-template-graph-scroll" data-template-graph-scroll>
         <section class="tp-template-graph" data-template-graph>
           ${draft.phases.map((phase, phaseIndex) => renderTemplatePhaseLane(phase, phaseIndex, getTemplateEditorSelection())).join("")}
         </section>
-        ${renderTemplateIssueList("Validation Errors", state.ui.templateEditor.validation.errors, "is-danger")}
+      </div>
+      ${renderTemplateIssueList("Validation Errors", state.ui.templateEditor.validation.errors, "is-danger")}
         ${renderTemplateIssueList("Validation Warnings", state.ui.templateEditor.validation.warnings, "is-warning")}
         ${preview ? `<section class="tp-summary-card"><h4>Preview</h4>${preview.phases.map((phase) => `<div class="tp-settings-phase"><h4>${esc(phase.label)}</h4><p>${esc(`${phase.ownerLabel || phase.owner} | ${fmtWeekRange(phase.durationWeeks?.min, phase.durationWeeks?.max) || "No duration"}`)}</p><p>${esc(`${phase.sessions.length} sessions | ${fmtDur(phase.totalMinutes)}`)}</p>${phase.stages.map((stage) => `<div class="tp-settings-row"><div><strong>${esc(stage.label)}</strong><small>${esc(stage.sessions.map((session) => session.name).join(" | "))}</small></div></div>`).join("")}</div>`).join("")}</section>` : ""}
         ${state.ui.templateEditor.exportSource ? `<section class="tp-template-review"><h4>Export Preview</h4><pre>${esc(state.ui.templateEditor.exportSource)}</pre></section>` : ""}

@@ -48,6 +48,12 @@ function toNullableNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function normalizeDurationDays(value, fallback = 1) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(1, Math.round(number));
+}
+
 function normalizeDurationWeeks(value, fallback = {}) {
   if (Number.isFinite(Number(value))) {
     const fixed = Number(value);
@@ -258,6 +264,21 @@ export function validateTemplate(template) {
         issues.push(createIssue("error", `${stagePath}.label`, "Stage label is required.", "stage_label"));
       }
 
+      if (
+        stage?.durationDays != null
+        && stage.durationDays !== ""
+        && (!Number.isInteger(Number(stage.durationDays)) || Number(stage.durationDays) < 1)
+      ) {
+        issues.push(
+          createIssue(
+            "error",
+            `${stagePath}.durationDays`,
+            "Stage durationDays must be an integer greater than or equal to 1.",
+            "stage_duration_days"
+          )
+        );
+      }
+
       (Array.isArray(stage?.sessions) ? stage.sessions : []).forEach((session, sessionIndex) => {
         const sessionPath = `${stagePath}.sessions[${sessionIndex}]`;
         const sessionKey = asTrimmedString(session?.key);
@@ -391,6 +412,7 @@ function normalizeStage(rawStage, phase, stageOrder, phaseSessionOffset, grandOr
     key: stageKey,
     label: stageLabel,
     order: stageOrder,
+    durationDays: normalizeDurationDays(rawStage?.durationDays, 1),
     rangeStart: "",
     rangeEnd: "",
     sessions,
@@ -475,6 +497,41 @@ export function normalizeTemplate(rawTemplate) {
   };
 }
 
+export function normalizeEditableTemplate(rawTemplate) {
+  const normalized = normalizeTemplate(rawTemplate);
+  return {
+    key: normalized.key,
+    label: normalized.label,
+    metadata: cloneValue(normalized.metadata),
+    phases: normalized.phases.map((phase) => ({
+      key: phase.key,
+      label: phase.label,
+      owner: phase.owner,
+      calendarSource: phase.calendarSource,
+      durationWeeks: { ...phase.durationWeeks },
+      stages: phase.stages.map((stage) => ({
+        key: stage.key,
+        label: stage.label,
+        durationDays: normalizeDurationDays(stage.durationDays, 1),
+        sessions: stage.sessions.map((session) => ({
+          key: session.key,
+          name: session.name,
+          durationMinutes: session.durationMinutes,
+          owner: session.owner,
+          type: session.type,
+          bodyKey: session.bodyKey ?? null,
+          locked: Boolean(session.locked),
+          gating: session.gating ? cloneValue(session.gating) : null,
+        })),
+      })),
+    })),
+  };
+}
+
+export function normalizeEditableTemplateLibrary(rawTemplates = []) {
+  return (Array.isArray(rawTemplates) ? rawTemplates : []).map((template) => normalizeEditableTemplate(template));
+}
+
 export function normalizeTemplateLibrary(rawTemplates = []) {
   const templates = (Array.isArray(rawTemplates) ? rawTemplates : []).map((template) => normalizeTemplate(template));
   const byKey = Object.fromEntries(templates.map((template) => [template.key, template]));
@@ -534,6 +591,7 @@ function formatValue(value, indentLevel = 0) {
 const SESSION_TEMPLATES_MODULE_FOOTER = `
 
 const BUILT_IN_TEMPLATE_LIBRARY = normalizeTemplateLibrary(BUILT_IN_TEMPLATES);
+const EDITABLE_TEMPLATE_LIBRARY = normalizeEditableTemplateLibrary(BUILT_IN_TEMPLATES);
 
 function cloneValue(value) {
   return typeof structuredClone === "function"
@@ -542,7 +600,7 @@ function cloneValue(value) {
 }
 
 export function getBuiltInTemplates() {
-  return cloneValue(BUILT_IN_TEMPLATES);
+  return cloneValue(EDITABLE_TEMPLATE_LIBRARY);
 }
 
 export function getTemplateLibrary() {
@@ -598,6 +656,8 @@ export function buildSessionTemplatesModuleSource(rawTemplates = []) {
 import {
   buildSessionTemplatesModuleSource,
   createBlankTemplate,
+  normalizeEditableTemplate,
+  normalizeEditableTemplateLibrary,
   normalizeTemplate,
   normalizeTemplateLibrary,
   validateTemplate,

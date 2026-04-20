@@ -13,6 +13,7 @@ export const EXPECTED_TEMPLATE_RUNTIME_PARITY = {
           {
             key: "kick_off_data_prep",
             label: "Kick-Off & Data Prep",
+            durationDays: 1,
             sessions: [
               { key: "sales_handover", name: "Sales Handover", durationMinutes: 30, owner: "pm", type: "internal", locked: false, gating: null, bodyKey: "sales_handover" },
               { key: "installation", name: "Installation", durationMinutes: 60, owner: "pm", type: "external", locked: false, gating: null, bodyKey: "installation" },
@@ -37,6 +38,7 @@ export const EXPECTED_TEMPLATE_RUNTIME_PARITY = {
           {
             key: "training",
             label: "Training",
+            durationDays: 1,
             sessions: [
               { key: "materials_inventory", name: "Materials & Inventory", durationMinutes: 90, owner: "is", type: "external", locked: false, gating: null, bodyKey: "materials_inventory" },
               { key: "templates", name: "Templates", durationMinutes: 240, owner: "is", type: "external", locked: false, gating: null, bodyKey: "templates" },
@@ -55,6 +57,7 @@ export const EXPECTED_TEMPLATE_RUNTIME_PARITY = {
           {
             key: "go_live_prep",
             label: "Go-Live Prep",
+            durationDays: 1,
             sessions: [
               { key: "go_live_prep", name: "Go Live Prep", durationMinutes: 90, owner: "is", type: "external", locked: false, gating: null, bodyKey: "go_live_prep" },
             ],
@@ -62,6 +65,7 @@ export const EXPECTED_TEMPLATE_RUNTIME_PARITY = {
           {
             key: "go_live",
             label: "Go-Live",
+            durationDays: 1,
             sessions: [
               { key: "go_live", name: "Go-Live", durationMinutes: 120, owner: "is", type: "external", locked: true, gating: null, bodyKey: "go_live" },
             ],
@@ -78,6 +82,7 @@ export const EXPECTED_TEMPLATE_RUNTIME_PARITY = {
           {
             key: "post_go_live",
             label: "Post Go-Live",
+            durationDays: 1,
             sessions: [
               { key: "pm_handover", name: "PM Handover", durationMinutes: 30, owner: "pm", type: "internal", locked: false, gating: null, bodyKey: "pm_handover" },
               { key: "training_support_1", name: "Training Support 1", durationMinutes: 60, owner: "pm", type: "external", locked: false, gating: null, bodyKey: "training_support" },
@@ -105,6 +110,7 @@ export const EXPECTED_TEMPLATE_RUNTIME_PARITY = {
           {
             key: "kick_off_data_prep",
             label: "Kick-Off & Data Prep",
+            durationDays: 1,
             sessions: [
               { key: "sales_handover", name: "Sales Handover", durationMinutes: 30, owner: "pm", type: "internal", locked: false, gating: null, bodyKey: "sales_handover" },
               { key: "installation", name: "Installation", durationMinutes: 60, owner: "pm", type: "external", locked: false, gating: null, bodyKey: "installation" },
@@ -129,6 +135,7 @@ export const EXPECTED_TEMPLATE_RUNTIME_PARITY = {
           {
             key: "training",
             label: "Training",
+            durationDays: 1,
             sessions: [
               { key: "materials_inventory", name: "Materials & Inventory", durationMinutes: 90, owner: "is", type: "external", locked: false, gating: null, bodyKey: "materials_inventory" },
               { key: "templates", name: "Templates", durationMinutes: 180, owner: "is", type: "external", locked: false, gating: null, bodyKey: "templates" },
@@ -146,6 +153,7 @@ export const EXPECTED_TEMPLATE_RUNTIME_PARITY = {
           {
             key: "go_live_prep",
             label: "Go-Live Prep",
+            durationDays: 1,
             sessions: [
               { key: "go_live_prep", name: "Go Live Prep", durationMinutes: 90, owner: "is", type: "external", locked: false, gating: null, bodyKey: "go_live_prep" },
             ],
@@ -153,6 +161,7 @@ export const EXPECTED_TEMPLATE_RUNTIME_PARITY = {
           {
             key: "go_live",
             label: "Go-Live",
+            durationDays: 1,
             sessions: [
               { key: "go_live", name: "Go-Live", durationMinutes: 120, owner: "is", type: "external", locked: true, gating: null, bodyKey: "go_live" },
             ],
@@ -169,6 +178,7 @@ export const EXPECTED_TEMPLATE_RUNTIME_PARITY = {
           {
             key: "post_go_live",
             label: "Post Go-Live",
+            durationDays: 1,
             sessions: [
               { key: "pm_handover", name: "PM Handover", durationMinutes: 30, owner: "pm", type: "internal", locked: false, gating: null, bodyKey: "pm_handover" },
               { key: "training_support_1", name: "Training Support 1", durationMinutes: 60, owner: "pm", type: "external", locked: false, gating: null, bodyKey: "training_support" },

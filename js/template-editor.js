@@ -1,6 +1,7 @@
 import { createOnboardingDraft } from "./projects.js";
 import {
   createBlankTemplate,
+  normalizeEditableTemplate,
   normalizeTemplate,
   serializeTemplateLibrarySource,
   validateTemplate,
@@ -52,7 +53,7 @@ function syncTemplateEditorValidation() {
 function commitDraftToLibrary() {
   if (state.ui.templateEditor.mode !== "library" || !state.ui.templateEditor.draft) return;
   const nextLibrary = state.templateLibrary.slice();
-  nextLibrary[state.ui.templateEditor.activeTemplateIndex] = cloneValue(state.ui.templateEditor.draft);
+  nextLibrary[state.ui.templateEditor.activeTemplateIndex] = normalizeEditableTemplate(state.ui.templateEditor.draft);
   state.templateLibrary = nextLibrary;
 }
 
@@ -60,7 +61,7 @@ function selectTemplateIndex(index) {
   const template = state.templateLibrary[index];
   if (!template) return null;
   state.ui.templateEditor.activeTemplateIndex = index;
-  state.ui.templateEditor.draft = cloneValue(template);
+  state.ui.templateEditor.draft = normalizeEditableTemplate(template);
   state.ui.templateEditor.originKey = template.key || "";
   state.ui.templateEditor.exportSource = "";
   updateSelection("template");
@@ -181,9 +182,12 @@ export function openTemplateLibraryEditor(index = 0) {
 }
 
 export function openTemplateOneOffEditor({ template = null, originKey = "", returnScreen = "projects" } = {}) {
-  const sourceTemplate = template
-    ? cloneValue(template)
-    : cloneValue(state.templateLibrary.find((candidate) => candidate.key === originKey) || state.templateLibrary[0] || createBlankTemplate());
+  const sourceTemplate = normalizeEditableTemplate(
+    template
+      || state.templateLibrary.find((candidate) => candidate.key === originKey)
+      || state.templateLibrary[0]
+      || createBlankTemplate()
+  );
   state.ui.templateEditor = {
     mode: "oneoff",
     activeTemplateIndex: -1,
@@ -235,7 +239,7 @@ export function createTemplateEditorTemplate() {
 export function duplicateTemplateEditorTemplate() {
   const source = state.ui.templateEditor.draft;
   if (!source || state.ui.templateEditor.mode !== "library") return null;
-  const nextTemplate = cloneValue(source);
+  const nextTemplate = normalizeEditableTemplate(source);
   nextTemplate.key = makeUniqueTemplateKey(`${source.key || "template"}_copy`);
   nextTemplate.label = `${source.label || "Template"} Copy`;
   state.templateLibrary = [...state.templateLibrary, nextTemplate];
@@ -256,9 +260,10 @@ export function removeTemplateEditorStage(phaseIndex, stageIndex) {
   }
 }
 
-export function moveTemplateEditorStageToIndex(phaseIndex, stageIndex, targetSlotIndex) {
+export function moveTemplateEditorStageToIndex(sourcePhaseIndex, stageIndex, targetPhaseIndex, targetSlotIndex) {
+  if (sourcePhaseIndex !== targetPhaseIndex) return;
   updateDraft((draft) => {
-    const stages = draft.phases[phaseIndex]?.stages || [];
+    const stages = draft.phases[sourcePhaseIndex]?.stages || [];
     if (targetSlotIndex < 0 || targetSlotIndex > stages.length) return;
     const [stage] = stages.splice(stageIndex, 1);
     if (!stage) return;
@@ -271,17 +276,17 @@ export function moveTemplateEditorStageToIndex(phaseIndex, stageIndex, targetSlo
   });
   const nextStageIndex = targetSlotIndex > stageIndex ? targetSlotIndex - 1 : targetSlotIndex;
   const selection = getTemplateEditorSelection();
-  if (selection.phaseIndex !== phaseIndex) return;
+  if (selection.phaseIndex !== sourcePhaseIndex) return;
   if (selection.kind === "stage" && selection.stageIndex === stageIndex) {
-    updateSelection("stage", phaseIndex, nextStageIndex);
+    updateSelection("stage", sourcePhaseIndex, nextStageIndex);
   }
   if (selection.kind === "session" && selection.stageIndex === stageIndex) {
-    updateSelection("session", phaseIndex, nextStageIndex, selection.sessionIndex);
+    updateSelection("session", sourcePhaseIndex, nextStageIndex, selection.sessionIndex);
   }
 }
 
 export function moveTemplateEditorStage(phaseIndex, stageIndex, direction) {
-  moveTemplateEditorStageToIndex(phaseIndex, stageIndex, stageIndex + (direction > 0 ? 2 : -1));
+  moveTemplateEditorStageToIndex(phaseIndex, stageIndex, phaseIndex, stageIndex + (direction > 0 ? 2 : -1));
 }
 
 export function addTemplateEditorStage(phaseIndex) {
@@ -293,6 +298,7 @@ export function addTemplateEditorStage(phaseIndex) {
     phase.stages.push({
       key: `${phase.key}_stage_${nextIndex}`,
       label: `Stage ${nextIndex}`,
+      durationDays: 1,
       sessions: [],
     });
   });
@@ -341,21 +347,24 @@ export function moveTemplateEditorSession(phaseIndex, stageIndex, sessionIndex, 
     phaseIndex,
     stageIndex,
     sessionIndex,
+    phaseIndex,
     stageIndex,
     sessionIndex + (direction > 0 ? 2 : -1)
   );
 }
 
 export function moveTemplateEditorSessionToTarget(
-  phaseIndex,
+  sourcePhaseIndex,
   stageIndex,
   sessionIndex,
+  targetPhaseIndex,
   targetStageIndex,
   targetSlotIndex
 ) {
+  if (sourcePhaseIndex !== targetPhaseIndex) return;
   updateDraft((draft) => {
-    const sourceSessions = draft.phases[phaseIndex]?.stages?.[stageIndex]?.sessions || [];
-    const destinationStage = draft.phases[phaseIndex]?.stages?.[targetStageIndex];
+    const sourceSessions = draft.phases[sourcePhaseIndex]?.stages?.[stageIndex]?.sessions || [];
+    const destinationStage = draft.phases[targetPhaseIndex]?.stages?.[targetStageIndex];
     if (!sourceSessions.length || !destinationStage || targetStageIndex < 0) return;
     const destinationSessions = destinationStage.sessions || [];
     if (sessionIndex < 0 || sessionIndex >= sourceSessions.length) return;
@@ -377,8 +386,8 @@ export function moveTemplateEditorSessionToTarget(
   const nextSessionIndex = stageIndex === targetStageIndex && targetSlotIndex > sessionIndex
     ? targetSlotIndex - 1
     : targetSlotIndex;
-  const actualLength = (getStageRef(phaseIndex, nextStageIndex)?.sessions || []).length;
-  updateSelection("session", phaseIndex, nextStageIndex, Math.max(0, Math.min(nextSessionIndex, Math.max(0, actualLength - 1))));
+  const actualLength = (getStageRef(targetPhaseIndex, nextStageIndex)?.sessions || []).length;
+  updateSelection("session", targetPhaseIndex, nextStageIndex, Math.max(0, Math.min(nextSessionIndex, Math.max(0, actualLength - 1))));
 }
 
 export function updateTemplateEditorField(field, value) {
@@ -418,6 +427,10 @@ export function updateTemplateEditorField(field, value) {
     if (parts[0] === "stage") {
       const stage = getStageRef(Number(parts[1]), Number(parts[2]));
       if (!stage) return;
+      if (parts[3] === "durationDays") {
+        stage.durationDays = Math.max(1, Math.round(normalizeEditableNumber(value, 1)));
+        return;
+      }
       stage[parts[3]] = String(value || "").trim();
       return;
     }

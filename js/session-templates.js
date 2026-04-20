@@ -2,6 +2,8 @@ import { SESSION_BODIES } from "./session-bodies.js";
 import {
   buildSessionTemplatesModuleSource,
   createBlankTemplate,
+  normalizeEditableTemplate,
+  normalizeEditableTemplateLibrary,
   normalizeTemplate,
   normalizeTemplateLibrary,
   validateTemplate,
@@ -600,6 +602,7 @@ export const BUILT_IN_TEMPLATES = [
 ];
 
 const BUILT_IN_TEMPLATE_LIBRARY = normalizeTemplateLibrary(BUILT_IN_TEMPLATES);
+const EDITABLE_TEMPLATE_LIBRARY = normalizeEditableTemplateLibrary(BUILT_IN_TEMPLATES);
 
 function cloneValue(value) {
   return typeof structuredClone === "function"
@@ -608,7 +611,7 @@ function cloneValue(value) {
 }
 
 export function getBuiltInTemplates() {
-  return cloneValue(BUILT_IN_TEMPLATES);
+  return cloneValue(EDITABLE_TEMPLATE_LIBRARY);
 }
 
 export function getTemplateLibrary() {
@@ -669,6 +672,8 @@ export function serializeTemplateLibrarySource(templates = BUILT_IN_TEMPLATES) {
 export {
   buildSessionTemplatesModuleSource,
   createBlankTemplate,
+  normalizeEditableTemplate,
+  normalizeEditableTemplateLibrary,
   normalizeTemplate,
   normalizeTemplateLibrary,
   validateTemplate,
