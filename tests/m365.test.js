@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  __graphRequestForTests,
+  __pushGraphEventForTests,
+  __setMsalTestState,
+  __writeSentinelExtensionForTests,
   applyDeepLinkProject,
   buildEventPayload,
   buildCloseNotificationBody,
@@ -20,6 +24,39 @@ import { getPhaseStages } from "../js/projects.js";
 import { resetAppState, state } from "../js/state.js";
 
 let nextId = 1;
+
+function createGraphResponse(status, body = null, statusText = "OK") {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText,
+    json: async () => body,
+  };
+}
+
+function installWindowForGraph(t) {
+  const previousWindow = globalThis.window;
+  globalThis.window = globalThis;
+  t.after(() => {
+    if (previousWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = previousWindow;
+    }
+    __setMsalTestState();
+  });
+}
+
+function installMsalForGraphTests(t, instance) {
+  installWindowForGraph(t);
+  __setMsalTestState({
+    instance,
+    account: {
+      username: "pm@example.com",
+      name: "PM",
+    },
+  });
+}
 
 function makeSession(overrides = {}) {
   return {
@@ -215,6 +252,30 @@ test("close notification HTML escapes user-controlled project fields", () => {
   assert.doesNotMatch(html, /<script>alert/);
 });
 
+test("graphRequest surfaces popup auth failures instead of collapsing them to a generic token error", async (t) => {
+  installMsalForGraphTests(t, {
+    acquireTokenSilent: async () => {
+      throw new Error("silent interaction required");
+    },
+    acquireTokenPopup: async () => {
+      const error = new Error("Tenant policy blocked interactive token acquisition");
+      error.errorCode = "token_policy_block";
+      throw error;
+    },
+  });
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+
+  await assert.rejects(
+    () => __graphRequestForTests("https://graph.microsoft.com/v1.0/me"),
+    (error) => {
+      assert.equal(error.name, "GraphAuthError");
+      assert.match(error.message, /Tenant policy blocked interactive token acquisition/);
+      return true;
+    }
+  );
+});
+
 test("IS-owned event payloads stamp the project id extended property", () => {
   const project = makeProject();
   const session = makeSession({
@@ -242,6 +303,79 @@ test("PM-owned event payloads do not stamp the project id extended property", ()
   const payload = buildEventPayload(project, session);
 
   assert.equal(payload.singleValueExtendedProperties, undefined);
+});
+
+test("pushGraphEvent falls back to POST when PATCH targets a missing event", async (t) => {
+  installMsalForGraphTests(t, {
+    acquireTokenSilent: async () => ({ accessToken: "token-1" }),
+  });
+
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (path, options = {}) => {
+    calls.push({ path, method: options.method });
+    if (calls.length === 1) {
+      return createGraphResponse(404, {
+        error: {
+          message: "Event not found",
+        },
+      }, "Not Found");
+    }
+    return createGraphResponse(200, { id: "replacement-event" });
+  });
+
+  const session = makeSession({
+    phase: "setup",
+    owner: "pm",
+    date: "2099-04-10",
+    time: "09:00",
+    graphEventId: "missing-event",
+  });
+  const project = makeProject({ setupSessions: [session] });
+
+  const result = await __pushGraphEventForTests(session, project);
+
+  assert.equal(result.id, "replacement-event");
+  assert.equal(session.graphEventId, "");
+  assert.deepEqual(
+    calls.map((call) => ({ path: call.path, method: call.method })),
+    [
+      {
+        path: "https://graph.microsoft.com/v1.0/me/events/missing-event",
+        method: "PATCH",
+      },
+      {
+        path: "https://graph.microsoft.com/v1.0/me/events",
+        method: "POST",
+      },
+    ]
+  );
+});
+
+test("writeSentinelExtension falls back to POST when the open extension is missing", async (t) => {
+  installMsalForGraphTests(t, {
+    acquireTokenSilent: async () => ({ accessToken: "token-2" }),
+  });
+
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (path, options = {}) => {
+    calls.push({ path, method: options.method, body: options.body });
+    if (calls.length === 1) {
+      return createGraphResponse(404, {
+        error: {
+          message: "Extension missing",
+        },
+      }, "Not Found");
+    }
+    return createGraphResponse(200, { id: "extension-1" });
+  });
+
+  const result = await __writeSentinelExtensionForTests("series-master", []);
+
+  assert.equal(result.id, "extension-1");
+  assert.equal(calls[0].method, "PATCH");
+  assert.match(calls[0].path, /\/events\/series-master\/extensions\/com\.fishbowl\.trainingplanner\.v1$/);
+  assert.equal(calls[1].method, "POST");
+  assert.match(calls[1].path, /\/events\/series-master\/extensions$/);
 });
 
 test("applyDeepLinkProject seeds a new IS project from the link payload", async () => {

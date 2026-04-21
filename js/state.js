@@ -1,7 +1,6 @@
 import { createCalendarAvailabilityState } from "./calendar-sources.js";
 import { getBuiltInTemplates, normalizeEditableTemplateLibrary } from "./session-templates.js";
 
-export const STORAGE_EXCEPTION_NOTE = "MSAL may use sessionStorage; application data must not.";
 export const SENTINEL_SUBJECT = "TP-ProjectIndex";
 export const SENTINEL_SCHEMA_ID = "com.fishbowl.trainingplanner.v1";
 export const APP_SCHEMA_VERSION = 1;

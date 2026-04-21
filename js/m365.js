@@ -34,6 +34,7 @@ const PROJECT_ID_EXTENDED_PROPERTY_ID = "String {f4a0b90d-bf6d-4a31-a38d-7f2cdb9
 let msalInstance = null;
 let msalInitPromise = null;
 let lastPopupDismissedAt = 0;
+let lastMsalError = null;
 const scriptLoads = new Map();
 
 function hasGraphConfig() {
@@ -67,6 +68,35 @@ function loadScript(src) {
   });
   scriptLoads.set(src, tracked);
   return tracked;
+}
+
+function getErrorMessage(error, fallback = "Unknown error") {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  return fallback;
+}
+
+function createGraphAuthError(error, stage = "token acquisition") {
+  const wrapped = new Error(`Microsoft Graph auth failed during ${stage}: ${getErrorMessage(error)}`);
+  wrapped.name = "GraphAuthError";
+  wrapped.code = error?.errorCode || error?.code || "";
+  wrapped.stage = stage;
+  wrapped.cause = error;
+  return wrapped;
+}
+
+function isPopupDismissError(error) {
+  const code = String(error?.errorCode || error?.code || "").toLowerCase();
+  const message = getErrorMessage(error, "").toLowerCase();
+  return (
+    code === "user_cancelled"
+    || code === "monitor_popup_timeout"
+    || code === "empty_window_error"
+    || message.includes("user cancelled")
+    || message.includes("user canceled")
+    || message.includes("popup window closed")
+    || message.includes("popup closed")
+  );
 }
 
 async function ensureMsalLoaded() {
@@ -128,11 +158,13 @@ async function initMsal() {
     } else {
       setAuthStatus("idle");
     }
+    lastMsalError = null;
 
     return msalInstance;
   })().catch((error) => {
     console.error("MSAL init failed:", error);
     setAuthStatus("error", error.message || String(error));
+    lastMsalError = createGraphAuthError(error, "MSAL initialization");
     msalInstance = null;
     return null;
   }).finally(() => {
@@ -144,13 +176,18 @@ async function initMsal() {
 
 async function getAccessToken(scopes = GRAPH_SCOPES) {
   const instance = await initMsal();
-  if (!instance || !state.graphAccount) return null;
+  if (!instance) {
+    if (lastMsalError) throw lastMsalError;
+    return null;
+  }
+  if (!state.graphAccount) return null;
 
   try {
     const result = await instance.acquireTokenSilent({
       scopes,
       account: state.graphAccount,
     });
+    lastMsalError = null;
     return result.accessToken;
   } catch (silentError) {
     console.warn("Silent token acquisition failed:", silentError);
@@ -162,11 +199,17 @@ async function getAccessToken(scopes = GRAPH_SCOPES) {
         scopes,
         account: state.graphAccount,
       });
+      lastMsalError = null;
       return result.accessToken;
     } catch (popupError) {
-      lastPopupDismissedAt = Date.now();
       console.error("Popup token acquisition failed:", popupError);
-      return null;
+      if (isPopupDismissError(popupError)) {
+        lastPopupDismissedAt = Date.now();
+        lastMsalError = null;
+        return null;
+      }
+      lastMsalError = createGraphAuthError(popupError, "interactive token acquisition");
+      throw lastMsalError;
     }
   }
 }
@@ -617,6 +660,26 @@ async function pushGraphEvent(session, project) {
     }
     throw error;
   }
+}
+
+export function __setMsalTestState({ instance = null, account = null, popupDismissedAt = 0, error = null } = {}) {
+  msalInstance = instance;
+  msalInitPromise = null;
+  lastPopupDismissedAt = popupDismissedAt;
+  lastMsalError = error;
+  setGraphAccount(account);
+}
+
+export async function __graphRequestForTests(path, options = {}) {
+  return graphRequest(path, options);
+}
+
+export async function __writeSentinelExtensionForTests(masterId, projects, userId = "me", options = {}) {
+  return writeSentinelExtension(masterId, projects, userId, options);
+}
+
+export async function __pushGraphEventForTests(session, project) {
+  return pushGraphEvent(session, project);
 }
 
 function chunkArray(items = [], size = GRAPH_BATCH_LIMIT) {

@@ -21,7 +21,6 @@ import {
   deriveProjectStatus,
   findSession,
   getAllSessions,
-  getConflictReviewSessions,
   getEditableSessions,
   getLockedPhaseSessions,
   getPhaseGateSession,
@@ -31,7 +30,6 @@ import {
   getPhaseStages,
   getProjectById,
   getProjectDateRange,
-  getPushableSessions,
   getSuggestedGoLive,
   getStageForSession,
   getWindowForPhase,
@@ -1595,18 +1593,6 @@ export function calToday() {
 
 export function readyForHandoff(project = getActiveProject()) {
   return Boolean(project && projectHasImplementationReady(project));
-}
-
-export function pushableCount(project = getActiveProject(), actor = state.actor) {
-  return getPushableSessions(project, actor).length;
-}
-
-export function visibleSessions(project = getActiveProject()) {
-  return getAllSessions(project || {});
-}
-
-export function getReviewableConflictCount(project = getActiveProject(), actor = state.actor) {
-  return getConflictReviewSessions(project, actor).length;
 }
 
 export function confirmShiftRemaining() {

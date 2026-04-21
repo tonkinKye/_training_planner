@@ -988,10 +988,6 @@ export function projectHasPendingCommit(project) {
   return deriveProjectStatus(project) === "handed_off_pending_is";
 }
 
-export function projectIsComplete(project) {
-  return false;
-}
-
 export function projectIsClosed(project) {
   return deriveProjectStatus(project) === "closed";
 }
@@ -1217,49 +1213,4 @@ export function getSuggestedGoLive(source) {
     minimumWeeksAtThreePerWeek,
     warning,
   };
-}
-
-export function mergeDeepLinkProject(existingProject, incomingProject) {
-  if (!existingProject) return normalizeProject(incomingProject);
-
-  const merged = normalizeProject({
-    ...existingProject,
-    ...incomingProject,
-    templateKey: incomingProject.templateKey || existingProject.templateKey,
-    templateLabel: incomingProject.templateLabel || existingProject.templateLabel,
-    templateCustomized: incomingProject.templateCustomized || existingProject.templateCustomized,
-    templateOriginKey: incomingProject.templateOriginKey || existingProject.templateOriginKey,
-    templateSnapshot: incomingProject.templateSnapshot || existingProject.templateSnapshot,
-    phases: {
-      setup: existingProject.phases.setup,
-      implementation: incomingProject.phases.implementation,
-      hypercare: existingProject.phases.hypercare,
-    },
-  });
-
-  const existingImplementation = getPhaseSessions(existingProject, "implementation");
-  for (const session of getPhaseSessions(merged, "implementation")) {
-    const preserved =
-      existingImplementation.find((candidate) => candidate.key && candidate.key === session.key)
-      || existingImplementation.find(
-        (candidate) =>
-          candidate.bodyKey === session.bodyKey
-          && candidate.name === session.name
-          && candidate.duration === session.duration
-      )
-      || existingImplementation.find((candidate) => candidate.name === session.name && candidate.duration === session.duration);
-
-    if (!preserved) continue;
-    session.id = preserved.id;
-    session.graphEventId = preserved.graphEventId;
-    session.graphActioned = preserved.graphActioned;
-    session.outlookActioned = preserved.outlookActioned;
-  }
-
-  merged.status = deriveProjectStatus(merged);
-  return merged;
-}
-
-export function serializeSentinelProjects(projects) {
-  return projects.map((project) => normalizeProject(project));
 }

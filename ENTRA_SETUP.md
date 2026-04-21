@@ -102,9 +102,10 @@ If that sharing is not configured:
 
 ## Values To Configure In This App
 
-After the Entra app registration is created, update:
+After the Entra app registration is created, create a local config file from the tracked template:
 
-- [js/config.js](/c:/_apps/_training_planner/js/config.js:1)
+- copy [js/config.example.js](js/config.example.js) to `js/config.js`
+- keep `js/config.js` local only; it is gitignored on purpose
 
 Set:
 
@@ -115,6 +116,7 @@ For production:
 
 - use the real tenant ID GUID
 - do **not** use `common`
+- use the tenant-choice comments in `js/config.js` as the source of truth for `organizations` vs `common`
 
 ## Recommended Production Setup
 
@@ -138,12 +140,11 @@ After setup, the app should be able to:
 - read shared IS calendar availability if sharing is configured
 - create/update calendar events for the signed-in user
 - reconcile handed-off IS state through delegated shared-calendar reads where mailbox sharing/delegate access exists
+- stay in `handed_off_pending_is` when IS mailbox sharing/delegate access is missing, because PM reconciliation cannot read the foreign calendar/sentinel without that access
 
 ## Code References
 
 The current codebase requires these settings based on:
 
-- [js/config.example.js](/c:/_apps/_training_planner/js/config.example.js:1)
-- [js/config.js](/c:/_apps/_training_planner/js/config.js:1)
-- [js/m365.js](/c:/_apps/_training_planner/js/m365.js:89)
-- [js/m365.js](/c:/_apps/_training_planner/js/m365.js:143)
+- [js/config.example.js](js/config.example.js)
+- [js/m365.js](js/m365.js)

@@ -11,7 +11,7 @@ import {
   isDateWithinPhaseWindow,
   isDateWithinStageRange,
 } from "./projects.js";
-import { parseDate, toDateStr } from "./utils.js";
+import { parseDate } from "./utils.js";
 
 function sessionInterval(session) {
   const [hours, minutes] = String(session.time || "").split(":").map(Number);
@@ -196,18 +196,6 @@ export function getConflictedDates(options = {}) {
   return [...getConflictsByDate(options).keys()].sort();
 }
 
-export function getCalendarConflictsForDate(dateString, options = {}) {
-  const project = options.project || getActiveProject();
-  const conflicts = getConflicts({ ...options, project });
-  const events = [];
-  for (const [sessionId, hits] of conflicts.entries()) {
-    const session = getAllSessions(project).find((candidate) => candidate.id === sessionId);
-    if (!session || session.date !== dateString) continue;
-    events.push(...hits);
-  }
-  return events;
-}
-
 export function getConflictSummary(options = {}) {
   const conflicts = getConflicts(options);
   const dates = new Set();
@@ -244,18 +232,4 @@ export function getConflictSummary(options = {}) {
     availabilitySessions,
     label: parts.join(" | "),
   };
-}
-
-export function isPastDateTime(dateString, timeString) {
-  if (!dateString || !timeString) return false;
-  const now = new Date();
-  const slot = parseDate(dateString);
-  const [hours, minutes] = timeString.split(":").map(Number);
-  slot.setHours(hours, minutes, 0, 0);
-  return slot < now;
-}
-
-export function normalizeEventDate(dateTimeString) {
-  const date = new Date(dateTimeString);
-  return Number.isNaN(date.getTime()) ? "" : toDateStr(date);
 }

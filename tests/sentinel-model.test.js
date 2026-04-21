@@ -38,6 +38,34 @@ test("legacy v1 sentinel payloads still inflate into runtime projects with deriv
   assert.equal(projects[0].reconciliationState, "not_applicable");
 });
 
+test("v1 sentinel payloads built from normalized project arrays remain readable", () => {
+  const project = makeProject();
+  const implementationStage = getPhaseStages(project, "implementation")[0];
+  implementationStage.sessions[0].graphEventId = "evt-legacy";
+  implementationStage.sessions[0].graphActioned = true;
+  project.lifecycleState = "is_active";
+  project.reconciliationState = "drift_detected";
+  project.reconciliation = {
+    state: "drift_detected",
+    lastAttemptedAt: "2099-05-12T00:00:00.000Z",
+    lastSuccessfulAt: "",
+    lastFailureAt: "2099-05-12T00:00:00.000Z",
+    lastFailureMessage: "legacy",
+  };
+
+  const projects = parseSentinelProjects({
+    version: 1,
+    updatedAt: "2099-05-12T00:00:00.000Z",
+    projects: [project],
+  });
+
+  assert.equal(projects.length, 1);
+  assert.equal(projects[0].id, project.id);
+  assert.equal(projects[0].phases.implementation.stages[0].sessions[0].graphEventId, "evt-legacy");
+  assert.equal(projects[0].lifecycleState, "draft");
+  assert.equal(projects[0].reconciliationState, "not_applicable");
+});
+
 test("v2 sentinel payloads preserve explicit lifecycle and reconciliation metadata", () => {
   const project = makeProject();
   const implementationStage = getPhaseStages(project, "implementation")[0];
