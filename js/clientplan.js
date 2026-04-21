@@ -1,7 +1,7 @@
 import { PRODUCT_NAME } from "./runtime-config.js";
 import { getActorDisplayName, getCalendarOwnerName, getPhaseStages, getProjectTemplateLabel, PHASE_META, PHASE_ORDER } from "./projects.js";
 import { getSessionBody } from "./session-templates.js";
-import { esc, fmt12, fmtDateLong, fmtDur, toDateStr } from "./utils.js";
+import { esc, fmt12, fmtDateLong, fmtDur, getSessionDurationMinutes, toDateStr } from "./utils.js";
 
 function getClientPlanSessions(project) {
   const sessions = [];
@@ -15,7 +15,7 @@ function getClientPlanSessions(project) {
           name: session.name,
           date: session.date || "",
           time: session.time || "",
-          duration: session.duration,
+          durationMinutes: getSessionDurationMinutes(session),
           phaseKey,
           stageLabel: stage.label || "",
           bodyText: rawBody.replace(/\{\{Consultant Name\}\}/g, ownerName || "Your Consultant"),
@@ -37,7 +37,7 @@ function buildProgressData(sessions) {
 
 function buildSessionHTML(session) {
   const dateTime = session.date
-    ? `${esc(fmtDateLong(session.date))}${session.time ? `, ${esc(fmt12(session.time))}` : ""} (${esc(fmtDur(session.duration))})`
+    ? `${esc(fmtDateLong(session.date))}${session.time ? `, ${esc(fmt12(session.time))}` : ""} (${esc(fmtDur(session.durationMinutes))})`
     : "To be confirmed";
 
   return `<article class="tp-doc-session${session.isGoLive ? " tp-doc-session-milestone" : ""}" data-session-date="${esc(session.date)}">

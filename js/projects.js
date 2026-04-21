@@ -1,5 +1,5 @@
 import { getTemplateDefinition, getTemplateLabel, getTemplateOptions } from "./session-templates.js";
-import { parseDate, toDateStr } from "./utils.js";
+import { getSessionDurationMinutes, parseDate, toDateStr } from "./utils.js";
 import { uid } from "./state.js";
 import { getCalendarOwnerForPhase as getPhaseCalendarOwner } from "./calendar-sources.js";
 
@@ -160,14 +160,13 @@ function makeSession(definition, index, phaseKey = definition?.phase || "impleme
     : definition?.bodyKey === null
       ? null
       : String(definition?.bodyKey || "").trim() || null;
-  const duration = Number(definition?.duration ?? definition?.durationMinutes) || 90;
+  const durationMinutes = getSessionDurationMinutes(definition);
   return {
     id: definition?.id || uid(),
     key,
     bodyKey,
     name: String(definition?.name || "").trim(),
-    duration,
-    durationMinutes: duration,
+    durationMinutes,
     phase: phaseKey,
     stageKey,
     owner: definition?.owner || PHASE_META[phaseKey].owner,
@@ -252,7 +251,7 @@ function normalizeProjectOrders(project) {
         session.phase = phaseKey;
         session.stageKey = stage.key;
         session.calendarSource = project?.phases?.[phaseKey]?.calendarSource || session.calendarSource || PHASE_META[phaseKey].owner;
-        session.durationMinutes = Number(session.durationMinutes ?? session.duration) || 90;
+        session.durationMinutes = getSessionDurationMinutes(session);
         grandOrder += 1;
         phaseOrder += 1;
       });
@@ -289,7 +288,7 @@ function buildMigrationCandidates(source, phaseKey) {
       key: session.key,
       bodyKey: session.bodyKey || session.key || "",
       name: session.name,
-      duration: session.durationMinutes || session.duration,
+      duration: getSessionDurationMinutes(session),
       used: false,
     }))
   );
@@ -624,11 +623,6 @@ export function getPhaseStages(project, phaseKey) {
   return (project?.phases?.[phaseKey]?.stages || []).slice().sort((left, right) => left.order - right.order || left.label.localeCompare(right.label));
 }
 
-export function getStageSessions(project, phaseKey, stageKey) {
-  const stage = getPhaseStages(project, phaseKey).find((candidate) => candidate.key === stageKey);
-  return stage?.sessions || [];
-}
-
 export function getPhaseSessions(project, phaseKey) {
   return getPhaseStages(project, phaseKey).flatMap((stage) => stage.sessions);
 }
@@ -752,18 +746,6 @@ export function moveSession(project, sessionId, direction) {
 export function touchProject(project) {
   project.updatedAt = new Date().toISOString();
   return syncProjectRuntimeState(project);
-}
-
-export function getPhaseRange(project, phaseKey) {
-  const dated = getPhaseDates(project, phaseKey);
-  if (!dated.length) return "";
-  if (dated.length === 1) return dated[0];
-  return `${dated[0]}:${dated[dated.length - 1]}`;
-}
-
-export function getPhaseSpanWeeks(project, phaseKey) {
-  const dates = getPhaseDates(project, phaseKey);
-  return dates.length ? weeksBetween(dates[0], dates[dates.length - 1]) : 0;
 }
 
 export function getPhaseSummary(project, phaseKey) {
@@ -944,28 +926,6 @@ export function getPushableSessions(project, actor) {
   );
 }
 
-export function getSchedulableSessions(project, actor = "pm") {
-  return getAllSessions(project).filter((session) => canEditSession(project, session, actor));
-}
-
-export function getProjectAnchor(project) {
-  return getLockedPhaseSessions(project, "implementation")[0] || null;
-}
-
-export function getHypercareWindowDates(project) {
-  const window = getWindowForPhase(project, "hypercare");
-  if (!window.min || !window.max) return [];
-
-  const dates = [];
-  let cursor = parseDate(window.min);
-  const endDate = parseDate(window.max);
-  while (cursor <= endDate) {
-    dates.push(toDateStr(cursor));
-    cursor = addDays(cursor, 1);
-  }
-  return dates;
-}
-
 export function getActorDisplayName(project, actor) {
   if (actor === "is") return project?.isName || "Implementation Specialist";
   if (actor === "shared") return "Shared";
@@ -982,14 +942,6 @@ export function getCalendarOwnerName(project, phaseKey) {
 export function projectHasImplementationReady(project) {
   const sessions = getPhaseSessions(project, "implementation");
   return sessions.length > 0 && sessions.every((session) => session.date && session.time);
-}
-
-export function projectHasPendingCommit(project) {
-  return deriveProjectStatus(project) === "handed_off_pending_is";
-}
-
-export function projectIsClosed(project) {
-  return deriveProjectStatus(project) === "closed";
 }
 
 export function deriveProjectLifecycleState(project) {
@@ -1081,14 +1033,6 @@ export function getProjectCounts(project) {
   return {
     total: sessions.length,
     scheduled,
-  };
-}
-
-export function getProjectContextSummary(project) {
-  return {
-    setup: getPhaseSummary(project, "setup"),
-    hypercare: getPhaseSummary(project, "hypercare"),
-    goLiveDate: project.goLiveDate,
   };
 }
 

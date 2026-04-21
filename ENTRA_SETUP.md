@@ -100,6 +100,7 @@ After the Entra app registration is created, update the tracked runtime config:
 - edit [js/config.js](js/config.js)
 - `index.html` loads `js/config.js` before the app, so the committed file is the active runtime bootstrap
 - use [js/config.example.js](js/config.example.js) as the clean placeholder/reference copy if you need to rebuild the file
+- the tracked repo default is currently a dev setup using `GRAPH_TENANT_ID: "common"`; replace it before any production deployment
 
 Set:
 

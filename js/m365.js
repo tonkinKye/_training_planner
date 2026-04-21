@@ -16,7 +16,7 @@ import {
   syncProjectRuntimeState,
 } from "./projects.js";
 import { buildSentinelProjectRecord, createSentinelPayload, parseSentinelProjects } from "./sentinel-model.js";
-import { esc, getLocalTimeZone, pad, toast, toDateStr } from "./utils.js";
+import { esc, getLocalTimeZone, getSessionDurationMinutes, pad, toast, toDateStr } from "./utils.js";
 
 const GRAPH_TIMEOUT_MS = 30000;
 const SENTINEL_LOOKBACK_COUNT = 25;
@@ -27,7 +27,6 @@ const PROJECT_ID_EXTENDED_PROPERTY_ID = "String {f4a0b90d-bf6d-4a31-a38d-7f2cdb9
 let msalInstance = null;
 let msalInitPromise = null;
 let lastPopupDismissedAt = 0;
-let lastMsalError = null;
 
 function hasGraphConfig() {
   return !isPlaceholderGraphValue(GRAPH_CLIENT_ID) && !isPlaceholderGraphValue(GRAPH_TENANT_ID);
@@ -137,15 +136,12 @@ async function initMsal() {
     } else {
       setAuthStatus("idle");
     }
-    lastMsalError = null;
-
     return msalInstance;
   })().catch((error) => {
     console.error("MSAL init failed:", error);
     setAuthStatus("error", error.message || String(error));
-    lastMsalError = createGraphAuthError(error, "MSAL initialization");
     msalInstance = null;
-    return null;
+    throw createGraphAuthError(error, "MSAL initialization");
   }).finally(() => {
     msalInitPromise = null;
   });
@@ -155,10 +151,7 @@ async function initMsal() {
 
 async function getAccessToken(scopes = GRAPH_SCOPES) {
   const instance = await initMsal();
-  if (!instance) {
-    if (lastMsalError) throw lastMsalError;
-    return null;
-  }
+  if (!instance) return null;
   if (!state.graphAccount) return null;
 
   try {
@@ -166,7 +159,6 @@ async function getAccessToken(scopes = GRAPH_SCOPES) {
       scopes,
       account: state.graphAccount,
     });
-    lastMsalError = null;
     return result.accessToken;
   } catch (silentError) {
     console.warn("Silent token acquisition failed:", silentError);
@@ -178,17 +170,14 @@ async function getAccessToken(scopes = GRAPH_SCOPES) {
         scopes,
         account: state.graphAccount,
       });
-      lastMsalError = null;
       return result.accessToken;
     } catch (popupError) {
       console.error("Popup token acquisition failed:", popupError);
       if (isPopupDismissError(popupError)) {
         lastPopupDismissedAt = Date.now();
-        lastMsalError = null;
         return null;
       }
-      lastMsalError = createGraphAuthError(popupError, "interactive token acquisition");
-      throw lastMsalError;
+      throw createGraphAuthError(popupError, "interactive token acquisition");
     }
   }
 }
@@ -614,7 +603,7 @@ export function buildEventPayload(project, session) {
   const [year, month, day] = session.date.split("-").map(Number);
   const [hours, minutes] = session.time.split(":").map(Number);
   const start = new Date(year, month - 1, day, hours, minutes, 0);
-  const end = new Date(start.getTime() + session.duration * 60000);
+  const end = new Date(start.getTime() + getSessionDurationMinutes(session) * 60000);
   const event = {
     subject: buildSubject(project, session),
     body: {
@@ -685,23 +674,35 @@ async function pushGraphEvent(session, project) {
   }
 }
 
+function isNodeTestEnvironment() {
+  return Boolean(typeof process !== "undefined" && process?.versions?.node);
+}
+
+function assertTestHookAvailable() {
+  if (isNodeTestEnvironment()) return;
+  throw new Error("test-only hook unavailable in browser");
+}
+
 export function __setMsalTestState({ instance = null, account = null, popupDismissedAt = 0, error = null } = {}) {
+  assertTestHookAvailable();
   msalInstance = instance;
   msalInitPromise = null;
   lastPopupDismissedAt = popupDismissedAt;
-  lastMsalError = error;
   setGraphAccount(account);
 }
 
 export async function __graphRequestForTests(path, options = {}) {
+  assertTestHookAvailable();
   return graphRequest(path, options);
 }
 
 export async function __writeSentinelExtensionForTests(masterId, projects, userId = "me", options = {}) {
+  assertTestHookAvailable();
   return writeSentinelExtension(masterId, projects, userId, options);
 }
 
 export async function __pushGraphEventForTests(session, project) {
+  assertTestHookAvailable();
   return pushGraphEvent(session, project);
 }
 
@@ -727,7 +728,7 @@ function buildSessionEndValue(session) {
   const [year, month, day] = String(session.date).split("-").map(Number);
   const [hours, minutes] = String(session.time).split(":").map(Number);
   const start = new Date(year, (month || 1) - 1, day || 1, hours || 0, minutes || 0, 0);
-  const end = new Date(start.getTime() + (Number(session.duration) || 0) * 60000);
+  const end = new Date(start.getTime() + getSessionDurationMinutes(session, 0) * 60000);
   return toIsoLocal(end);
 }
 
@@ -766,8 +767,7 @@ function applyGraphEventToSession(session, event = {}) {
   session.lastKnownEnd = liveEnd;
   if (parts.date) session.date = parts.date;
   if (parts.time) session.time = parts.time;
-  session.duration = getDurationFromGraphWindow(liveStart, liveEnd, session.duration);
-  session.durationMinutes = session.duration;
+  session.durationMinutes = getDurationFromGraphWindow(liveStart, liveEnd, getSessionDurationMinutes(session));
 }
 
 async function batchFetchEventsById(eventIds = [], { userId = "me", graphRequestImpl = graphRequest } = {}) {
@@ -1637,7 +1637,15 @@ export async function toggleAuth() {
     return false;
   }
 
-  const instance = await initMsal();
+  let instance;
+  try {
+    instance = await initMsal();
+  } catch (error) {
+    console.error("MSAL bootstrap failed:", error);
+    setAuthStatus("error", error.message || String(error));
+    toast(`Sign-in failed: ${error.message || error}`, 5000);
+    return false;
+  }
   if (!instance) return false;
 
   if (state.graphAccount) {
@@ -1674,7 +1682,14 @@ export async function toggleAuth() {
 }
 
 export async function bootstrapMsal() {
-  const instance = await initMsal();
+  let instance;
+  try {
+    instance = await initMsal();
+  } catch (error) {
+    console.error("MSAL bootstrap failed:", error);
+    setScreen("auth");
+    return null;
+  }
   if (!instance) return null;
 
   if (state.graphAccount) {

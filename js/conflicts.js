@@ -11,13 +11,13 @@ import {
   isDateWithinPhaseWindow,
   isDateWithinStageRange,
 } from "./projects.js";
-import { parseDate } from "./utils.js";
+import { getSessionDurationMinutes, parseDate } from "./utils.js";
 
 function sessionInterval(session) {
   const [hours, minutes] = String(session.time || "").split(":").map(Number);
   const start = parseDate(session.date);
   start.setHours(hours || 0, minutes || 0, 0, 0);
-  const end = new Date(start.getTime() + session.duration * 60000);
+  const end = new Date(start.getTime() + getSessionDurationMinutes(session) * 60000);
   return { start, end };
 }
 

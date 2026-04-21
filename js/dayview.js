@@ -11,7 +11,7 @@ import {
   getVisiblePhaseKeys,
   PHASE_META,
 } from "./projects.js";
-import { esc, fmt12, fmtDur, mondayOf, pad, parseDate, toDateStr, toast } from "./utils.js";
+import { esc, fmt12, fmtDur, getSessionDurationMinutes, mondayOf, pad, parseDate, toDateStr, toast } from "./utils.js";
 
 const SLOT_HEIGHT = 28;
 const SLOT_COUNT = 24;
@@ -224,7 +224,7 @@ function renderSessionBlock(project, block, conflicts) {
   const conflictHits = conflicts.get(session.id) || [];
   const conflictSummary = summarizeConflictKinds(conflictHits);
   const startMinutes = minutesFromTime(session.time);
-  const height = heightPx(session.duration, startMinutes);
+  const height = heightPx(getSessionDurationMinutes(session), startMinutes);
   if (!height) return "";
 
   const classes = [
@@ -244,7 +244,7 @@ function renderSessionBlock(project, block, conflicts) {
     editable ? `draggable="true" data-drag="dayview-session" data-id="${session.id}"` : ""
   } style="top:${topPx(startMinutes)}px;height:${height}px;" title="${esc(session.name)}&#10;${fmt12(
     session.time
-  )} | ${fmtDur(session.duration)}${stageLabel ? ` | ${esc(stageLabel)}` : ""}${conflictSummary.label ? ` | ${esc(conflictSummary.label)}` : ""}">
+  )} | ${fmtDur(getSessionDurationMinutes(session))}${stageLabel ? ` | ${esc(stageLabel)}` : ""}${conflictSummary.label ? ` | ${esc(conflictSummary.label)}` : ""}">
     <strong>${esc(session.name)}</strong>
     ${stageLabel ? `<small>${esc(stageLabel)}</small>` : ""}
     <span>${fmt12(session.time)}</span>

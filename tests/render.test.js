@@ -5,7 +5,7 @@ import { createOnboardingDraft, createProjectFromDraft, getPhaseStages } from ".
 import { createBlankTemplate } from "../js/session-templates.js";
 import { buildRenderSnapshot, getKanbanColumns, getPhaseSectionKey, getStageSectionKey, getTemplatePhaseTimelineLayout, updateRenderSlot } from "../js/render.js";
 import { resetAppState, state } from "../js/state.js";
-import { fmtDur } from "../js/utils.js";
+import { fmtDur, getSessionDurationMinutes } from "../js/utils.js";
 
 test("render slot updater skips rewriting unchanged markup", () => {
   const slot = {
@@ -64,7 +64,7 @@ test("workspace phase and stage panels are collapsed by default and expose summa
     state.ui.expandedPhaseSections = new Set();
     state.ui.expandedStageSections = new Set();
 
-    const expectedStageDuration = fmtDur((setupStage.sessions || []).reduce((total, session) => total + session.duration, 0));
+    const expectedStageDuration = fmtDur((setupStage.sessions || []).reduce((total, session) => total + getSessionDurationMinutes(session), 0));
     const expectedSetupScheduled = `${setupSessions.filter((session) => session.date && session.time).length} / ${setupSessions.length}`;
     const expandedSessionField = `data-action="setSessionDate" data-id="${setupStage.sessions[0].id}"`;
 

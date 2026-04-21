@@ -28,7 +28,7 @@ import {
 } from "./projects.js";
 import { getSmartAvailabilityState, readyForHandoff } from "./scheduler.js";
 import { getTemplateEditorEntity, getTemplateEditorPreview, getTemplateEditorSelection } from "./template-editor.js";
-import { esc, fmt12, fmtDur, getTimeOptionsHTML, mondayOf, parseDate, timeAgo, toDateStr } from "./utils.js";
+import { esc, fmt12, fmtDur, getSessionDurationMinutes, getTimeOptionsHTML, mondayOf, parseDate, timeAgo, toDateStr } from "./utils.js";
 
 const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
 const STATUS_PRIORITY = { draft: 0, pm_scheduled: 1, handed_off_pending_is: 2, is_active: 3, closed: 4 };
@@ -128,7 +128,7 @@ function getDatedRange(sessions) {
 }
 
 function getDurationTotal(sessions) {
-  return sessions.reduce((total, session) => total + (Number(session.duration) || 0), 0);
+  return sessions.reduce((total, session) => total + getSessionDurationMinutes(session, 0), 0);
 }
 
 function getOwnerSummary(project, sessions, fallbackOwner = "") {
@@ -258,7 +258,7 @@ function renderSessionRowsForStages(source, phaseKey, moveAction, removeAction, 
         ${sessions
           .map(
             (session) => `<div class="tp-settings-row"><div><strong>${esc(session.name)}</strong><small>${fmtDur(
-              session.duration
+              getSessionDurationMinutes(session)
             )} | ${session.owner === "is" ? "IS" : "PM"} | ${esc(session.type)}</small></div><div class="tp-quick-row">${session.lockedDate ? '<span class="tp-pill tp-pill-muted">System Managed</span>' : !editable ? '<span class="tp-pill tp-pill-muted">Read Only</span>' : `<button class="btn-default btn-sm" data-action="${moveAction}" data-id="${session.id}" data-dir="-1">Up</button><button class="btn-default btn-sm" data-action="${moveAction}" data-id="${session.id}" data-dir="1">Down</button><button class="btn-danger btn-sm" data-action="${removeAction}" data-id="${session.id}">Remove</button>`}</div></div>`
           )
           .join("")}
@@ -734,7 +734,7 @@ function sessionRow(project, session, context = false, isNextUp = false) {
     <div class="sc-fields">
       <label class="tp-field tp-field-compact"><span>Date</span><input class="tp-mono" type="date" value="${session.date || ""}" ${dateDisabled} data-action="setSessionDate" data-id="${session.id}"></label>
       <label class="tp-field tp-field-compact"><span>Time</span><select class="tp-mono" ${timeDisabled} data-action="setSessionTime" data-id="${session.id}">${getTimeOptionsHTML(session.time || "")}</select></label>
-      <label class="tp-field tp-field-compact"><span>Duration</span><select class="tp-mono" ${durationDisabled} data-action="setSessionDuration" data-id="${session.id}">${DURATION_OPTIONS.map((m) => `<option value="${m}"${m === session.duration ? " selected" : ""}>${fmtDur(m)}</option>`).join("")}</select></label>
+      <label class="tp-field tp-field-compact"><span>Duration</span><select class="tp-mono" ${durationDisabled} data-action="setSessionDuration" data-id="${session.id}">${DURATION_OPTIONS.map((m) => `<option value="${m}"${m === getSessionDurationMinutes(session) ? " selected" : ""}>${fmtDur(m)}</option>`).join("")}</select></label>
     </div>
   </article>`;
 }
@@ -863,7 +863,7 @@ function calendarPanel(project) {
   }
   return `<section class="tp-cal-panel">
     <div class="tp-panel-head"><div><h2>Calendar</h2><p>${conflictSummary.sessions ? `${conflictSummary.sessions} sessions need review${conflictSummary.label ? ` | ${esc(conflictSummary.label)}` : ""}` : "Drop sessions onto a day or open week view."}</p></div></div>
-    <div class="tp-unscheduled"><strong>Unscheduled</strong><div class="tp-unscheduled-list">${unscheduled.length ? unscheduled.map((s) => `<div class="cal-event ${getCalendarEventClass(s.phase)}" draggable="true" data-drag="session" data-id="${s.id}">${esc(s.name)} <small>${fmtDur(s.duration)}</small></div>`).join("") : '<span class="tp-muted">All editable sessions are scheduled.</span>'}</div></div>
+    <div class="tp-unscheduled"><strong>Unscheduled</strong><div class="tp-unscheduled-list">${unscheduled.length ? unscheduled.map((s) => `<div class="cal-event ${getCalendarEventClass(s.phase)}" draggable="true" data-drag="session" data-id="${s.id}">${esc(s.name)} <small>${fmtDur(getSessionDurationMinutes(s))}</small></div>`).join("") : '<span class="tp-muted">All editable sessions are scheduled.</span>'}</div></div>
     <div class="tp-calendar-nav"><button class="btn-default btn-sm" data-action="calShift" data-dir="-1">Prev</button><button class="btn-default btn-sm" data-action="calToday">Today</button><button class="btn-default btn-sm" data-action="calShift" data-dir="1">Next</button></div>
     <div class="tp-calendar-scroll"><div class="tp-calendar-grid" style="grid-template-columns:32px repeat(${cols},1fr);"><div class="tp-week-spacer"></div>${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].slice(0, cols).map((d) => `<div class="tp-cal-head">${d}</div>`).join("")}${Array.from({ length: weeks }).map((_, week) => `<div class="tp-week-label">W${week + 1}</div>${cells.slice(week * cols, week * cols + cols).map((cell) => `<div class="tp-cal-day${cell.inRange ? " cal-day-range" : ""}${cell.today ? " cal-day-today" : ""}${cell.hasCalendarConflict || cell.hasWindowConflict || cell.hasAvailabilityConflict ? " cal-day-conflict" : ""}${cell.sessions.length ? " cal-day-has-session" : ""}" data-drop data-date="${cell.dateString}"><button class="tp-cal-date" data-action="openDayView" data-date="${cell.dateString}">${cell.date.getDate()}</button><div class="tp-cal-events">${cell.sessions.map((s) => `<div class="cal-event ${getCalendarEventClass(s.phase)}${canEditSession(project, s, state.actor) ? "" : " is-context"}${!s.time && s.availabilityConflict === true ? " is-needs-time" : ""}${s.date && s.date < toDateStr(new Date()) ? " is-past" : ""}" ${canEditSession(project, s, state.actor) && !s.lockedDate ? `draggable="true" data-drag="session" data-id="${s.id}"` : ""}><span>${esc(s.name)}</span><small>${esc(fmtTimeLabel(s.time))}</small></div>`).join("")}</div></div>`).join("")}`).join("")}</div></div>
   </section>`;

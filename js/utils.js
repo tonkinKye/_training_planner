@@ -15,17 +15,13 @@ export function fmtDur(minutes) {
   return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
 }
 
+export function getSessionDurationMinutes(session, fallback = 90) {
+  return Number(session?.durationMinutes ?? session?.duration) || fallback;
+}
+
 export function parseDate(dateString) {
   const [year, month, day] = String(dateString).split("-").map(Number);
   return new Date(year, month - 1, day);
-}
-
-export function fmtDateShort(dateString) {
-  return parseDate(dateString).toLocaleDateString("en-AU", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
 }
 
 export function fmtDateLong(dateString) {
@@ -107,11 +103,6 @@ export function toast(message, duration = 2700, action = null) {
   element.classList.add("is-visible");
   clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => element.classList.remove("is-visible"), duration);
-}
-
-export function closeModal(id) {
-  const element = document.getElementById(id);
-  if (element) element.classList.remove("is-open");
 }
 
 export function downloadBlob(contents, filename, mimeType) {

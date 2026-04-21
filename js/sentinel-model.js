@@ -10,7 +10,7 @@ function buildSessionRecord(session = {}, { identityOnly = false } = {}) {
     key: session.key || "",
     bodyKey: session.bodyKey ?? null,
     name: session.name || "",
-    duration: Number(session.duration) || Number(session.durationMinutes) || 90,
+    duration: Number(session.durationMinutes ?? session.duration) || 90,
     phase: session.phase || "",
     stageKey: session.stageKey || "",
     owner: session.owner || "",

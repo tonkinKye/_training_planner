@@ -12,6 +12,7 @@ function makeSession(overrides = {}) {
     id: `scheduler-test-${nextId++}`,
     key: "test_session",
     name: "Test",
+    durationMinutes: 90,
     duration: 90,
     phase: "setup",
     stageKey: "s1",

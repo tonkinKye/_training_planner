@@ -149,18 +149,6 @@ export function templateEditorHasDraftChanges() {
   return Boolean(state.ui.templateEditor.draftDirty);
 }
 
-export function getTemplateLibraryOptions() {
-  return state.templateLibrary.map((template, index) => ({
-    key: template.key,
-    label: template.label,
-    index,
-  }));
-}
-
-export function getTemplateEditorDraft() {
-  return state.ui.templateEditor.draft;
-}
-
 export function getTemplateEditorSelection() {
   return state.ui.templateEditor.selection || createSelection();
 }

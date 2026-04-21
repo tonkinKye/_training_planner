@@ -1,6 +1,7 @@
 import { SESSION_BODIES } from "./session-bodies.js";
 import {
   buildSessionTemplatesModuleSource,
+  createTemplateRuntimeHelpers,
   createBlankTemplate,
   normalizeEditableTemplate,
   normalizeEditableTemplateLibrary,
@@ -601,73 +602,19 @@ export const BUILT_IN_TEMPLATES = [
   }),
 ];
 
-const BUILT_IN_TEMPLATE_LIBRARY = normalizeTemplateLibrary(BUILT_IN_TEMPLATES);
-const EDITABLE_TEMPLATE_LIBRARY = normalizeEditableTemplateLibrary(BUILT_IN_TEMPLATES);
+const TEMPLATE_RUNTIME = createTemplateRuntimeHelpers(BUILT_IN_TEMPLATES, SESSION_BODIES);
 
-function cloneValue(value) {
-  return typeof structuredClone === "function"
-    ? structuredClone(value)
-    : JSON.parse(JSON.stringify(value));
-}
-
-export function getBuiltInTemplates() {
-  return cloneValue(EDITABLE_TEMPLATE_LIBRARY);
-}
-
-export function getTemplateLibrary() {
-  return cloneValue(BUILT_IN_TEMPLATE_LIBRARY);
-}
-
-export function getRawTemplateDefinition(templateKey) {
-  return cloneValue(
-    BUILT_IN_TEMPLATES.find((template) => template.key === templateKey)
-      || BUILT_IN_TEMPLATES.find((template) => template.key === "custom")
-      || BUILT_IN_TEMPLATES[0]
-  );
-}
-
-export function getTemplateDefinition(templateKey, { templateSnapshot = null } = {}) {
-  if (templateSnapshot) return normalizeTemplate(templateSnapshot);
-  return cloneValue(
-    BUILT_IN_TEMPLATE_LIBRARY.byKey[templateKey]
-      || BUILT_IN_TEMPLATE_LIBRARY.byKey.custom
-      || BUILT_IN_TEMPLATE_LIBRARY.templates[0]
-  );
-}
-
-export function getTemplatePhases(templateKey, options = {}) {
-  return cloneValue(getTemplateDefinition(templateKey, options).phaseMap || {});
-}
-
-export function getTemplateSessions(templateKey, options = {}) {
-  return cloneValue(getTemplateDefinition(templateKey, options).sessions || []);
-}
-
-export function getTemplateOptions() {
-  return BUILT_IN_TEMPLATE_LIBRARY.templates.map((template) => ({
-    key: template.key,
-    label: template.label,
-  }));
-}
-
-export function getTemplateLabel(templateKey) {
-  return getTemplateDefinition(templateKey)?.label || getTemplateDefinition("custom")?.label || "Custom";
-}
-
-export function getSessionBody(sessionKey, sessionName) {
-  return (
-    SESSION_BODIES[sessionKey]
-    || `This session covers ${sessionName}.\n\nPlease come prepared with relevant examples, open questions, and any required system access.`
-  );
-}
-
-export function getTemplateReviewJSON(templates = BUILT_IN_TEMPLATES) {
-  return JSON.stringify(templates, null, 2);
-}
-
-export function serializeTemplateLibrarySource(templates = BUILT_IN_TEMPLATES) {
-  return buildSessionTemplatesModuleSource(templates);
-}
+export const getBuiltInTemplates = (...args) => TEMPLATE_RUNTIME.getBuiltInTemplates(...args);
+export const getTemplateLibrary = (...args) => TEMPLATE_RUNTIME.getTemplateLibrary(...args);
+export const getRawTemplateDefinition = (...args) => TEMPLATE_RUNTIME.getRawTemplateDefinition(...args);
+export const getTemplateDefinition = (...args) => TEMPLATE_RUNTIME.getTemplateDefinition(...args);
+export const getTemplatePhases = (...args) => TEMPLATE_RUNTIME.getTemplatePhases(...args);
+export const getTemplateSessions = (...args) => TEMPLATE_RUNTIME.getTemplateSessions(...args);
+export const getTemplateOptions = (...args) => TEMPLATE_RUNTIME.getTemplateOptions(...args);
+export const getTemplateLabel = (...args) => TEMPLATE_RUNTIME.getTemplateLabel(...args);
+export const getSessionBody = (...args) => TEMPLATE_RUNTIME.getSessionBody(...args);
+export const getTemplateReviewJSON = (...args) => TEMPLATE_RUNTIME.getTemplateReviewJSON(...args);
+export const serializeTemplateLibrarySource = (...args) => TEMPLATE_RUNTIME.serializeTemplateLibrarySource(...args);
 
 export {
   buildSessionTemplatesModuleSource,

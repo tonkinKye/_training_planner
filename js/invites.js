@@ -2,7 +2,7 @@ import { PRODUCT_NAME } from "./runtime-config.js";
 import { getActiveProject } from "./state.js";
 import { findSession, getCalendarOwnerName, PHASE_META } from "./projects.js";
 import { getSessionBody } from "./session-templates.js";
-import { addMins, esc, fmt12, fmtDateLong, fmtDur, toast } from "./utils.js";
+import { addMins, esc, fmt12, fmtDateLong, fmtDur, getSessionDurationMinutes, toast } from "./utils.js";
 
 function getCurrentProjectSession(sessionId) {
   const project = getActiveProject();
@@ -58,7 +58,7 @@ export function buildBodyHTML(project, session) {
   const metaRows = [
     { label: "Phase", value: phaseLabel },
     { label: "Date", value: dateText },
-    { label: "Time", value: `${timeText} (${fmtDur(session.duration)})` },
+    { label: "Time", value: `${timeText} (${fmtDur(getSessionDurationMinutes(session))})` },
     { label: "Location", value: project.location || "To be advised" },
   ];
 
@@ -121,7 +121,7 @@ export function buildBodyPlain(project, session) {
     "=".repeat(Math.max(subject.length, 48)),
     `Phase:    ${PHASE_META[session.phase]?.label || "Session"}`,
     `Date:     ${dateText}`,
-    `Time:     ${timeText} (${fmtDur(session.duration)})`,
+    `Time:     ${timeText} (${fmtDur(getSessionDurationMinutes(session))})`,
     project.location && !isUrl ? `Location: ${project.location}` : null,
     attendees.length ? `To:       ${attendees.join(", ")}` : null,
     "-".repeat(48),
@@ -141,7 +141,7 @@ export function outlookURL(project, session) {
   const params = [
     `subject=${encodeURIComponent(buildSubject(project, session))}`,
     `startdt=${encodeURIComponent(`${session.date}T${session.time}:00`)}`,
-    `enddt=${encodeURIComponent(addMins(session.date, session.time, session.duration))}`,
+    `enddt=${encodeURIComponent(addMins(session.date, session.time, getSessionDurationMinutes(session)))}`,
     "ismeeting=1",
   ];
 

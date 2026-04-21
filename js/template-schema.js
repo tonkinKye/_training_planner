@@ -369,7 +369,6 @@ function normalizeSession(rawSession, phase, stage, sessionOrder, phaseOrder, gr
     key,
     name: asTrimmedString(rawSession?.name),
     durationMinutes: Number(rawSession?.durationMinutes) || 90,
-    duration: Number(rawSession?.durationMinutes) || 90,
     type: VALID_SESSION_TYPES.has(rawSession?.type) ? rawSession.type : "external",
     owner: VALID_OWNERS.has(rawSession?.owner) ? rawSession.owner : phase.owner,
     bodyKey,
@@ -623,73 +622,100 @@ function formatValue(value, indentLevel = 0) {
   return formatScalar(value);
 }
 
-const SESSION_TEMPLATES_MODULE_FOOTER = `
+const TEMPLATE_RUNTIME_EXPORT_NAMES = [
+  "getBuiltInTemplates",
+  "getTemplateLibrary",
+  "getRawTemplateDefinition",
+  "getTemplateDefinition",
+  "getTemplatePhases",
+  "getTemplateSessions",
+  "getTemplateOptions",
+  "getTemplateLabel",
+  "getSessionBody",
+  "getTemplateReviewJSON",
+  "serializeTemplateLibrarySource",
+];
 
-const BUILT_IN_TEMPLATE_LIBRARY = normalizeTemplateLibrary(BUILT_IN_TEMPLATES);
-const EDITABLE_TEMPLATE_LIBRARY = normalizeEditableTemplateLibrary(BUILT_IN_TEMPLATES);
+export function createTemplateRuntimeHelpers(rawTemplates = [], sessionBodies = {}) {
+  const builtInTemplateLibrary = normalizeTemplateLibrary(rawTemplates);
+  const editableTemplateLibrary = normalizeEditableTemplateLibrary(rawTemplates);
 
-function cloneValue(value) {
-  return typeof structuredClone === "function"
-    ? structuredClone(value)
-    : JSON.parse(JSON.stringify(value));
+  function getRawTemplate(templateKey) {
+    return cloneValue(
+      rawTemplates.find((template) => template.key === templateKey)
+        || rawTemplates.find((template) => template.key === "custom")
+        || rawTemplates[0]
+    );
+  }
+
+  function getNormalizedTemplate(templateKey, { templateSnapshot = null } = {}) {
+    if (templateSnapshot) return normalizeTemplate(templateSnapshot);
+    return cloneValue(
+      builtInTemplateLibrary.byKey[templateKey]
+        || builtInTemplateLibrary.byKey.custom
+        || builtInTemplateLibrary.templates[0]
+    );
+  }
+
+  return {
+    getBuiltInTemplates() {
+      return cloneValue(editableTemplateLibrary);
+    },
+    getTemplateLibrary() {
+      return cloneValue(builtInTemplateLibrary);
+    },
+    getRawTemplateDefinition(templateKey) {
+      return getRawTemplate(templateKey);
+    },
+    getTemplateDefinition(templateKey, options = {}) {
+      return getNormalizedTemplate(templateKey, options);
+    },
+    getTemplatePhases(templateKey, options = {}) {
+      return cloneValue(getNormalizedTemplate(templateKey, options).phaseMap || {});
+    },
+    getTemplateSessions(templateKey, options = {}) {
+      return cloneValue(getNormalizedTemplate(templateKey, options).sessions || []);
+    },
+    getTemplateOptions() {
+      return builtInTemplateLibrary.templates.map((template) => ({
+        key: template.key,
+        label: template.label,
+      }));
+    },
+    getTemplateLabel(templateKey) {
+      return getNormalizedTemplate(templateKey)?.label || getNormalizedTemplate("custom")?.label || "Custom";
+    },
+    getSessionBody(sessionKey, sessionName) {
+      return (
+        sessionBodies[sessionKey]
+        || `This session covers ${sessionName}.\n\nPlease come prepared with relevant examples, open questions, and any required system access.`
+      );
+    },
+    getTemplateReviewJSON(templates = rawTemplates) {
+      return JSON.stringify(templates, null, 2);
+    },
+    serializeTemplateLibrarySource(templates = rawTemplates) {
+      return buildSessionTemplatesModuleSource(templates);
+    },
+  };
 }
 
-export function getBuiltInTemplates() {
-  return cloneValue(EDITABLE_TEMPLATE_LIBRARY);
-}
+function buildTemplateRuntimeExportSource() {
+  return `
 
-export function getTemplateLibrary() {
-  return cloneValue(BUILT_IN_TEMPLATE_LIBRARY);
-}
+const TEMPLATE_RUNTIME = createTemplateRuntimeHelpers(BUILT_IN_TEMPLATES, SESSION_BODIES);
 
-export function getRawTemplateDefinition(templateKey) {
-  return cloneValue(BUILT_IN_TEMPLATES.find((template) => template.key === templateKey) || BUILT_IN_TEMPLATES.find((template) => template.key === "custom") || BUILT_IN_TEMPLATES[0]);
-}
-
-export function getTemplateDefinition(templateKey, { templateSnapshot = null } = {}) {
-  if (templateSnapshot) return normalizeTemplate(templateSnapshot);
-  return cloneValue(BUILT_IN_TEMPLATE_LIBRARY.byKey[templateKey] || BUILT_IN_TEMPLATE_LIBRARY.byKey.custom || BUILT_IN_TEMPLATE_LIBRARY.templates[0]);
-}
-
-export function getTemplatePhases(templateKey, options = {}) {
-  return cloneValue(getTemplateDefinition(templateKey, options).phaseMap || {});
-}
-
-export function getTemplateSessions(templateKey, options = {}) {
-  return cloneValue(getTemplateDefinition(templateKey, options).sessions || []);
-}
-
-export function getTemplateOptions() {
-  return BUILT_IN_TEMPLATE_LIBRARY.templates.map((template) => ({
-    key: template.key,
-    label: template.label,
-  }));
-}
-
-export function getTemplateLabel(templateKey) {
-  return getTemplateDefinition(templateKey)?.label || getTemplateDefinition("custom")?.label || "Custom";
-}
-
-export function getSessionBody(sessionKey, sessionName) {
-  return (
-    SESSION_BODIES[sessionKey] ||
-    \`This session covers \${sessionName}.\n\nPlease come prepared with relevant examples, open questions, and any required system access.\`
-  );
-}
-
-export function getTemplateReviewJSON(templates = BUILT_IN_TEMPLATES) {
-  return JSON.stringify(templates, null, 2);
-}
-
-export function serializeTemplateLibrarySource(templates = BUILT_IN_TEMPLATES) {
-  return buildSessionTemplatesModuleSource(templates);
-}
+${TEMPLATE_RUNTIME_EXPORT_NAMES.map(
+    (name) => `export const ${name} = (...args) => TEMPLATE_RUNTIME.${name}(...args);`
+  ).join("\n")}
 `;
+}
 
 export function buildSessionTemplatesModuleSource(rawTemplates = []) {
   return `import { SESSION_BODIES } from "./session-bodies.js";
 import {
   buildSessionTemplatesModuleSource,
+  createTemplateRuntimeHelpers,
   createBlankTemplate,
   normalizeEditableTemplate,
   normalizeEditableTemplateLibrary,
@@ -698,5 +724,5 @@ import {
   validateTemplate,
 } from "./template-schema.js";
 
-export const BUILT_IN_TEMPLATES = ${formatValue(rawTemplates, 0)};${SESSION_TEMPLATES_MODULE_FOOTER}`;
+export const BUILT_IN_TEMPLATES = ${formatValue(rawTemplates, 0)};${buildTemplateRuntimeExportSource()}`;
 }

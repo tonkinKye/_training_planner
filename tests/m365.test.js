@@ -77,6 +77,7 @@ function makeSession(overrides = {}) {
     id: `m365-test-${nextId++}`,
     key: "test_session",
     name: "Test Session",
+    durationMinutes: 90,
     duration: 90,
     phase: "setup",
     stageKey: "s1",
@@ -819,13 +820,77 @@ test("IS reconciliation marks moved implementation events as drift_detected and 
   assert.equal(result.driftedCount, 1);
   assert.equal(session.date, "2099-05-10");
   assert.equal(session.time, "13:00");
-  assert.equal(session.duration, 120);
   assert.equal(session.durationMinutes, 120);
   assert.equal(session.lastKnownStart, "2099-05-10T13:00:00");
   assert.equal(session.lastKnownEnd, "2099-05-10T15:00:00");
   assert.equal(project.reconciliationState, "drift_detected");
   assert.equal(project.reconciliation.state, "drift_detected");
   assert.equal(persistCalls, 1);
+});
+
+test("one failed auth flow does not poison the next successful token request", async (t) => {
+  installMsalForGraphTests(t, {
+    acquireTokenSilent: async () => {
+      throw new Error("silent interaction required");
+    },
+    acquireTokenPopup: async () => {
+      const error = new Error("Tenant policy blocked interactive token acquisition");
+      error.errorCode = "token_policy_block";
+      throw error;
+    },
+  });
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+
+  await assert.rejects(
+    () => __graphRequestForTests("https://graph.microsoft.com/v1.0/me"),
+    /Tenant policy blocked interactive token acquisition/
+  );
+
+  installMsalForGraphTests(t, {
+    acquireTokenSilent: async () => ({ accessToken: "token-success" }),
+  });
+  t.mock.method(globalThis, "fetch", async () => createGraphResponse(200, { id: "ok" }));
+
+  const response = await __graphRequestForTests("https://graph.microsoft.com/v1.0/me");
+  assert.equal(response.id, "ok");
+});
+
+test("m365 test hooks throw in browser-like contexts", async (t) => {
+  const previousWindow = globalThis.window;
+  const previousProcess = globalThis.process;
+  globalThis.window = {};
+  Object.defineProperty(globalThis, "process", {
+    value: undefined,
+    configurable: true,
+    writable: true,
+  });
+  t.after(() => {
+    if (previousWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = previousWindow;
+    }
+    Object.defineProperty(globalThis, "process", {
+      value: previousProcess,
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  assert.throws(() => __setMsalTestState(), /test-only hook unavailable in browser/);
+  await assert.rejects(
+    () => __graphRequestForTests("https://graph.microsoft.com/v1.0/me"),
+    /test-only hook unavailable in browser/
+  );
+  await assert.rejects(
+    () => __writeSentinelExtensionForTests("series-master", []),
+    /test-only hook unavailable in browser/
+  );
+  await assert.rejects(
+    () => __pushGraphEventForTests(makeSession({ date: "2099-04-10", time: "09:00" }), makeProject()),
+    /test-only hook unavailable in browser/
+  );
 });
 
 test("IS reconciliation marks deleted implementation events as drift_detected", async () => {

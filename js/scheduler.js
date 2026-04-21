@@ -43,7 +43,7 @@ import {
   removeSession,
   touchProject,
 } from "./projects.js";
-import { mondayOf, parseDate, toDateStr, toast } from "./utils.js";
+import { getSessionDurationMinutes, mondayOf, parseDate, toDateStr, toast } from "./utils.js";
 
 const SMART_FILL_PREFERENCES = new Set(["am", "none", "pm"]);
 const WORK_START_MINUTES = 8 * 60 + 30;
@@ -807,7 +807,7 @@ function getTimedIntervalsForDate(project, session, dateString, currentSessionId
     if (session.date !== dateString || !session.time) continue;
     intervals.push({
       start: toMinutes(session.time),
-      end: toMinutes(session.time) + session.duration,
+      end: toMinutes(session.time) + getSessionDurationMinutes(session),
     });
   }
 
@@ -817,7 +817,7 @@ function getTimedIntervalsForDate(project, session, dateString, currentSessionId
     if (!found || found.date !== dateString) continue;
     intervals.push({
       start: toMinutes(timeValue),
-      end: toMinutes(timeValue) + found.duration,
+      end: toMinutes(timeValue) + getSessionDurationMinutes(found),
     });
   }
 
@@ -1372,9 +1372,9 @@ export function setSessionDuration(sessionId, value) {
   const found = findSession(project, sessionId);
   if (!found || !canEditSession(project, found.session, state.actor)) return false;
 
-  const nextDuration = Number(value) || found.session.duration;
-  if (found.session.duration === nextDuration) return true;
-  found.session.duration = nextDuration;
+  const nextDuration = Number(value) || getSessionDurationMinutes(found.session);
+  if (getSessionDurationMinutes(found.session) === nextDuration) return true;
+  found.session.durationMinutes = nextDuration;
   invalidateSessionInviteState(found.session);
   touchProject(project);
   return true;
@@ -1552,7 +1552,7 @@ export function applySmartFill() {
     const intervals = getTimedIntervalsForDate(project, session, session.date, session.id, pendingAssignments);
     const todayFloor = session.date === today ? currentMinutes : 0;
     const halfPref = session.type === "internal" ? "none" : normalizeSmartFillPreference(state.ui.smartPreference);
-    const slot = findOpenSlot(session.duration, intervals, halfPref, todayFloor);
+    const slot = findOpenSlot(getSessionDurationMinutes(session), intervals, halfPref, todayFloor);
     if (slot) {
       session.time = slot;
       session.availabilityConflict = false;

@@ -1,9 +1,8 @@
 import { createCalendarAvailabilityState } from "./calendar-sources.js";
-import { getBuiltInTemplates, normalizeEditableTemplateLibrary } from "./session-templates.js";
+import { getBuiltInTemplates } from "./session-templates.js";
 
 export const SENTINEL_SUBJECT = "TP-ProjectIndex";
 export const SENTINEL_SCHEMA_ID = "com.fishbowl.trainingplanner.v1";
-export const APP_SCHEMA_VERSION = 1;
 export const DEEP_LINK_LIMIT = 2000; // Outlook Desktop URL limit raised to 8192 in supported M365 builds; 2000 is conservative for client variability
 
 function createOnboardingState() {
@@ -174,12 +173,6 @@ export function setGraphAccount(account) {
   state.graphAccount = account || null;
 }
 
-export function setTemplateLibrary(templates) {
-  state.templateLibrary = Array.isArray(templates)
-    ? normalizeEditableTemplateLibrary(templates)
-    : getBuiltInTemplates();
-}
-
 export function setScreen(screen) {
   state.ui.screen = screen;
 }
@@ -233,14 +226,6 @@ export function setDeepLink(encoded, payload) {
   };
 }
 
-export function clearDeepLink() {
-  state.deepLink = {
-    encoded: "",
-    payload: null,
-    length: 0,
-  };
-}
-
 export function setSentinelState(nextState) {
   state.sentinel = {
     ...state.sentinel,
@@ -250,10 +235,6 @@ export function setSentinelState(nextState) {
 
 export function setCalendarEvents(events) {
   state.calendarEvents = Array.isArray(events) ? [...events] : [];
-}
-
-export function clearCalendarEvents() {
-  state.calendarEvents = [];
 }
 
 export function setCalendarAvailability(nextState) {

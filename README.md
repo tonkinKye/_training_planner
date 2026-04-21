@@ -23,6 +23,7 @@ Browser-based project planning and calendar orchestration for Fishbowl training 
 Notes:
 
 - `js/config.js` is the active tracked runtime config for this repo.
+- The tracked file currently reflects a dev-style setup and keeps `GRAPH_TENANT_ID: "common"` by deliberate choice; replace it with your real tenant settings before any production deployment.
 - `index.html` loads `js/config.js` before the app bootstrap, so config changes are deliberate source-controlled changes.
 - [js/config.example.js](js/config.example.js) remains as a clean placeholder template/reference.
 - The Microsoft popup flow returns to `auth-callback.html`, so that path must exist wherever the app is hosted.
