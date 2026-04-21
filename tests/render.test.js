@@ -131,6 +131,166 @@ test("workspace moves project settings and scheduling delete controls above the 
   }
 });
 
+test("workspace surfaces ready-to-close prompt when the project is in sync and fully in the past", () => {
+  const originalState = {
+    projects: state.projects,
+    activeProjectId: state.activeProjectId,
+    actor: state.actor,
+    screen: state.ui.screen,
+  };
+
+  try {
+    const draft = createOnboardingDraft("manufacturing");
+    draft.clientName = "Acme Stores";
+    draft.pmName = "Kye Tonkin";
+    draft.pmEmail = "kye@example.com";
+    draft.isName = "Jordan Smith";
+    draft.isEmail = "jordan@example.com";
+    draft.projectStart = "2026-03-01";
+    draft.implementationStart = "2026-03-10";
+    draft.goLiveDate = "2026-03-20";
+
+    const project = createProjectFromDraft(draft);
+    for (const session of getPhaseStages(project, "setup").flatMap((stage) => stage.sessions || [])) {
+      session.date = "2026-03-02";
+      session.time = "09:00";
+    }
+    for (const session of getPhaseStages(project, "implementation").flatMap((stage) => stage.sessions || [])) {
+      session.date = "2026-03-12";
+      session.time = "09:00";
+      session.graphEventId = "evt-1";
+    }
+    for (const session of getPhaseStages(project, "hypercare").flatMap((stage) => stage.sessions || [])) {
+      session.date = "2026-03-25";
+      session.time = "09:00";
+    }
+    project.handoff.sentAt = "2026-03-01T00:00:00Z";
+    project.reconciliationState = "in_sync";
+    project.reconciliation.state = "in_sync";
+
+    state.projects = [project];
+    state.activeProjectId = project.id;
+    state.actor = "pm";
+    state.ui.screen = "workspace";
+
+    const snapshot = buildRenderSnapshot();
+    assert.ok(snapshot.main.includes("Ready to close"));
+    assert.ok(snapshot.main.includes("latest reconciliation is in sync"));
+    assert.ok(snapshot.topbar.includes('data-action="closeProject"'));
+  } finally {
+    state.projects = originalState.projects;
+    state.activeProjectId = originalState.activeProjectId;
+    state.actor = originalState.actor;
+    state.ui.screen = originalState.screen;
+  }
+});
+
+test("workspace shows refresh_failed implementation state with manual refresh for handed-off PM projects", () => {
+  const originalState = {
+    projects: state.projects,
+    activeProjectId: state.activeProjectId,
+    actor: state.actor,
+    screen: state.ui.screen,
+  };
+
+  try {
+    const draft = createOnboardingDraft("manufacturing");
+    draft.clientName = "Northwind";
+    draft.pmName = "Kye Tonkin";
+    draft.pmEmail = "kye@example.com";
+    draft.isName = "Jordan Smith";
+    draft.isEmail = "jordan@example.com";
+    draft.projectStart = "2026-03-01";
+    draft.implementationStart = "2026-03-10";
+    draft.goLiveDate = "2026-03-20";
+
+    const project = createProjectFromDraft(draft);
+    const implementationSession = getPhaseStages(project, "implementation")[0].sessions[0];
+    implementationSession.date = "2026-03-12";
+    implementationSession.time = "09:00";
+    implementationSession.graphEventId = "evt-1";
+    project.handoff.sentAt = "2026-03-01T00:00:00Z";
+    project.reconciliationState = "refresh_failed";
+    project.reconciliation = {
+      state: "refresh_failed",
+      lastAttemptedAt: "2026-03-15T00:00:00Z",
+      lastSuccessfulAt: "",
+      lastFailureAt: "2026-03-15T00:00:00Z",
+      lastFailureMessage: "Access denied",
+    };
+
+    state.projects = [project];
+    state.activeProjectId = project.id;
+    state.actor = "pm";
+    state.ui.screen = "workspace";
+
+    const snapshot = buildRenderSnapshot();
+    assert.ok(snapshot.main.includes("Implementation Sync"));
+    assert.ok(snapshot.main.includes("Refresh Failed"));
+    assert.ok(snapshot.main.includes('data-action="refreshProjectState"'));
+    assert.ok(snapshot.main.includes("The PM sentinel does not store a stale implementation snapshot"));
+    assert.ok(!snapshot.main.includes(implementationSession.name));
+  } finally {
+    state.projects = originalState.projects;
+    state.activeProjectId = originalState.activeProjectId;
+    state.actor = originalState.actor;
+    state.ui.screen = originalState.screen;
+  }
+});
+
+test("settings modal makes implementation sessions read-only after handoff", () => {
+  const originalState = {
+    projects: state.projects,
+    activeProjectId: state.activeProjectId,
+    actor: state.actor,
+    screen: state.ui.screen,
+    settings: state.ui.settings,
+  };
+
+  try {
+    const draft = createOnboardingDraft("manufacturing");
+    draft.clientName = "Wingtip";
+    draft.pmName = "Kye Tonkin";
+    draft.pmEmail = "kye@example.com";
+    draft.isName = "Jordan Smith";
+    draft.isEmail = "jordan@example.com";
+    draft.projectStart = "2026-03-01";
+    draft.implementationStart = "2026-03-10";
+    draft.goLiveDate = "2026-03-20";
+
+    const project = createProjectFromDraft(draft);
+    const implementationSession = getPhaseStages(project, "implementation")[0].sessions[0];
+    project.handoff.sentAt = "2026-03-01T00:00:00Z";
+    project.reconciliationState = "in_sync";
+    project.reconciliation = {
+      state: "in_sync",
+      lastAttemptedAt: "2026-03-15T00:00:00Z",
+      lastSuccessfulAt: "2026-03-15T00:00:00Z",
+      lastFailureAt: "",
+      lastFailureMessage: "",
+    };
+
+    state.projects = [project];
+    state.activeProjectId = project.id;
+    state.actor = "pm";
+    state.ui.screen = "workspace";
+    state.ui.settings = {
+      open: true,
+      draft: JSON.parse(JSON.stringify(project)),
+    };
+
+    const snapshot = buildRenderSnapshot();
+    assert.ok(snapshot.overlays.includes("Implementation read-only"));
+    assert.ok(!snapshot.overlays.includes(`data-action="moveSettingsSession" data-id="${implementationSession.id}"`));
+  } finally {
+    state.projects = originalState.projects;
+    state.activeProjectId = originalState.activeProjectId;
+    state.actor = originalState.actor;
+    state.ui.screen = originalState.screen;
+    state.ui.settings = originalState.settings;
+  }
+});
+
 test("kanban columns come from custom implementation stages instead of hardcoded keys", () => {
   const rawTemplate = createBlankTemplate({ key: "custom_board", label: "Custom Board" });
   rawTemplate.phases[1].stages = [

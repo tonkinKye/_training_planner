@@ -2,12 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  applyDeepLinkProject,
+  buildEventPayload,
   buildCloseNotificationBody,
   buildHandoffBody,
+  createHandoffEvent,
+  fetchSentinel,
   normalizeCalendarEvents,
   pushOwnedSessions,
   pushSessionToCalendar,
+  reconcileIsProjects,
+  reconcilePmProjects,
 } from "../js/m365.js";
+import { createSentinelPayload, parseSentinelProjects } from "../js/sentinel-model.js";
+import { decodeProjectParam, encodeProjectParam } from "../js/deeplink.js";
+import { getPhaseStages } from "../js/projects.js";
+import { resetAppState, state } from "../js/state.js";
 
 let nextId = 1;
 
@@ -158,6 +168,38 @@ test("handoff HTML escapes user-controlled project fields", () => {
   assert.doesNotMatch(html, /<img src=x onerror=/);
 });
 
+test("createHandoffEvent writes only a local PM notification event and updates local metadata", async () => {
+  const project = makeProject();
+  let graphCalls = 0;
+  let persistCalls = 0;
+
+  const handoff = await createHandoffEvent(project, {
+    buildDeepLinkUrlImpl: () => ({
+      url: "https://example.test/handoff",
+      encoded: "payload",
+      length: 24,
+      warn: false,
+    }),
+    graphRequestImpl: async (path, options) => {
+      graphCalls += 1;
+      assert.equal(path, "https://graph.microsoft.com/v1.0/me/events");
+      assert.equal(options.method, "POST");
+      return { id: "handoff-event-1" };
+    },
+    persistActiveProjectsImpl: async () => {
+      persistCalls += 1;
+    },
+  });
+
+  assert.equal(graphCalls, 1);
+  assert.equal(persistCalls, 1);
+  assert.equal(handoff.url, "https://example.test/handoff");
+  assert.equal(handoff.delegateUsed, false);
+  assert.equal(project.handoff.eventId, "handoff-event-1");
+  assert.equal(project.handoff.deepLinkUrl, "https://example.test/handoff");
+  assert.equal(project.handoff.delegateUsed, false);
+});
+
 test("close notification HTML escapes user-controlled project fields", () => {
   const html = buildCloseNotificationBody(
     {
@@ -171,6 +213,108 @@ test("close notification HTML escapes user-controlled project fields", () => {
   assert.match(html, /&lt;b&gt;PM&lt;\/b&gt;/);
   assert.match(html, /1 May &lt;img src=x onerror=alert\(1\)&gt;/);
   assert.doesNotMatch(html, /<script>alert/);
+});
+
+test("IS-owned event payloads stamp the project id extended property", () => {
+  const project = makeProject();
+  const session = makeSession({
+    phase: "implementation",
+    owner: "is",
+    date: "2099-05-10",
+    time: "11:00",
+  });
+
+  const payload = buildEventPayload(project, session);
+
+  assert.equal(payload.singleValueExtendedProperties?.length, 1);
+  assert.equal(payload.singleValueExtendedProperties?.[0]?.value, project.id);
+});
+
+test("PM-owned event payloads do not stamp the project id extended property", () => {
+  const project = makeProject();
+  const session = makeSession({
+    phase: "setup",
+    owner: "pm",
+    date: "2099-04-10",
+    time: "09:00",
+  });
+
+  const payload = buildEventPayload(project, session);
+
+  assert.equal(payload.singleValueExtendedProperties, undefined);
+});
+
+test("applyDeepLinkProject seeds a new IS project from the link payload", async () => {
+  resetAppState();
+  const project = makeProject({
+    implSessions: [
+      makeSession({
+        phase: "implementation",
+        owner: "is",
+        date: "2099-05-10",
+        time: "11:00",
+      }),
+    ],
+  });
+  const payload = decodeProjectParam(encodeProjectParam(project).encoded);
+  let persistCalls = 0;
+
+  const applied = await applyDeepLinkProject(payload, {
+    persistActiveProjectsImpl: async () => {
+      persistCalls += 1;
+    },
+  });
+
+  assert.equal(persistCalls, 1);
+  assert.equal(state.projects.length, 1);
+  assert.equal(applied.id, project.id);
+  assert.equal(state.projects[0].id, project.id);
+  assert.equal(getPhaseStages(state.projects[0], "implementation")[0].sessions[0].time, "11:00");
+});
+
+test("applyDeepLinkProject does not overwrite an existing IS project", async () => {
+  resetAppState();
+  const existingProject = makeProject({
+    implSessions: [
+      makeSession({
+        phase: "implementation",
+        owner: "is",
+        date: "2099-05-12",
+        time: "13:00",
+        graphEventId: "evt-existing",
+      }),
+    ],
+  });
+  state.projects = [existingProject];
+  state.activeProjectId = existingProject.id;
+
+  const incomingProject = makeProject({
+    implSessions: [
+      makeSession({
+        id: existingProject.phases.implementation.stages[0].sessions[0].id,
+        phase: "implementation",
+        owner: "is",
+        date: "2099-05-15",
+        time: "09:00",
+        graphEventId: "evt-incoming",
+      }),
+    ],
+  });
+  incomingProject.id = existingProject.id;
+  const payload = decodeProjectParam(encodeProjectParam(incomingProject).encoded);
+  let persistCalls = 0;
+
+  const applied = await applyDeepLinkProject(payload, {
+    persistActiveProjectsImpl: async () => {
+      persistCalls += 1;
+    },
+  });
+
+  assert.equal(persistCalls, 0);
+  assert.equal(applied, existingProject);
+  assert.equal(state.projects.length, 1);
+  assert.equal(getPhaseStages(state.projects[0], "implementation")[0].sessions[0].graphEventId, "evt-existing");
+  assert.equal(getPhaseStages(state.projects[0], "implementation")[0].sessions[0].time, "13:00");
 });
 
 test("pushSessionToCalendar rolls back session state when persistence fails", async (t) => {
@@ -235,7 +379,7 @@ test("pushOwnedSessions persists once for a PM batch and suppresses per-session 
   assert.equal(fetchCalls, 1);
 });
 
-test("pushOwnedSessions persists once and syncs partner sentinel for IS batch push", async () => {
+test("pushOwnedSessions persists once for an IS batch push without partner sentinel sync", async () => {
   const session = makeSession({
     phase: "implementation",
     owner: "is",
@@ -244,7 +388,6 @@ test("pushOwnedSessions persists once and syncs partner sentinel for IS batch pu
   });
   const project = makeProject({ implSessions: [session] });
   let persistCalls = 0;
-  const syncCalls = [];
 
   const pushed = await pushOwnedSessions({
     actor: "is",
@@ -257,16 +400,278 @@ test("pushOwnedSessions persists once and syncs partner sentinel for IS batch pu
       persistCalls += 1;
     },
     fetchCalendarEventsImpl: async () => [],
-    syncProjectToPartnerSentinelImpl: async (nextProject, partnerRole) => {
-      syncCalls.push({ project: nextProject, partnerRole });
-      return true;
-    },
   });
 
   assert.equal(pushed, 1);
   assert.equal(persistCalls, 1);
-  assert.equal(syncCalls.length, 1);
-  assert.equal(syncCalls[0].project, project);
-  assert.equal(syncCalls[0].partnerRole, "pm");
   assert.equal(typeof project.isCommittedAt, "string");
+});
+
+test("read-only sentinel fetch does not seed a foreign mailbox sentinel when the extension is missing", async () => {
+  let ensureCalls = 0;
+  let readCalls = 0;
+  let writeCalls = 0;
+  const master = { id: "foreign-master" };
+
+  const result = await fetchSentinel({
+    userId: "is@example.com",
+    createIfMissing: false,
+    ensureSentinelSeriesImpl: async () => {
+      ensureCalls += 1;
+      return master;
+    },
+    findSentinelSeriesImpl: async () => master,
+    readSentinelExtensionImpl: async () => {
+      readCalls += 1;
+      return null;
+    },
+    writeSentinelExtensionImpl: async () => {
+      writeCalls += 1;
+      return null;
+    },
+  });
+
+  assert.equal(result.master, master);
+  assert.deepEqual(result.projects, []);
+  assert.equal(ensureCalls, 0);
+  assert.equal(readCalls, 1);
+  assert.equal(writeCalls, 0);
+});
+
+test("IS reconciliation marks moved implementation events as drift_detected and updates local session timing", async () => {
+  const session = makeSession({
+    phase: "implementation",
+    owner: "is",
+    date: "2099-05-10",
+    time: "11:00",
+    duration: 90,
+    graphEventId: "evt-1",
+    graphActioned: true,
+    lastKnownStart: "2099-05-10T11:00:00",
+    lastKnownEnd: "2099-05-10T12:30:00",
+  });
+  const project = makeProject({ implSessions: [session] });
+  let persistCalls = 0;
+
+  const result = await reconcileIsProjects({
+    projects: [project],
+    graphRequestImpl: async (path) => {
+      assert.equal(path, "https://graph.microsoft.com/v1.0/$batch");
+      return {
+        responses: [
+          {
+            id: "0",
+            status: 200,
+            body: {
+              id: "evt-1",
+              start: { dateTime: "2099-05-10T13:00:00" },
+              end: { dateTime: "2099-05-10T15:00:00" },
+            },
+          },
+        ],
+      };
+    },
+    persistProjectsImpl: async () => {
+      persistCalls += 1;
+    },
+  });
+
+  assert.equal(result.failed, false);
+  assert.equal(result.reconciledCount, 1);
+  assert.equal(result.driftedCount, 1);
+  assert.equal(session.date, "2099-05-10");
+  assert.equal(session.time, "13:00");
+  assert.equal(session.duration, 120);
+  assert.equal(session.durationMinutes, 120);
+  assert.equal(session.lastKnownStart, "2099-05-10T13:00:00");
+  assert.equal(session.lastKnownEnd, "2099-05-10T15:00:00");
+  assert.equal(project.reconciliationState, "drift_detected");
+  assert.equal(project.reconciliation.state, "drift_detected");
+  assert.equal(persistCalls, 1);
+});
+
+test("IS reconciliation marks deleted implementation events as drift_detected", async () => {
+  const session = makeSession({
+    phase: "implementation",
+    owner: "is",
+    date: "2099-05-10",
+    time: "11:00",
+    graphEventId: "evt-404",
+    graphActioned: true,
+    lastKnownStart: "2099-05-10T11:00:00",
+    lastKnownEnd: "2099-05-10T12:30:00",
+  });
+  const project = makeProject({ implSessions: [session] });
+  let persistCalls = 0;
+
+  const result = await reconcileIsProjects({
+    projects: [project],
+    graphRequestImpl: async () => ({
+      responses: [
+        {
+          id: "0",
+          status: 404,
+          body: {
+            error: {
+              message: "Not found",
+            },
+          },
+        },
+      ],
+    }),
+    persistProjectsImpl: async () => {
+      persistCalls += 1;
+    },
+  });
+
+  assert.equal(result.failed, false);
+  assert.equal(result.driftedCount, 1);
+  assert.equal(session.graphActioned, false);
+  assert.equal(project.reconciliationState, "drift_detected");
+  assert.equal(project.reconciliation.state, "drift_detected");
+  assert.equal(persistCalls, 1);
+});
+
+test("PM reconciliation adopts IS state and round-trips sparse PM sentinel writes", async () => {
+  const pmSession = makeSession({
+    phase: "implementation",
+    owner: "is",
+    date: "2099-05-10",
+    time: "11:00",
+    graphEventId: "legacy-event",
+    graphActioned: true,
+    lastKnownStart: "2099-05-10T11:00:00",
+    lastKnownEnd: "2099-05-10T12:30:00",
+  });
+  const pmProject = makeProject({ implSessions: [pmSession] });
+  pmProject.handoff = { sentAt: "2099-05-01T00:00:00Z" };
+  pmProject.reconciliation = {
+    state: "refresh_failed",
+    lastAttemptedAt: "2099-05-11T00:00:00Z",
+    lastSuccessfulAt: "",
+    lastFailureAt: "2099-05-11T00:00:00Z",
+    lastFailureMessage: "old failure",
+  };
+  pmProject.reconciliationState = "refresh_failed";
+
+  const isSession = makeSession({
+    id: pmSession.id,
+    phase: "implementation",
+    owner: "is",
+    date: "2099-05-12",
+    time: "13:00",
+    graphEventId: "evt-1",
+    graphActioned: true,
+    lastKnownStart: "2099-05-12T13:00:00",
+    lastKnownEnd: "2099-05-12T14:30:00",
+  });
+  const isProject = makeProject({ implSessions: [isSession] });
+  isProject.id = pmProject.id;
+  isProject.handoff = { sentAt: "2099-05-01T00:00:00Z" };
+  isProject.reconciliation = {
+    state: "in_sync",
+    lastAttemptedAt: "2099-05-12T00:00:00Z",
+    lastSuccessfulAt: "2099-05-12T00:00:00Z",
+    lastFailureAt: "",
+    lastFailureMessage: "",
+  };
+  isProject.reconciliationState = "in_sync";
+
+  const projects = [pmProject];
+  let persistedPayload = null;
+
+  const result = await reconcilePmProjects({
+    projects,
+    readSentinelImpl: async ({ userId }) => {
+      assert.equal(userId, "is@example.com");
+      return { projects: [isProject] };
+    },
+    persistProjectsImpl: async () => {
+      persistedPayload = createSentinelPayload(projects, { mailbox: "pm@example.com" });
+    },
+  });
+
+  assert.equal(result.reconciledCount, 1);
+  assert.equal(result.pendingCount, 0);
+  assert.equal(result.failedCount, 0);
+  assert.equal(projects[0].lifecycleState, "is_active");
+  assert.equal(projects[0].reconciliationState, "in_sync");
+  assert.equal(projects[0].reconciliation.lastFailureMessage, "");
+  assert.equal(projects[0].phases.implementation.stages[0].sessions[0].graphEventId, "evt-1");
+  assert.equal(projects[0].phases.implementation.stages[0].sessions[0].time, "13:00");
+
+  const roundTrip = parseSentinelProjects(persistedPayload);
+  assert.equal(roundTrip[0].reconciliationState, "in_sync");
+  assert.equal(roundTrip[0].phases.implementation.stages[0].sessions[0].id, pmSession.id);
+  assert.equal(roundTrip[0].phases.implementation.stages[0].sessions[0].graphEventId, "");
+  assert.equal(roundTrip[0].phases.implementation.stages[0].sessions[0].time, "");
+});
+
+test("PM reconciliation remains handed_off_pending_is when IS acceptance is not yet visible", async () => {
+  const pmSession = makeSession({
+    phase: "implementation",
+    owner: "is",
+    date: "2099-05-10",
+    time: "11:00",
+    graphEventId: "legacy-event",
+    graphActioned: true,
+  });
+  const pmProject = makeProject({ implSessions: [pmSession] });
+  pmProject.handoff = { sentAt: "2099-05-01T00:00:00Z" };
+  pmProject.reconciliation = {
+    state: "refresh_failed",
+    lastAttemptedAt: "2099-05-11T00:00:00Z",
+    lastSuccessfulAt: "",
+    lastFailureAt: "2099-05-11T00:00:00Z",
+    lastFailureMessage: "old failure",
+  };
+  pmProject.reconciliationState = "refresh_failed";
+
+  const projects = [pmProject];
+
+  const result = await reconcilePmProjects({
+    projects,
+    readSentinelImpl: async () => ({ projects: [] }),
+    persistProjectsImpl: async () => {},
+  });
+
+  assert.equal(result.reconciledCount, 0);
+  assert.equal(result.pendingCount, 1);
+  assert.equal(result.failedCount, 0);
+  assert.equal(projects[0].lifecycleState, "handed_off_pending_is");
+  assert.equal(projects[0].reconciliationState, "not_applicable");
+  assert.equal(projects[0].reconciliation.lastFailureMessage, "");
+  assert.equal(projects[0].phases.implementation.stages[0].sessions[0].graphEventId, "");
+  assert.equal(projects[0].phases.implementation.stages[0].sessions[0].time, "");
+});
+
+test("PM reconciliation marks refresh_failed and clears stale implementation state when foreign read fails", async () => {
+  const pmSession = makeSession({
+    phase: "implementation",
+    owner: "is",
+    date: "2099-05-10",
+    time: "11:00",
+    graphEventId: "legacy-event",
+    graphActioned: true,
+  });
+  const pmProject = makeProject({ implSessions: [pmSession] });
+  pmProject.handoff = { sentAt: "2099-05-01T00:00:00Z" };
+
+  const projects = [pmProject];
+
+  const result = await reconcilePmProjects({
+    projects,
+    readSentinelImpl: async () => {
+      throw new Error("read denied");
+    },
+    persistProjectsImpl: async () => {},
+  });
+
+  assert.equal(result.reconciledCount, 0);
+  assert.equal(result.pendingCount, 0);
+  assert.equal(result.failedCount, 1);
+  assert.equal(projects[0].reconciliationState, "refresh_failed");
+  assert.equal(projects[0].reconciliation.lastFailureMessage, "read denied");
+  assert.equal(projects[0].phases.implementation.stages[0].sessions[0].graphEventId, "");
+  assert.equal(projects[0].phases.implementation.stages[0].sessions[0].time, "");
 });

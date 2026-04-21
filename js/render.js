@@ -4,6 +4,7 @@ import { getActiveProject, state } from "./state.js";
 import {
   canCommitSession,
   canEditSession,
+  deriveProjectReconciliationState,
   deriveProjectStatus,
   getActorDisplayName,
   getAllSessions,
@@ -20,6 +21,9 @@ import {
   PHASE_META,
   PHASE_ORDER,
   PROJECT_TYPE_META,
+  RECONCILIATION_STATE_META,
+  pmCanEditImplementation,
+  projectReadyToClose,
   STATUS_META,
 } from "./projects.js";
 import { getSmartAvailabilityState, readyForHandoff } from "./scheduler.js";
@@ -27,8 +31,8 @@ import { getTemplateEditorEntity, getTemplateEditorPreview, getTemplateEditorSel
 import { esc, fmt12, fmtDur, getTimeOptionsHTML, mondayOf, parseDate, timeAgo, toDateStr } from "./utils.js";
 
 const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
-const STATUS_PRIORITY = { scheduling: 0, pending_is_commit: 1, active: 2, complete: 3, closed: 4 };
-const ARCHIVE_STATUSES = new Set(["complete", "closed"]);
+const STATUS_PRIORITY = { draft: 0, pm_scheduled: 1, handed_off_pending_is: 2, is_active: 3, closed: 4 };
+const ARCHIVE_STATUSES = new Set(["closed"]);
 const RENDER_SHELL_HTML = '<div id="tp-slot-topbar"></div><div id="tp-slot-main"></div><div id="tp-slot-overlays"></div><div class="tp-toast" id="toast"></div>';
 const KANBAN_STATIC_LEADING_COLUMNS = [
   { key: "scheduling", label: "Scheduling", phase: "scheduling" },
@@ -244,7 +248,7 @@ function renderStageOptions(source, phaseKey, selectedStageKey) {
     .join("")}<option value="__new__"${nextValue === "__new__" ? " selected" : ""}>Create New Stage</option>`;
 }
 
-function renderSessionRowsForStages(source, phaseKey, moveAction, removeAction) {
+function renderSessionRowsForStages(source, phaseKey, moveAction, removeAction, { editable = true } = {}) {
   return getPhaseStages(source, phaseKey)
     .map((stage) => {
       const sessions = stage.sessions || [];
@@ -255,7 +259,7 @@ function renderSessionRowsForStages(source, phaseKey, moveAction, removeAction) 
           .map(
             (session) => `<div class="tp-settings-row"><div><strong>${esc(session.name)}</strong><small>${fmtDur(
               session.duration
-            )} | ${session.owner === "is" ? "IS" : "PM"} | ${esc(session.type)}</small></div><div class="tp-quick-row">${session.lockedDate ? '<span class="tp-pill tp-pill-muted">System Managed</span>' : `<button class="btn-default btn-sm" data-action="${moveAction}" data-id="${session.id}" data-dir="-1">Up</button><button class="btn-default btn-sm" data-action="${moveAction}" data-id="${session.id}" data-dir="1">Down</button><button class="btn-danger btn-sm" data-action="${removeAction}" data-id="${session.id}">Remove</button>`}</div></div>`
+            )} | ${session.owner === "is" ? "IS" : "PM"} | ${esc(session.type)}</small></div><div class="tp-quick-row">${session.lockedDate ? '<span class="tp-pill tp-pill-muted">System Managed</span>' : !editable ? '<span class="tp-pill tp-pill-muted">Read Only</span>' : `<button class="btn-default btn-sm" data-action="${moveAction}" data-id="${session.id}" data-dir="-1">Up</button><button class="btn-default btn-sm" data-action="${moveAction}" data-id="${session.id}" data-dir="1">Down</button><button class="btn-danger btn-sm" data-action="${removeAction}" data-id="${session.id}">Remove</button>`}</div></div>`
           )
           .join("")}
       </div>`;
@@ -285,7 +289,7 @@ function topbar() {
   const inWorkspace = state.ui.screen === "workspace" && project;
   const inTemplates = state.ui.screen === "templates";
   const projectStatus = inWorkspace ? deriveProjectStatus(project) : "";
-  const canClose = inWorkspace && state.actor === "pm" && !["scheduling", "complete", "closed"].includes(projectStatus);
+  const canClose = inWorkspace && state.actor === "pm" && !["draft", "pm_scheduled", "closed"].includes(projectStatus);
   const breadcrumb = inWorkspace
     ? `Projects / <span class="tp-nav-crumb-current">${esc(project.clientName || "Untitled Project")}</span>`
     : inTemplates
@@ -340,7 +344,7 @@ function authScreen() {
 
 function getProjectKanbanColumn(project) {
   const status = deriveProjectStatus(project);
-  if (status === "scheduling") return "scheduling";
+  if (status === "draft" || status === "pm_scheduled") return "scheduling";
   const today = toDateStr(new Date());
   const allSessions = getAllSessions(project);
   const defaultImplementationStageKey = getPhaseStages(project, "implementation").find((stage) => stage?.key)?.key || "";
@@ -389,23 +393,25 @@ function kanbanCard(project, archived) {
   const progress = getImplProgress(project);
   const countdown = getGoLiveCountdown(project);
   const status = deriveProjectStatus(project);
-  const canDelete = status === "scheduling";
+  const readyToClose = state.actor === "pm" && projectReadyToClose(project);
+  const canDelete = status === "draft" || status === "pm_scheduled";
   const nextLabel = next ? `${fmtDate(next.date).replace(/ \d{4}$/, "")} \u00B7 ${next.name}` : "Not scheduled";
   return `<button class="tp-project-card${archived ? " is-archived" : ""}" data-action="selectProject" data-id="${project.id}">
     <div class="tp-project-card-head"><strong>${esc(project.clientName || "Untitled")}</strong>${canDelete ? `<span class="tp-card-delete" data-action="deleteProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled")}" title="Delete">&times;</span>` : ""}</div>
     <span class="tp-project-next">${esc(nextLabel)}</span>
     <div class="tp-project-progress"><div class="tp-project-progress-bar" style="width:${progress.percent}%"></div></div>
     <span class="tp-project-meta">${progress.total ? `${progress.percent}% impl` : ""}${progress.total && countdown ? " \u00B7 " : ""}${esc(countdown)}</span>
+    ${readyToClose ? '<span class="tp-pill tp-pill-info">Ready to close</span>' : ""}
   </button>`;
 }
 
 function projectsScreen() {
   const search = (state.ui.projectSearch || "").toLowerCase().trim();
-  const archivedCount = state.projects.filter((p) => ARCHIVE_STATUSES.has(p.status || "scheduling")).length;
+  const archivedCount = state.projects.filter((project) => ARCHIVE_STATUSES.has(deriveProjectStatus(project))).length;
 
   const visible = state.projects
     .filter((project) => {
-      if (!state.ui.showArchived && ARCHIVE_STATUSES.has(project.status || "scheduling")) return false;
+      if (!state.ui.showArchived && ARCHIVE_STATUSES.has(deriveProjectStatus(project))) return false;
       if (search) {
         const haystack = `${project.clientName} ${project.isName} ${project.isEmail} ${project.pmName}`.toLowerCase();
         if (!haystack.includes(search)) return false;
@@ -441,7 +447,7 @@ function projectsScreen() {
       const cards = columns.get(col.key) || [];
       return `<div class="tp-kanban-column">
         <div class="tp-kanban-header ${getColumnBadgeClass(col)}"><span>${esc(col.label)}</span>${cards.length ? `<span class="tp-kanban-count">${cards.length}</span>` : ""}</div>
-        ${cards.map((p) => kanbanCard(p, ARCHIVE_STATUSES.has(p.status))).join("")}
+        ${cards.map((currentProject) => kanbanCard(currentProject, ARCHIVE_STATUSES.has(deriveProjectStatus(currentProject)))).join("")}
       </div>`;
     }).join("");
 
@@ -511,6 +517,72 @@ function renderCalendarWarnings(project) {
     .join("");
 }
 
+function projectHasResolvedPmImplementationState(project) {
+  if (state.actor !== "pm" || !project?.handoff?.sentAt) return true;
+  if (deriveProjectStatus(project) === "handed_off_pending_is") return false;
+  if (deriveProjectReconciliationState(project) === "refresh_failed") return false;
+
+  return getPhaseSessions(project, "implementation").some(
+    (session) => session.graphEventId || session.lastKnownStart || session.lastKnownEnd || (session.date && session.time)
+  );
+}
+
+function renderPmReconciliationPanel(project) {
+  if (state.actor !== "pm" || !project?.handoff?.sentAt || project.closedAt) return "";
+
+  const reconciliationState = deriveProjectReconciliationState(project);
+  const lifecycleState = deriveProjectStatus(project);
+  const lastAttempted = project.reconciliation?.lastAttemptedAt || "";
+  const lastSuccessful = project.reconciliation?.lastSuccessfulAt || "";
+  const lastFailed = project.reconciliation?.lastFailureAt || "";
+  const lastFailureMessage = project.reconciliation?.lastFailureMessage || "";
+
+  let title = RECONCILIATION_STATE_META[reconciliationState] || "Sync";
+  let message = "";
+
+  if (lifecycleState === "handed_off_pending_is") {
+    title = "Awaiting IS";
+    message = lastAttempted
+      ? `Handoff sent. Waiting for IS acceptance. Last checked ${timeAgo(lastAttempted)}.`
+      : "Handoff sent. Waiting for IS acceptance.";
+  } else if (reconciliationState === "refresh_failed") {
+    title = "Refresh Failed";
+    message = `Authoritative IS state is unavailable.${lastFailed ? ` Refresh failed ${timeAgo(lastFailed)}.` : ""}${lastFailureMessage ? ` ${lastFailureMessage}` : ""}`;
+  } else if (reconciliationState === "drift_detected") {
+    message = `IS reported drift between the sentinel and the live calendar.${lastSuccessful ? ` Last confirmed ${timeAgo(lastSuccessful)}.` : ""}`;
+  } else if (reconciliationState === "in_sync") {
+    message = `Implementation state is in sync.${lastSuccessful ? ` Last reconciled ${timeAgo(lastSuccessful)}.` : ""}`;
+  } else {
+    message = lastAttempted
+      ? `Implementation state last checked ${timeAgo(lastAttempted)}.`
+      : "Implementation state has not been reconciled yet.";
+  }
+
+  return `<section class="tp-side-card">
+    <div class="tp-side-head"><h3>Implementation Sync</h3><button class="btn-default btn-sm" data-action="refreshProjectState" data-id="${project.id}">Refresh</button></div>
+    <div class="tp-side-note"><strong>${esc(title)}</strong><div>${esc(message)}</div></div>
+  </section>`;
+}
+
+function renderPmImplementationPlaceholder(project) {
+  const reconciliationState = deriveProjectReconciliationState(project);
+  const lifecycleState = deriveProjectStatus(project);
+  let message = "Authoritative implementation state is unavailable.";
+
+  if (lifecycleState === "handed_off_pending_is") {
+    message = "Handoff sent. Waiting for the IS to accept the project before implementation state is available.";
+  } else if (reconciliationState === "refresh_failed") {
+    message = "Refresh failed. The PM sentinel does not store a stale implementation snapshot; use Refresh to retry.";
+  }
+
+  return `<section class="tp-phase-section tp-phase-context is-open is-implementation">
+    <div class="tp-phase-static-head">
+      <div class="tp-phase-title">Implementation</div>
+      <p class="tp-phase-meta">${esc(message)}</p>
+    </div>
+  </section>`;
+}
+
 function getAvailabilityMessage(project, availability) {
   const matchesProject = state.calendarAvailability.projectId === project.id;
   const sources = state.calendarAvailability.sources || {};
@@ -541,7 +613,7 @@ function getAvailabilityMessage(project, availability) {
 function renderProjectSummaryActions(project) {
   if (!project || project.closedAt) return "";
   const status = deriveProjectStatus(project);
-  const showDelete = state.actor === "pm" && status === "scheduling";
+  const showDelete = state.actor === "pm" && (status === "draft" || status === "pm_scheduled");
   return `<div class="tp-side-actions" role="group" aria-label="Project actions">
     <button class="btn-ghost btn-sm" data-action="openSettings">Project Settings</button>
     ${showDelete ? `<button class="btn-danger btn-sm" data-action="deleteProject" data-id="${project.id}" data-name="${esc(project.clientName || "Untitled Project")}">Delete</button>` : ""}
@@ -552,6 +624,7 @@ function sidebar(project) {
   const range = getProjectDateRange(project);
   const availability = getSmartAvailabilityState(project, state.actor);
   const availabilityMessage = getAvailabilityMessage(project, availability);
+  const readyToClose = state.actor === "pm" && projectReadyToClose(project);
   return `<aside class="tp-sidebar">
     ${renderProjectSummaryActions(project)}
     <section class="tp-side-card">
@@ -574,7 +647,13 @@ function sidebar(project) {
           ? `<div class="tp-side-note"><strong>Latest handoff</strong><div>${state.ui.lastHandoff.length} chars</div><button class="btn-default btn-sm" data-action="copyHandoffLink">Copy Link</button></div>`
           : ""
       }
+      ${
+        readyToClose
+          ? '<div class="alert alert-info"><strong>Ready to close</strong><div>All sessions are in the past and the latest reconciliation is in sync.</div></div>'
+          : ""
+      }
     </section>
+    ${renderPmReconciliationPanel(project)}
     ${renderCalendarWarnings(project)}
     <section class="tp-side-card">
       <div class="tp-side-head"><h3>Smart Fill</h3><button class="btn-ghost btn-sm" data-action="toggleSmart">${state.ui.smartOpen ? "Hide" : "Show"}</button></div>
@@ -724,12 +803,17 @@ function sessionPanel(project) {
     .filter((s) => s.date && s.date >= today && s.time)
     .sort((a, b) => a.date.localeCompare(b.date) || (a.time || "").localeCompare(b.time || ""))[0] || null;
   const nextUpId = nextUpSession?.id || "";
-  const visible = getVisiblePhaseKeys(state.actor);
-  const context = getContextPhaseKeys(state.actor);
+  const visible = getVisiblePhaseKeys(state.actor, project);
+  const context = getContextPhaseKeys(state.actor, project);
   return `<section class="tp-main">
     <div class="tp-main-header"><div class="tp-main-title">${esc(project.clientName)}</div><div class="tp-main-sub">${esc(getProjectTemplateLabel(project))} | ${esc(getProjectCardStatus(project))}</div></div>
     <div class="tp-main-content">
-      ${visible.map((phaseKey) => phaseSection(project, phaseKey, false, nextUpId)).join("")}
+      ${visible.map((phaseKey) => {
+        if (state.actor === "pm" && phaseKey === "implementation" && !projectHasResolvedPmImplementationState(project)) {
+          return renderPmImplementationPlaceholder(project);
+        }
+        return phaseSection(project, phaseKey, false, nextUpId);
+      }).join("")}
       ${
         state.actor === "is"
           ? `<section class="tp-phase-section tp-phase-context is-open"><div class="tp-phase-static-head"><div class="tp-phase-title">Read-only Context</div><p class="tp-phase-meta">Setup and Hypercare remain visible for handoff context.</p></div><div class="tp-phase-body"><div class="tp-phase-list">${context.map((phaseKey) => phaseSection(project, phaseKey, true)).join("")}</div></div></section>`
@@ -856,7 +940,11 @@ function onboardingModal() {
 function settingsModal() {
   const d = state.ui.settings.draft;
   if (!state.ui.settings.open || !d) return "";
-  return `<div class="tp-modal-overlay is-open"><div class="tp-modal tp-modal-wide"><div class="tp-modal-head"><div><h3>Project Settings</h3><p>Edit metadata and sessions.</p></div><button class="btn-default btn-sm" data-action="closeSettings">Close</button></div><div class="tp-settings-grid"><label class="tp-field"><span>Client</span><input type="text" value="${esc(d.clientName)}" data-bind="settings.clientName"></label><label class="tp-field"><span>Type</span><select data-bind="settings.projectType">${renderTemplateOptions(d.templateOriginKey || d.projectType)}</select></label><label class="tp-field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="settings.pmName"></label><label class="tp-field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="settings.pmEmail"></label><label class="tp-field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="settings.isName"></label><label class="tp-field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="settings.isEmail"></label><label class="tp-field"><span>Kick-Off Date</span><input class="tp-mono" type="date" value="${d.projectStart}" data-bind="settings.projectStart"></label><label class="tp-field"><span>Implementation Start</span><input class="tp-mono" type="date" value="${d.implementationStart}" data-bind="settings.implementationStart"></label><label class="tp-field"><span>Go-Live</span><input class="tp-mono" type="date" value="${d.goLiveDate}" data-bind="settings.goLiveDate"></label><label class="tp-field"><span>Hypercare</span><select data-bind="settings.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="tp-field"><span>Smart Fill Default</span><select data-bind="settings.smartFillPreference"><option value="am"${d.smartFillPreference === "am" ? " selected" : ""}>AM</option><option value="none"${d.smartFillPreference === "none" ? " selected" : ""}>No Preference</option><option value="pm"${d.smartFillPreference === "pm" ? " selected" : ""}>PM</option></select></label><div class="tp-field tp-field-full"><span>Working Days</span>${renderWorkingDaysChips(d.workingDays, "Settings")}</div><div class="tp-summary-card tp-field-full"><p><strong>Suggested Go-Live:</strong> ${esc(fmtDate(d.goLiveSuggestedDate || d.goLiveDate || ""))}</p><p><strong>Recommended Duration:</strong> ${esc(fmtPhaseSpan(d.goLiveRecommendedWeeks))}</p>${d.goLiveWarning ? `<p class="tp-warning-copy">${esc(d.goLiveWarning)}</p>` : '<p class="tp-muted">Suggestion updates when implementation start or working days change.</p>'}</div><label class="tp-field tp-field-full"><span>Invitees</span><textarea rows="3" data-bind="settings.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea></label><label class="tp-field tp-field-full"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="settings.location"></label></div><div class="tp-settings-list">${PHASE_ORDER.map((phaseKey) => renderSessionRowsForStages(d, phaseKey, "moveSettingsSession", "removeSettingsSession")).join("")}</div><div class="tp-builder-grid"><label class="tp-field tp-field-compact"><span>Name</span><input type="text" value="${esc(d.newSession?.name || "")}" data-bind="settings.newSession.name"></label><label class="tp-field tp-field-compact"><span>Duration</span><input class="tp-mono" type="number" min="15" step="15" value="${d.newSession?.duration || 90}" data-bind="settings.newSession.duration"></label><label class="tp-field tp-field-compact"><span>Phase</span><select data-bind="settings.newSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.newSession?.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="tp-field tp-field-compact"><span>Stage</span><select data-bind="settings.newSession.stageKey">${renderStageOptions(d, d.newSession?.phase || "implementation", d.newSession?.stageKey || "")}</select></label>${d.newSession?.stageKey === "__new__" || !getPhaseStages(d, d.newSession?.phase || "implementation").length ? `<label class="tp-field tp-field-compact"><span>New Stage Label</span><input type="text" value="${esc(d.newSession?.newStageLabel || "")}" data-bind="settings.newSession.newStageLabel"></label>` : ""}<label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="settings.newSession.owner"><option value="pm"${d.newSession?.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.newSession?.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="tp-field tp-field-compact"><span>Type</span><select data-bind="settings.newSession.type"><option value="external"${d.newSession?.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.newSession?.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-amber" data-action="addSettingsSession">Add Session</button></div><div class="tp-modal-actions"><button class="btn-default" data-action="closeSettings">Cancel</button><button class="btn-amber" data-action="saveSettings">Save Project</button></div></div></div>`;
+  const activeProject = getActiveProject();
+  const implementationEditable = !activeProject || state.actor !== "pm" || pmCanEditImplementation(activeProject);
+  const settingsBuilderPhases = implementationEditable ? PHASE_ORDER : PHASE_ORDER.filter((phaseKey) => phaseKey !== "implementation");
+  const selectedSettingsPhase = settingsBuilderPhases.includes(d.newSession?.phase) ? d.newSession.phase : settingsBuilderPhases[0] || "setup";
+  return `<div class="tp-modal-overlay is-open"><div class="tp-modal tp-modal-wide"><div class="tp-modal-head"><div><h3>Project Settings</h3><p>Edit metadata and sessions.</p></div><button class="btn-default btn-sm" data-action="closeSettings">Close</button></div><div class="tp-settings-grid"><label class="tp-field"><span>Client</span><input type="text" value="${esc(d.clientName)}" data-bind="settings.clientName"></label><label class="tp-field"><span>Type</span><select data-bind="settings.projectType">${renderTemplateOptions(d.templateOriginKey || d.projectType)}</select></label><label class="tp-field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="settings.pmName"></label><label class="tp-field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="settings.pmEmail"></label><label class="tp-field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="settings.isName"></label><label class="tp-field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="settings.isEmail"></label><label class="tp-field"><span>Kick-Off Date</span><input class="tp-mono" type="date" value="${d.projectStart}" data-bind="settings.projectStart"></label><label class="tp-field"><span>Implementation Start</span><input class="tp-mono" type="date" value="${d.implementationStart}" data-bind="settings.implementationStart"></label><label class="tp-field"><span>Go-Live</span><input class="tp-mono" type="date" value="${d.goLiveDate}" data-bind="settings.goLiveDate"></label><label class="tp-field"><span>Hypercare</span><select data-bind="settings.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="tp-field"><span>Smart Fill Default</span><select data-bind="settings.smartFillPreference"><option value="am"${d.smartFillPreference === "am" ? " selected" : ""}>AM</option><option value="none"${d.smartFillPreference === "none" ? " selected" : ""}>No Preference</option><option value="pm"${d.smartFillPreference === "pm" ? " selected" : ""}>PM</option></select></label><div class="tp-field tp-field-full"><span>Working Days</span>${renderWorkingDaysChips(d.workingDays, "Settings")}</div><div class="tp-summary-card tp-field-full"><p><strong>Suggested Go-Live:</strong> ${esc(fmtDate(d.goLiveSuggestedDate || d.goLiveDate || ""))}</p><p><strong>Recommended Duration:</strong> ${esc(fmtPhaseSpan(d.goLiveRecommendedWeeks))}</p>${d.goLiveWarning ? `<p class="tp-warning-copy">${esc(d.goLiveWarning)}</p>` : '<p class="tp-muted">Suggestion updates when implementation start or working days change.</p>'}</div><label class="tp-field tp-field-full"><span>Invitees</span><textarea rows="3" data-bind="settings.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea></label><label class="tp-field tp-field-full"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="settings.location"></label></div>${!implementationEditable ? '<div class="alert alert-info"><strong>Implementation read-only</strong><div>Implementation sessions are managed by the IS after handoff. Use a new handoff to resend intent.</div></div>' : ""}<div class="tp-settings-list">${PHASE_ORDER.map((phaseKey) => renderSessionRowsForStages(d, phaseKey, "moveSettingsSession", "removeSettingsSession", { editable: phaseKey !== "implementation" || implementationEditable })).join("")}</div><div class="tp-builder-grid"><label class="tp-field tp-field-compact"><span>Name</span><input type="text" value="${esc(d.newSession?.name || "")}" data-bind="settings.newSession.name"></label><label class="tp-field tp-field-compact"><span>Duration</span><input class="tp-mono" type="number" min="15" step="15" value="${d.newSession?.duration || 90}" data-bind="settings.newSession.duration"></label><label class="tp-field tp-field-compact"><span>Phase</span><select data-bind="settings.newSession.phase">${settingsBuilderPhases.map((phaseKey) => `<option value="${phaseKey}"${selectedSettingsPhase === phaseKey ? " selected" : ""}>${esc(PHASE_META[phaseKey].label)}</option>`).join("")}</select></label><label class="tp-field tp-field-compact"><span>Stage</span><select data-bind="settings.newSession.stageKey">${renderStageOptions(d, selectedSettingsPhase, d.newSession?.stageKey || "")}</select></label>${d.newSession?.stageKey === "__new__" || !getPhaseStages(d, selectedSettingsPhase).length ? `<label class="tp-field tp-field-compact"><span>New Stage Label</span><input type="text" value="${esc(d.newSession?.newStageLabel || "")}" data-bind="settings.newSession.newStageLabel"></label>` : ""}<label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="settings.newSession.owner"><option value="pm"${d.newSession?.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.newSession?.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="tp-field tp-field-compact"><span>Type</span><select data-bind="settings.newSession.type"><option value="external"${d.newSession?.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.newSession?.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-amber" data-action="addSettingsSession">Add Session</button></div><div class="tp-modal-actions"><button class="btn-default" data-action="closeSettings">Cancel</button><button class="btn-amber" data-action="saveSettings">Save Project</button></div></div></div>`;
 }
 
 function renderTemplateIssueList(title, issues, className = "") {

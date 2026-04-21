@@ -1,4 +1,4 @@
-import { DEEP_LINK_LIMIT, SENTINEL_SCHEMA_ID, SENTINEL_SUBJECT, getActiveProject, resetCalendarAvailability, setActiveProject, setActorMode, setAuthStatus, setCalendarEvents, setGraphAccount, setProjects, setProjectError, setScreen, setSentinelState, state, upsertProject } from "./state.js";
+import { DEEP_LINK_LIMIT, SENTINEL_SCHEMA_ID, SENTINEL_SUBJECT, getActiveProject, replaceProject, resetCalendarAvailability, setActiveProject, setActorMode, setAuthStatus, setCalendarEvents, setGraphAccount, setProjects, setProjectError, setScreen, setSentinelState, state, upsertProject } from "./state.js";
 import { GRAPH_CLIENT_ID, GRAPH_SCOPES, GRAPH_TENANT_ID, PRODUCT_NAME } from "./config.js";
 import { classifyCalendarSourceError, getCalendarFetchPlan } from "./calendar-sources.js";
 import { buildDeepLinkUrl } from "./deeplink.js";
@@ -12,10 +12,10 @@ import {
   getProjectDateRange,
   getProjectById,
   getPushableSessions,
-  mergeDeepLinkProject,
   normalizeProject,
-  serializeSentinelProjects,
+  syncProjectRuntimeState,
 } from "./projects.js";
+import { buildSentinelProjectRecord, createSentinelPayload, parseSentinelProjects } from "./sentinel-model.js";
 import { esc, getLocalTimeZone, pad, toast, toDateStr } from "./utils.js";
 
 const MSAL_CDN_URLS = [
@@ -26,8 +26,10 @@ const MSAL_CDN_URLS = [
 
 const GRAPH_TIMEOUT_MS = 30000;
 const SENTINEL_LOOKBACK_COUNT = 25;
+const GRAPH_BATCH_LIMIT = 20;
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const LEGACY_SENTINEL_SUBJECT = "[TP] Project Index";
+const PROJECT_ID_EXTENDED_PROPERTY_ID = "String {f4a0b90d-bf6d-4a31-a38d-7f2cdb9b6d22} Name trainingPlannerProjectId";
 
 let msalInstance = null;
 let msalInitPromise = null;
@@ -244,12 +246,10 @@ function toIsoLocal(date) {
   )}:${pad(date.getMinutes())}:00`;
 }
 
-function buildSentinelPayload(projects) {
+function buildSentinelPayload(projects, options = {}) {
   const payload = {
     schemaId: SENTINEL_SCHEMA_ID,
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    projects: serializeSentinelProjects(projects),
+    ...createSentinelPayload(projects, options),
   };
 
   return {
@@ -263,19 +263,7 @@ function buildSentinelPayload(projects) {
 }
 
 function parseSentinelExtension(extension) {
-  if (!extension) return [];
-
-  if (typeof extension.payload === "string") {
-    const parsed = JSON.parse(extension.payload);
-    if (!Array.isArray(parsed?.projects)) throw new Error("Sentinel payload is missing a valid projects array.");
-    return parsed.projects.map((project) => normalizeProject(project));
-  }
-
-  if (Array.isArray(extension.projects)) {
-    return extension.projects.map((project) => normalizeProject(project));
-  }
-
-  throw new Error("Sentinel extension did not contain a valid payload.");
+  return parseSentinelProjects(extension);
 }
 
 async function findSentinelSeriesBySubject(subject, userId = "me", { exact = false } = {}) {
@@ -351,8 +339,8 @@ async function readSentinelExtension(masterId, userId = "me") {
   }
 }
 
-async function writeSentinelExtension(masterId, projects, userId = "me") {
-  const payload = buildSentinelPayload(projects);
+async function writeSentinelExtension(masterId, projects, userId = "me", options = {}) {
+  const payload = buildSentinelPayload(projects, options);
   try {
     return await graphRequest(
       `${getGraphBase(userId)}/events/${encodeURIComponent(masterId)}/extensions/${encodeURIComponent(SENTINEL_SCHEMA_ID)}`,
@@ -378,9 +366,26 @@ export async function ensureSentinelSeries(userId = "me") {
   return master;
 }
 
-export async function fetchSentinel({ userId = "me" } = {}) {
-  const master = await ensureSentinelSeries(userId);
-  const extension = await readSentinelExtension(master.id, userId);
+export async function fetchSentinel({
+  userId = "me",
+  createIfMissing = userId === "me",
+  ensureSentinelSeriesImpl = ensureSentinelSeries,
+  findSentinelSeriesImpl = findSentinelSeries,
+  readSentinelExtensionImpl = readSentinelExtension,
+  writeSentinelExtensionImpl = writeSentinelExtension,
+} = {}) {
+  const master = createIfMissing
+    ? await ensureSentinelSeriesImpl(userId)
+    : await findSentinelSeriesImpl(userId);
+
+  if (!master) {
+    return {
+      master: null,
+      projects: [],
+    };
+  }
+
+  const extension = await readSentinelExtensionImpl(master.id, userId);
 
   if (userId === "me") {
     setSentinelState({
@@ -395,7 +400,14 @@ export async function fetchSentinel({ userId = "me" } = {}) {
   }
 
   if (!extension) {
-    await writeSentinelExtension(master.id, [], userId);
+    if (!createIfMissing) {
+      return {
+        master,
+        projects: [],
+      };
+    }
+
+    await writeSentinelExtensionImpl(master.id, [], userId);
     return {
       master,
       projects: [],
@@ -409,13 +421,31 @@ export async function fetchSentinel({ userId = "me" } = {}) {
   };
 }
 
-export async function writeSentinel(projects, { userId = "me" } = {}) {
+export async function readSentinelReadOnly({ userId = "me", ...options } = {}) {
+  return fetchSentinel({
+    userId,
+    createIfMissing: false,
+    ...options,
+  });
+}
+
+function getSentinelMailbox(userId = "me", mailbox = "") {
+  if (mailbox) return String(mailbox || "").trim().toLowerCase();
+  if (userId !== "me") return String(userId || "").trim().toLowerCase();
+  return String(state.graphAccount?.username || "").trim().toLowerCase();
+}
+
+export async function writeSentinel(projects, { userId = "me", mailbox = "", perspective = "" } = {}) {
   const master = await ensureSentinelSeries(userId);
   if (master.subject === LEGACY_SENTINEL_SUBJECT) {
     await renameSentinelSeries(master.id, userId);
     master.subject = SENTINEL_SUBJECT;
   }
-  await writeSentinelExtension(master.id, projects, userId);
+  const sentinelMailbox = getSentinelMailbox(userId, mailbox);
+  await writeSentinelExtension(master.id, projects, userId, {
+    mailbox: sentinelMailbox,
+    perspective,
+  });
   if (userId === "me") {
     setSentinelState({
       status: "ready",
@@ -473,22 +503,6 @@ export async function persistActiveProjects() {
   await writeSentinel(state.projects);
 }
 
-export async function resolveUserByEmail(email) {
-  if (!email) return null;
-
-  try {
-    return await graphRequest(
-      `${GRAPH_ROOT}/users/${encodeURIComponent(email)}?$select=id,displayName,mail,userPrincipalName`,
-      {
-        scopes: GRAPH_SCOPES,
-      }
-    );
-  } catch (error) {
-    console.warn("resolveUserByEmail failed:", error);
-    return null;
-  }
-}
-
 export async function searchPeople(query) {
   if (!query?.trim()) {
     state.ui.peopleMatches = [];
@@ -530,7 +544,7 @@ export async function searchPeople(query) {
   }
 }
 
-function buildEventPayload(project, session) {
+export function buildEventPayload(project, session) {
   const [year, month, day] = session.date.split("-").map(Number);
   const [hours, minutes] = session.time.split(":").map(Number);
   const start = new Date(year, month - 1, day, hours, minutes, 0);
@@ -561,6 +575,15 @@ function buildEventPayload(project, session) {
         type: "required",
       }));
     }
+  }
+
+  if (session.owner === "is" && project?.id) {
+    event.singleValueExtendedProperties = [
+      {
+        id: PROJECT_ID_EXTENDED_PROPERTY_ID,
+        value: String(project.id),
+      },
+    ];
   }
 
   return event;
@@ -594,6 +617,369 @@ async function pushGraphEvent(session, project) {
     }
     throw error;
   }
+}
+
+function chunkArray(items = [], size = GRAPH_BATCH_LIMIT) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function buildBatchUserPath(userId = "me") {
+  return userId === "me" ? "/me" : `/users/${encodeURIComponent(userId)}`;
+}
+
+function buildSessionStartValue(session) {
+  if (!session?.date || !session?.time) return "";
+  return `${session.date}T${session.time}:00`;
+}
+
+function buildSessionEndValue(session) {
+  if (!session?.date || !session?.time) return "";
+  const [year, month, day] = String(session.date).split("-").map(Number);
+  const [hours, minutes] = String(session.time).split(":").map(Number);
+  const start = new Date(year, (month || 1) - 1, day || 1, hours || 0, minutes || 0, 0);
+  const end = new Date(start.getTime() + (Number(session.duration) || 0) * 60000);
+  return toIsoLocal(end);
+}
+
+function getSessionExpectedWindow(session) {
+  return {
+    start: session?.lastKnownStart || buildSessionStartValue(session),
+    end: session?.lastKnownEnd || buildSessionEndValue(session),
+  };
+}
+
+function extractGraphDateParts(value = "") {
+  const match = String(value).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+  return {
+    date: match?.[1] || "",
+    time: match?.[2] || "",
+  };
+}
+
+function getDurationFromGraphWindow(startValue, endValue, fallback = 90) {
+  const start = new Date(startValue);
+  const end = new Date(endValue);
+  const durationMinutes = Math.round((end.getTime() - start.getTime()) / 60000);
+  if (Number.isNaN(durationMinutes) || durationMinutes <= 0) {
+    return Number(fallback) || 90;
+  }
+  return durationMinutes;
+}
+
+function applyGraphEventToSession(session, event = {}) {
+  const liveStart = event.start?.dateTime || "";
+  const liveEnd = event.end?.dateTime || "";
+  const parts = extractGraphDateParts(liveStart);
+  session.graphEventId = event.id || session.graphEventId;
+  session.graphActioned = true;
+  session.lastKnownStart = liveStart;
+  session.lastKnownEnd = liveEnd;
+  if (parts.date) session.date = parts.date;
+  if (parts.time) session.time = parts.time;
+  session.duration = getDurationFromGraphWindow(liveStart, liveEnd, session.duration);
+  session.durationMinutes = session.duration;
+}
+
+async function batchFetchEventsById(eventIds = [], { userId = "me", graphRequestImpl = graphRequest } = {}) {
+  const uniqueEventIds = [...new Set((eventIds || []).filter(Boolean))];
+  const eventsById = new Map();
+  if (!uniqueEventIds.length) return eventsById;
+
+  const basePath = buildBatchUserPath(userId);
+  for (const chunk of chunkArray(uniqueEventIds)) {
+    const response = await graphRequestImpl(`${GRAPH_ROOT}/$batch`, {
+      method: "POST",
+      body: {
+        requests: chunk.map((eventId, index) => ({
+          id: String(index),
+          method: "GET",
+          url: `${basePath}/events/${encodeURIComponent(eventId)}?$select=id,start,end`,
+          headers: {
+            Prefer: `outlook.timezone="${getLocalTimeZone()}"`,
+          },
+        })),
+      },
+    });
+
+    for (const item of response?.responses || []) {
+      const eventId = chunk[Number(item.id)];
+      if (!eventId) continue;
+      if (item.status === 200) {
+        eventsById.set(eventId, item.body || null);
+        continue;
+      }
+      if (item.status === 404 || item.status === 410) {
+        eventsById.set(eventId, null);
+        continue;
+      }
+
+      const error = new Error(item.body?.error?.message || `Batch event lookup failed with status ${item.status}`);
+      error.status = item.status;
+      throw error;
+    }
+  }
+
+  return eventsById;
+}
+
+function setProjectReconciliationSuccess(project, stateValue, attemptedAt) {
+  project.reconciliation = project.reconciliation || {};
+  project.reconciliation.lastAttemptedAt = attemptedAt;
+  project.reconciliation.lastSuccessfulAt = attemptedAt;
+  project.reconciliation.lastFailureAt = "";
+  project.reconciliation.lastFailureMessage = "";
+  project.reconciliation.state = stateValue;
+  project.reconciliationState = stateValue;
+  syncProjectRuntimeState(project);
+}
+
+function setProjectReconciliationFailure(project, error, attemptedAt) {
+  const message = error?.message || String(error);
+  project.reconciliation = project.reconciliation || {};
+  project.reconciliation.lastAttemptedAt = attemptedAt;
+  project.reconciliation.lastFailureAt = attemptedAt;
+  project.reconciliation.lastFailureMessage = message;
+  project.reconciliation.state = "refresh_failed";
+  project.reconciliationState = "refresh_failed";
+  syncProjectRuntimeState(project);
+}
+
+function reconcileIsProjectWithEvents(project, eventsById, attemptedAt) {
+  const implementationSessions = getPhaseSessions(project, "implementation").filter((session) => session.graphEventId);
+  if (!implementationSessions.length) return false;
+
+  let driftDetected = false;
+  for (const session of implementationSessions) {
+    const liveEvent = eventsById.get(session.graphEventId);
+    if (!liveEvent) {
+      session.graphActioned = false;
+      driftDetected = true;
+      continue;
+    }
+
+    const expectedWindow = getSessionExpectedWindow(session);
+    const liveStart = liveEvent.start?.dateTime || "";
+    const liveEnd = liveEvent.end?.dateTime || "";
+    if (
+      (expectedWindow.start && liveStart && expectedWindow.start !== liveStart)
+      || (expectedWindow.end && liveEnd && expectedWindow.end !== liveEnd)
+    ) {
+      driftDetected = true;
+    }
+
+    applyGraphEventToSession(session, liveEvent);
+  }
+
+  setProjectReconciliationSuccess(project, driftDetected ? "drift_detected" : "in_sync", attemptedAt);
+  return driftDetected;
+}
+
+export async function reconcileIsProjects({
+  projects = state.projects,
+  userId = "me",
+  graphRequestImpl = graphRequest,
+  persistProjectsImpl = persistActiveProjects,
+} = {}) {
+  const applicableProjects = (projects || []).filter((project) =>
+    getPhaseSessions(project, "implementation").some((session) => session.graphEventId)
+  );
+  if (!applicableProjects.length) {
+    return {
+      reconciledCount: 0,
+      driftedCount: 0,
+      failed: false,
+    };
+  }
+
+  const attemptedAt = new Date().toISOString();
+
+  try {
+    const eventIds = applicableProjects.flatMap((project) =>
+      getPhaseSessions(project, "implementation")
+        .map((session) => session.graphEventId)
+        .filter(Boolean)
+    );
+    const eventsById = await batchFetchEventsById(eventIds, { userId, graphRequestImpl });
+    let driftedCount = 0;
+    for (const project of applicableProjects) {
+      if (reconcileIsProjectWithEvents(project, eventsById, attemptedAt)) {
+        driftedCount += 1;
+      }
+    }
+
+    await persistProjectsImpl();
+    return {
+      reconciledCount: applicableProjects.length,
+      driftedCount,
+      failed: false,
+    };
+  } catch (error) {
+    for (const project of applicableProjects) {
+      setProjectReconciliationFailure(project, error, attemptedAt);
+    }
+    await persistProjectsImpl();
+    return {
+      reconciledCount: applicableProjects.length,
+      driftedCount: 0,
+      failed: true,
+      error,
+    };
+  }
+}
+
+function updateProjectCollection(projects, nextProject) {
+  const index = (projects || []).findIndex((project) => project.id === nextProject.id);
+  if (index >= 0) {
+    projects[index] = nextProject;
+  }
+  replaceProject(nextProject.id, nextProject);
+}
+
+function projectNeedsPmReconciliation(project) {
+  return Boolean(project?.handoff?.sentAt && project?.isEmail && !project?.closedAt);
+}
+
+function getPmSparseImplementationPhase(project) {
+  return buildSentinelProjectRecord(project, { perspective: "pm" }).phases.implementation || {};
+}
+
+function buildPmPendingProject(project, attemptedAt) {
+  return normalizeProject({
+    ...project,
+    phases: {
+      setup: project.phases?.setup || {},
+      implementation: getPmSparseImplementationPhase(project),
+      hypercare: project.phases?.hypercare || {},
+    },
+    lifecycleState: project.closedAt ? "closed" : "handed_off_pending_is",
+    reconciliation: {
+      ...(project.reconciliation || {}),
+      lastAttemptedAt: attemptedAt,
+      lastSuccessfulAt: attemptedAt,
+      lastFailureAt: "",
+      lastFailureMessage: "",
+      state: "not_applicable",
+    },
+    reconciliationState: "not_applicable",
+    isCommittedAt: "",
+    completedAt: "",
+  });
+}
+
+function buildPmProjectFromIsAuthority(project, isProject, attemptedAt) {
+  const nextState = isProject.reconciliationState || isProject.reconciliation?.state || "not_applicable";
+  return normalizeProject({
+    ...project,
+    phases: {
+      setup: project.phases?.setup || {},
+      implementation: isProject.phases?.implementation || {},
+      hypercare: project.phases?.hypercare || {},
+    },
+    lifecycleState: project.closedAt ? "closed" : "is_active",
+    reconciliation: {
+      ...(project.reconciliation || {}),
+      lastAttemptedAt: attemptedAt,
+      lastSuccessfulAt: attemptedAt,
+      lastFailureAt: "",
+      lastFailureMessage: "",
+      state: nextState,
+    },
+    reconciliationState: nextState,
+    isCommittedAt: "",
+    completedAt: "",
+  });
+}
+
+function buildPmRefreshFailedProject(project, error, attemptedAt) {
+  const nextProject = normalizeProject({
+    ...project,
+    phases: {
+      setup: project.phases?.setup || {},
+      implementation: getPmSparseImplementationPhase(project),
+      hypercare: project.phases?.hypercare || {},
+    },
+    lifecycleState: project.closedAt ? "closed" : project.lifecycleState || project.status || "handed_off_pending_is",
+    reconciliation: {
+      ...(project.reconciliation || {}),
+      lastAttemptedAt: attemptedAt,
+      lastFailureAt: attemptedAt,
+      lastFailureMessage: error?.message || String(error),
+      state: "refresh_failed",
+    },
+    reconciliationState: "refresh_failed",
+    isCommittedAt: "",
+    completedAt: "",
+  });
+  nextProject.reconciliation.lastSuccessfulAt = project.reconciliation?.lastSuccessfulAt || "";
+  return nextProject;
+}
+
+export async function reconcilePmProjects({
+  projects = state.projects,
+  projectIds = [],
+  readSentinelImpl = readSentinelReadOnly,
+  persistProjectsImpl = persistActiveProjects,
+} = {}) {
+  const selectedProjectIds = new Set((projectIds || []).filter(Boolean));
+  const applicableProjects = (projects || []).filter(
+    (project) => projectNeedsPmReconciliation(project) && (!selectedProjectIds.size || selectedProjectIds.has(project.id))
+  );
+  if (!applicableProjects.length) {
+    return {
+      reconciledCount: 0,
+      pendingCount: 0,
+      failedCount: 0,
+    };
+  }
+
+  const attemptedAt = new Date().toISOString();
+  const mailboxGroups = new Map();
+  for (const project of applicableProjects) {
+    const mailbox = normalizeEmailAddress(project.isEmail);
+    if (!mailboxGroups.has(mailbox)) mailboxGroups.set(mailbox, []);
+    mailboxGroups.get(mailbox).push(project);
+  }
+
+  let reconciledCount = 0;
+  let pendingCount = 0;
+  let failedCount = 0;
+
+  for (const [mailbox, mailboxProjects] of mailboxGroups.entries()) {
+    try {
+      const { projects: foreignProjects } = await readSentinelImpl({ userId: mailbox });
+      const foreignProjectMap = new Map((foreignProjects || []).map((project) => [project.id, project]));
+
+      for (const project of mailboxProjects) {
+        const authoritativeProject = foreignProjectMap.get(project.id);
+        const nextProject = authoritativeProject
+          ? buildPmProjectFromIsAuthority(project, authoritativeProject, attemptedAt)
+          : buildPmPendingProject(project, attemptedAt);
+        updateProjectCollection(projects, nextProject);
+        if (authoritativeProject) {
+          reconciledCount += 1;
+        } else {
+          pendingCount += 1;
+        }
+      }
+    } catch (error) {
+      for (const project of mailboxProjects) {
+        const nextProject = buildPmRefreshFailedProject(project, error, attemptedAt);
+        updateProjectCollection(projects, nextProject);
+        failedCount += 1;
+      }
+    }
+  }
+
+  await persistProjectsImpl();
+  return {
+    reconciledCount,
+    pendingCount,
+    failedCount,
+  };
 }
 
 function normalizeEmailAddress(value) {
@@ -873,7 +1259,6 @@ export async function pushOwnedSessions({
   pushSessionToCalendarImpl = pushSessionToCalendar,
   persistActiveProjectsImpl = persistActiveProjects,
   fetchCalendarEventsImpl = fetchCalendarEvents,
-  syncProjectToPartnerSentinelImpl = syncProjectToPartnerSentinel,
   toastImpl = toast,
 } = {}) {
   if (!project) return 0;
@@ -906,7 +1291,7 @@ export async function pushOwnedSessions({
     }
 
     if (actor === "is") {
-      await syncProjectToPartnerSentinelImpl(project, "pm");
+      syncProjectRuntimeState(project);
     }
   }
 
@@ -965,90 +1350,52 @@ function buildHandoffEvent(project, deepLinkUrl) {
   };
 }
 
-async function writeProjectToUserSentinel(project, userId) {
-  const existing = await fetchSentinel({ userId });
-  const projects = [...existing.projects];
-  const index = projects.findIndex((candidate) => candidate.id === project.id);
-  if (index >= 0) {
-    projects.splice(index, 1, project);
-  } else {
-    projects.push(project);
-  }
-  await writeSentinel(projects, { userId });
-}
-
-async function syncProjectToPartnerSentinel(project, partnerRole) {
-  const email = partnerRole === "pm" ? project.pmEmail : project.isEmail;
-  if (!email) return false;
-
-  try {
-    await writeProjectToUserSentinel(project, email);
-    return true;
-  } catch (error) {
-    console.warn("Partner sentinel sync failed:", error);
-    project.handoff.pendingPmSync = partnerRole === "pm";
-    try {
-      await persistActiveProjects();
-    } catch (persistError) {
-      console.warn("Could not persist pendingPmSync flag:", persistError);
-    }
-    return false;
-  }
-}
-
-export async function createHandoffEvent(project = getActiveProject()) {
+export async function createHandoffEvent(
+  project = getActiveProject(),
+  {
+    buildDeepLinkUrlImpl = buildDeepLinkUrl,
+    graphRequestImpl = graphRequest,
+    persistActiveProjectsImpl = persistActiveProjects,
+    toastImpl = toast,
+  } = {}
+) {
   if (!project) return null;
 
-  const { url, length, warn } = buildDeepLinkUrl(project);
+  const { url, length, warn } = buildDeepLinkUrlImpl(project);
   if (warn) {
-    toast(`Deep link may be too long for some clients (${length}/${DEEP_LINK_LIMIT})`, 5000);
+    toastImpl(`Deep link may be too long for some clients (${length}/${DEEP_LINK_LIMIT})`, 5000);
   }
 
   const eventPayload = buildHandoffEvent(project, url);
-  const resolvedUser = await resolveUserByEmail(project.isEmail);
-  let createdEvent = null;
-  let delegateUsed = false;
-
-  if (resolvedUser?.id) {
-    try {
-      await writeProjectToUserSentinel(project, resolvedUser.id);
-      createdEvent = await graphRequest(`${getGraphBase(resolvedUser.id)}/events`, {
-        method: "POST",
-        body: eventPayload,
-      });
-      delegateUsed = true;
-    } catch (error) {
-      console.warn("Delegate handoff failed, falling back to attendee handoff:", error);
-    }
-  }
-
-  if (!createdEvent) {
-    createdEvent = await graphRequest(`${getGraphBase()}/events`, {
-      method: "POST",
-      body: eventPayload,
-    });
-  }
+  const createdEvent = await graphRequestImpl(`${getGraphBase()}/events`, {
+    method: "POST",
+    body: eventPayload,
+  });
 
   project.handoff = {
     sentAt: new Date().toISOString(),
-    delegateUsed,
+    delegateUsed: false,
     deepLinkUrl: url,
     deepLinkLength: length,
-    pendingPmSync: false,
     eventId: createdEvent?.id || "",
   };
-  project.status = deriveProjectStatus(project);
-  await persistActiveProjects();
+  syncProjectRuntimeState(project);
+  await persistActiveProjectsImpl();
   state.ui.lastHandoff = {
     url,
     length,
-    delegateUsed,
+    delegateUsed: false,
     eventId: createdEvent?.id || "",
   };
   return state.ui.lastHandoff;
 }
 
-export async function applyDeepLinkProject(payload) {
+export async function applyDeepLinkProject(
+  payload,
+  {
+    persistActiveProjectsImpl = persistActiveProjects,
+  } = {}
+) {
   const incomingProject = normalizeProject({
     id: payload.id,
     clientName: payload.c,
@@ -1088,13 +1435,19 @@ export async function applyDeepLinkProject(payload) {
   });
 
   const existing = getProjectById(state.projects, incomingProject.id);
-  const merged = mergeDeepLinkProject(existing, incomingProject);
-  upsertProject(merged);
-  setActiveProject(merged.id);
+  if (existing) {
+    setActiveProject(existing.id);
+    setActorMode("is", "is");
+    setScreen("workspace");
+    return existing;
+  }
+
+  upsertProject(incomingProject);
+  setActiveProject(incomingProject.id);
   setActorMode("is", "is");
   setScreen("workspace");
-  await persistActiveProjects();
-  return merged;
+  await persistActiveProjectsImpl();
+  return incomingProject;
 }
 
 async function deleteGraphEvent(eventId) {
@@ -1170,12 +1523,11 @@ export async function closeProject(project) {
   const deleteResult = await deleteFutureProjectEvents(project);
   project.closedAt = new Date().toISOString();
   project.closedBy = state.graphAccount?.name || "Project Manager";
-  project.status = deriveProjectStatus(project);
+  syncProjectRuntimeState(project);
   await persistActiveProjects();
 
   await Promise.allSettled([
     project.isEmail ? createCloseNotificationEvent(project) : Promise.resolve(null),
-    project.isEmail ? syncProjectToPartnerSentinel(project, "is") : Promise.resolve(false),
   ]);
 
   return deleteResult;

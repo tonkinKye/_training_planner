@@ -36,11 +36,26 @@ export const PROJECT_TYPE_META = Object.freeze(
 );
 
 export const STATUS_META = {
-  scheduling: "Scheduling",
-  pending_is_commit: "Pending IS",
-  active: "Active",
-  complete: "Complete",
+  draft: "Draft",
+  pm_scheduled: "PM Scheduled",
+  handed_off_pending_is: "Handed Off",
+  is_active: "Active",
   closed: "Closed",
+};
+
+export const LIFECYCLE_STATE_META = {
+  draft: "Draft",
+  pm_scheduled: "PM Scheduled",
+  handed_off_pending_is: "Handed Off",
+  is_active: "Active",
+  closed: "Closed",
+};
+
+export const RECONCILIATION_STATE_META = {
+  not_applicable: "Not Applicable",
+  in_sync: "In Sync",
+  drift_detected: "Drift Detected",
+  refresh_failed: "Refresh Failed",
 };
 
 function normalizeInvitees(value) {
@@ -72,6 +87,16 @@ function normalizeWorkingDays(value) {
     .sort((left, right) => left - right);
 
   return days.length ? days : [...DEFAULT_WORKING_DAYS];
+}
+
+function normalizeLifecycleState(value) {
+  if (Object.hasOwn(LIFECYCLE_STATE_META, value)) return value;
+  return "";
+}
+
+function normalizeReconciliationState(value) {
+  if (Object.hasOwn(RECONCILIATION_STATE_META, value)) return value;
+  return "";
 }
 
 function addDays(date, amount) {
@@ -154,6 +179,8 @@ function makeSession(definition, index, phaseKey = definition?.phase || "impleme
     calendarSource: definition?.calendarSource || definition?.phaseCalendarSource || PHASE_META[phaseKey].owner,
     date: definition?.date || "",
     time: definition?.time || "",
+    lastKnownStart: definition?.lastKnownStart || "",
+    lastKnownEnd: definition?.lastKnownEnd || "",
     graphEventId: definition?.graphEventId || "",
     graphActioned: Boolean(definition?.graphActioned),
     outlookActioned: Boolean(definition?.outlookActioned),
@@ -535,22 +562,29 @@ export function normalizeProject(project) {
       delegateUsed: Boolean(project?.handoff?.delegateUsed),
       deepLinkUrl: project?.handoff?.deepLinkUrl || "",
       deepLinkLength: Number(project?.handoff?.deepLinkLength) || 0,
-      pendingPmSync: Boolean(project?.handoff?.pendingPmSync),
       eventId: project?.handoff?.eventId || "",
+    },
+    reconciliation: {
+      state: normalizeReconciliationState(project?.reconciliation?.state),
+      lastAttemptedAt: project?.reconciliation?.lastAttemptedAt || "",
+      lastSuccessfulAt: project?.reconciliation?.lastSuccessfulAt || "",
+      lastFailureAt: project?.reconciliation?.lastFailureAt || "",
+      lastFailureMessage: project?.reconciliation?.lastFailureMessage || "",
     },
     isCommittedAt: project?.isCommittedAt || "",
     completedAt: project?.completedAt || "",
     closedAt: project?.closedAt || "",
     closedBy: String(project?.closedBy || "").trim(),
+    lifecycleState: normalizeLifecycleState(project?.lifecycleState),
+    reconciliationState: normalizeReconciliationState(project?.reconciliationState),
     createdAt: project?.createdAt || new Date().toISOString(),
     updatedAt: project?.updatedAt || new Date().toISOString(),
-    status: project?.status || "scheduling",
+    status: project?.status || "draft",
   };
 
   normalizeProjectOrders(nextProject);
   syncLockedAnchorSessions(nextProject);
-  nextProject.status = deriveProjectStatus(nextProject);
-  return nextProject;
+  return syncProjectRuntimeState(nextProject);
 }
 
 export function cloneProject(project) {
@@ -717,6 +751,7 @@ export function moveSession(project, sessionId, direction) {
 
 export function touchProject(project) {
   project.updatedAt = new Date().toISOString();
+  return syncProjectRuntimeState(project);
 }
 
 export function getPhaseRange(project, phaseKey) {
@@ -852,8 +887,18 @@ export function isDateWithinPhaseWindow(project, session, dateString) {
 
 export function canEditSession(project, session, actor) {
   if (!project || !session || !actor || session.locked) return false;
-  if (actor === "pm") return true;
+  if (actor === "pm") {
+    if (session.phase === "implementation" && !pmCanEditImplementation(project)) {
+      return false;
+    }
+    return true;
+  }
   return getCalendarOwnerForPhase(session.phase, project) === actor;
+}
+
+export function pmCanEditImplementation(project) {
+  const lifecycleState = deriveProjectLifecycleState(project);
+  return lifecycleState === "draft" || lifecycleState === "pm_scheduled";
 }
 
 export function canCommitSession(session, actor) {
@@ -940,51 +985,98 @@ export function projectHasImplementationReady(project) {
 }
 
 export function projectHasPendingCommit(project) {
-  return deriveProjectStatus(project) === "pending_is_commit";
+  return deriveProjectStatus(project) === "handed_off_pending_is";
 }
 
 export function projectIsComplete(project) {
-  return deriveProjectStatus(project) === "complete";
+  return false;
 }
 
 export function projectIsClosed(project) {
   return deriveProjectStatus(project) === "closed";
 }
 
-export function deriveProjectStatus(project) {
-  const allSessions = getAllSessions(project);
-  const setupSessions = getPhaseSessions(project, "setup");
-  const implementationSessions = getPhaseSessions(project, "implementation");
-  const hypercareSessions = getPhaseSessions(project, "hypercare");
-  const implementationCommitted = implementationSessions.length
-    ? implementationSessions.every((session) => session.graphActioned || session.type === "internal")
-    : false;
-  const pmSessionsCommitted = [...setupSessions, ...hypercareSessions].every(
-    (session) => session.graphActioned || session.type === "internal"
-  );
-  const allProjectCommitted = allSessions.every((session) => session.graphActioned || session.type === "internal");
-
-  if (project.closedAt) {
+export function deriveProjectLifecycleState(project) {
+  const explicit = normalizeLifecycleState(project?.lifecycleState);
+  if (project?.closedAt) {
     return "closed";
   }
 
-  if (project.completedAt || (allProjectCommitted && implementationCommitted && pmSessionsCommitted)) {
-    return "complete";
+  if (project?.handoff?.sentAt) {
+    if (project?.isCommittedAt) {
+      return "is_active";
+    }
+
+    const implementationSessions = getPhaseSessions(project, "implementation");
+    const implementationActive = implementationSessions.some(
+      (session) => session.graphActioned || session.graphEventId || session.lastKnownStart || session.lastKnownEnd
+    );
+    if (implementationActive) {
+      return "is_active";
+    }
+    if (explicit === "is_active" || explicit === "handed_off_pending_is") {
+      return explicit;
+    }
+    return "handed_off_pending_is";
   }
 
-  if (project.isCommittedAt || implementationCommitted) {
-    return "active";
+  if (projectHasImplementationReady(project)) {
+    return "pm_scheduled";
   }
 
-  if (project.handoff?.sentAt) {
-    return "pending_is_commit";
-  }
+  return explicit === "draft" || explicit === "pm_scheduled" ? explicit : "draft";
+}
 
-  return "scheduling";
+export function deriveProjectReconciliationState(project) {
+  const explicit =
+    normalizeReconciliationState(project?.reconciliationState)
+    || normalizeReconciliationState(project?.reconciliation?.state);
+  if (explicit) return explicit;
+
+  return "not_applicable";
+}
+
+export function deriveProjectStatus(project) {
+  return deriveProjectLifecycleState(project);
+}
+
+export function syncProjectRuntimeState(project) {
+  if (!project) return project;
+  project.lifecycleState = deriveProjectLifecycleState(project);
+  project.reconciliationState =
+    normalizeReconciliationState(project.reconciliationState)
+    || normalizeReconciliationState(project.reconciliation?.state)
+    || deriveProjectReconciliationState(project);
+  if (project.reconciliation) {
+    project.reconciliation.state = project.reconciliationState;
+  }
+  project.status = deriveProjectStatus(project);
+  return project;
 }
 
 export function getProjectCardStatus(project) {
-  return STATUS_META[deriveProjectStatus(project)] || STATUS_META.scheduling;
+  return STATUS_META[deriveProjectStatus(project)] || STATUS_META.draft;
+}
+
+function sessionDateTimeValue(session) {
+  if (!session?.date || !session?.time) return null;
+  const [hours, minutes] = String(session.time).split(":").map(Number);
+  const value = parseDate(session.date);
+  value.setHours(hours || 0, minutes || 0, 0, 0);
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
+export function projectReadyToClose(project, now = new Date()) {
+  if (!project || deriveProjectLifecycleState(project) === "closed") return false;
+  if (deriveProjectReconciliationState(project) !== "in_sync") return false;
+
+  const sessions = getAllSessions(project);
+  if (!sessions.length) return false;
+
+  return sessions.every((session) => {
+    const value = sessionDateTimeValue(session);
+    return Boolean(value) && value < now;
+  });
 }
 
 export function getProjectCounts(project) {

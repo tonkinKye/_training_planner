@@ -39,6 +39,7 @@ import {
   moveSession,
   normalizeProject,
   PHASE_ORDER,
+  pmCanEditImplementation,
   projectHasImplementationReady,
   recomputeStageRange,
   removeSession,
@@ -102,6 +103,11 @@ function getCurrentProjectOrToast() {
     return null;
   }
   return project;
+}
+
+function settingsImplementationEditingAllowed(project = getCurrentProjectOrToast()) {
+  if (!project || state.actor !== "pm") return true;
+  return pmCanEditImplementation(project);
 }
 
 function ensureFutureDate(value) {
@@ -869,6 +875,7 @@ function validateDraft(draft) {
 
 function ensureSettingsDraft(project) {
   const draft = cloneProject(project);
+  const implementationEditable = settingsImplementationEditingAllowed(project);
   draft.goLiveSuggestedDate = "";
   draft.goLiveRecommendedWeeks = 0;
   draft.goLiveWarning = "";
@@ -876,10 +883,10 @@ function ensureSettingsDraft(project) {
   refreshGoLiveSuggestion(draft, { forceAutofill: false });
   draft.goLiveManuallySet = Boolean(draft.goLiveDate && draft.goLiveDate !== draft.goLiveSuggestedDate);
   draft.newSession = {
-    phase: "implementation",
-    stageKey: getPhaseStages(draft, "implementation")[0]?.key || "",
+    phase: implementationEditable ? "implementation" : "setup",
+    stageKey: implementationEditable ? getPhaseStages(draft, "implementation")[0]?.key || "" : getPhaseStages(draft, "setup")[0]?.key || "",
     newStageLabel: "",
-    owner: "is",
+    owner: implementationEditable ? "is" : "pm",
     name: "",
     duration: 90,
     type: "external",
@@ -1121,6 +1128,12 @@ export function updateSettingsField(field, value) {
     const key = field.split(".")[1];
     draft.newSession[key] = key === "duration" ? Number(value) || 90 : value;
     if (key === "phase") {
+      if (value === "implementation" && !settingsImplementationEditingAllowed()) {
+        draft.newSession.phase = "setup";
+        draft.newSession.owner = "pm";
+        ensureBuilderStage(draft, "newSession");
+        return;
+      }
       draft.newSession.owner = value === "implementation" ? "is" : "pm";
       ensureBuilderStage(draft, "newSession");
     }
@@ -1185,6 +1198,10 @@ export function toggleSettingsWorkingDay(day) {
 export function addSettingsSession() {
   const draft = state.ui.settings.draft;
   if (!draft) return;
+  if (draft.newSession.phase === "implementation" && !settingsImplementationEditingAllowed()) {
+    toast("Implementation sessions are read-only after handoff.");
+    return;
+  }
   if (!draft.newSession.name.trim()) {
     toast("Add a session name first");
     return;
@@ -1196,7 +1213,12 @@ export function addSettingsSession() {
 export function removeSettingsSession(sessionId) {
   const draft = state.ui.settings.draft;
   if (!draft) return;
-  if (findSession(draft, sessionId)?.session?.lockedDate) return;
+  const found = findSession(draft, sessionId);
+  if (!found || found.session?.lockedDate) return;
+  if (found.session.phase === "implementation" && !settingsImplementationEditingAllowed()) {
+    toast("Implementation sessions are read-only after handoff.");
+    return;
+  }
   removeSession(draft, sessionId);
   syncProjectDraftAfterSessionMutation(draft);
 }
@@ -1204,7 +1226,12 @@ export function removeSettingsSession(sessionId) {
 export function moveSettingsSession(sessionId, direction) {
   const draft = state.ui.settings.draft;
   if (!draft) return;
-  if (findSession(draft, sessionId)?.session?.lockedDate) return;
+  const found = findSession(draft, sessionId);
+  if (!found || found.session?.lockedDate) return;
+  if (found.session.phase === "implementation" && !settingsImplementationEditingAllowed()) {
+    toast("Implementation sessions are read-only after handoff.");
+    return;
+  }
   moveSession(draft, sessionId, direction);
   syncProjectDraftAfterSessionMutation(draft);
 }
@@ -1213,6 +1240,10 @@ export function saveSettingsDraft() {
   const project = getCurrentProjectOrToast();
   const draft = state.ui.settings.draft;
   if (!project || !draft) return { status: "failed", project: null };
+
+  if (!settingsImplementationEditingAllowed(project)) {
+    draft.phases.implementation = cloneProject(project).phases.implementation;
+  }
 
   const validated = normalizeProject({
     ...project,
@@ -1367,7 +1398,8 @@ export function unscheduleSession(sessionId) {
 export function removeActiveSession(sessionId) {
   const project = getCurrentProjectOrToast();
   if (!project || state.actor !== "pm") return false;
-  if (findSession(project, sessionId)?.session?.lockedDate) return false;
+  const found = findSession(project, sessionId);
+  if (!found || found.session?.lockedDate || !canEditSession(project, found.session, state.actor)) return false;
   removeSession(project, sessionId);
   return true;
 }
@@ -1375,7 +1407,8 @@ export function removeActiveSession(sessionId) {
 export function moveActiveSession(sessionId, direction) {
   const project = getCurrentProjectOrToast();
   if (!project || state.actor !== "pm") return false;
-  if (findSession(project, sessionId)?.session?.lockedDate) return false;
+  const found = findSession(project, sessionId);
+  if (!found || found.session?.lockedDate || !canEditSession(project, found.session, state.actor)) return false;
   moveSession(project, sessionId, direction);
   return true;
 }

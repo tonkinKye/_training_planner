@@ -20,6 +20,8 @@ import {
   fetchCalendarEvents,
   loadSharedCalendars,
   persistActiveProjects,
+  reconcileIsProjects,
+  reconcilePmProjects,
   pushSessionToCalendar,
   resetSentinel,
   toggleAuth,
@@ -218,6 +220,22 @@ async function refreshProjectContext() {
   await refreshCalendarForProject(project);
 }
 
+async function reconcileProjectsOnAppLoad() {
+  if (!state.graphAccount) return null;
+  if (state.actor === "is") {
+    return reconcileIsProjects();
+  }
+  return reconcilePmProjects();
+}
+
+async function refreshProjectAuthority(project = getActiveProject()) {
+  if (!project) return null;
+  if (state.actor === "is") {
+    return reconcileIsProjects({ projects: [project] });
+  }
+  return reconcilePmProjects({ projectIds: [project.id] });
+}
+
 function readBindingTarget(binding) {
   const [scope, ...rest] = binding.split(".");
   return {
@@ -330,6 +348,7 @@ async function actionHandlers(action, element) {
       await toggleAuth();
       if (state.graphAccount) {
         await handleDeepLinkIfPresent();
+        await reconcileProjectsOnAppLoad();
       }
       rerender();
       return;
@@ -677,6 +696,31 @@ async function actionHandlers(action, element) {
       }
       const range = getSmartFillCoverageRange(project, state.actor);
       await refreshCalendarForProject(project, { startDate: range.start, endDate: range.end });
+      return;
+    }
+    case "refreshProjectState": {
+      const project = getActiveProject();
+      if (!project) {
+        rerender();
+        return;
+      }
+      const result = await refreshProjectAuthority(project);
+      rerender();
+      if (state.actor === "pm") {
+        if (result?.failedCount) {
+          toast("Implementation refresh failed", 4000);
+        } else if (result?.pendingCount) {
+          toast("Waiting for IS acceptance", 3500);
+        } else {
+          toast("Implementation state refreshed", 3500);
+        }
+      } else if (result?.failed) {
+        toast("Implementation refresh failed", 4000);
+      } else if (result?.driftedCount) {
+        toast("Drift detected in implementation events", 4000);
+      } else {
+        toast("Implementation state refreshed", 3500);
+      }
       return;
     }
     case "applySmartFill":
@@ -1126,6 +1170,7 @@ async function init() {
   await bootstrapMsal();
   if (state.graphAccount) {
     await handleDeepLinkIfPresent();
+    await reconcileProjectsOnAppLoad();
     await refreshProjectContext();
   }
   rerender();

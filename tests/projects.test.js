@@ -2,8 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  canEditSession,
+  deriveProjectStatus,
   isDateWithinPhaseWindow,
   INTERNAL_SETUP_BUFFER_DAYS,
+  projectReadyToClose,
   removeSession,
 } from "../js/projects.js";
 
@@ -299,4 +302,65 @@ test("removing a session recomputes the stage date range", () => {
   removeSession(project, first.id);
   assert.equal(stage.rangeStart, "");
   assert.equal(stage.rangeEnd, "");
+});
+
+test("project lifecycle status advances from draft through closed", () => {
+  const draftProject = makeProject({
+    implSessions: [makeSession({ phase: "implementation", date: "", time: "" })],
+  });
+  assert.equal(deriveProjectStatus(draftProject), "draft");
+
+  const scheduledProject = makeProject({
+    implSessions: [makeSession({ phase: "implementation", date: "2026-04-10", time: "09:00" })],
+  });
+  assert.equal(deriveProjectStatus(scheduledProject), "pm_scheduled");
+
+  const handedOffProject = makeProject({
+    implSessions: [makeSession({ phase: "implementation", date: "2026-04-10", time: "09:00" })],
+  });
+  handedOffProject.handoff = { sentAt: "2026-04-01T00:00:00Z" };
+  assert.equal(deriveProjectStatus(handedOffProject), "handed_off_pending_is");
+
+  const activeProject = makeProject({
+    implSessions: [makeSession({ phase: "implementation", date: "2026-04-10", time: "09:00", graphEventId: "evt-1" })],
+  });
+  activeProject.handoff = { sentAt: "2026-04-01T00:00:00Z" };
+  assert.equal(deriveProjectStatus(activeProject), "is_active");
+
+  activeProject.closedAt = "2026-04-15T00:00:00Z";
+  assert.equal(deriveProjectStatus(activeProject), "closed");
+});
+
+test("project ready-to-close requires in-sync reconciliation and past sessions", () => {
+  const project = makeProject({
+    setupSessions: [makeSession({ phase: "setup", date: "2026-04-01", time: "09:00" })],
+    implSessions: [makeSession({ phase: "implementation", date: "2026-04-10", time: "09:00", graphEventId: "evt-1" })],
+    hcSessions: [makeSession({ phase: "hypercare", date: "2026-04-17", time: "09:00" })],
+  });
+  project.handoff = { sentAt: "2026-03-15T00:00:00Z" };
+  project.reconciliationState = "refresh_failed";
+
+  assert.equal(projectReadyToClose(project, new Date("2026-04-20T10:00:00")), false);
+
+  project.reconciliationState = "in_sync";
+  assert.equal(projectReadyToClose(project, new Date("2026-04-20T10:00:00")), true);
+
+  project.phases.hypercare.stages[0].sessions[0].date = "2026-04-21";
+  assert.equal(projectReadyToClose(project, new Date("2026-04-20T10:00:00")), false);
+});
+
+test("PM cannot edit implementation sessions after handoff leaves pm_scheduled", () => {
+  const implementationSession = makeSession({ phase: "implementation", date: "2026-04-10", time: "09:00" });
+  const setupSession = makeSession({ phase: "setup", date: "2026-04-01", time: "09:00" });
+  const project = makeProject({
+    setupSessions: [setupSession],
+    implSessions: [implementationSession],
+  });
+
+  assert.equal(canEditSession(project, implementationSession, "pm"), true);
+  assert.equal(canEditSession(project, setupSession, "pm"), true);
+
+  project.handoff = { sentAt: "2026-04-01T00:00:00Z" };
+  assert.equal(canEditSession(project, implementationSession, "pm"), false);
+  assert.equal(canEditSession(project, setupSession, "pm"), true);
 });

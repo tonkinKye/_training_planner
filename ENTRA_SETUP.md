@@ -56,7 +56,7 @@ Configure the app registration as:
 Add these **Microsoft Graph delegated permissions**:
 
 - `Calendars.ReadWrite`
-- `Calendars.ReadWrite.Shared`
+- `Calendars.Read.Shared`
 - `People.Read`
 
 Then:
@@ -73,13 +73,13 @@ Used for:
 - creating and updating session events
 - maintaining the sentinel/index event used by the app
 
-### `Calendars.ReadWrite.Shared`
+### `Calendars.Read.Shared`
 
 Used for:
 
 - reading shared calendars
 - PM access to IS calendar availability
-- delegate or shared-calendar write operations when supported by mailbox permissions
+- PM reconciliation reads against IS mailboxes when Exchange delegate/shared calendar read access exists
 
 ### `People.Read`
 
@@ -94,12 +94,11 @@ Entra approval alone is not enough for all app features.
 The relevant Outlook / Exchange sharing must also exist:
 
 - The **IS calendar must be shared** so the PM can read it
-- If the app is expected to write directly into the IS mailbox/calendar, the IS must grant appropriate **delegate/shared calendar write access**
 
 If that sharing is not configured:
 
 - shared calendar availability checks will fail
-- delegate handoff/write flows may fail or fall back
+- PM cross-mailbox reconciliation reads will fail
 
 ## Values To Configure In This App
 
@@ -122,7 +121,7 @@ For production:
 - **Supported account type:** Single-tenant
 - **Tenant ID:** Your tenant GUID
 - **Redirect URI:** Exact production app URL/path
-- **Graph delegated permissions:** `Calendars.ReadWrite`, `Calendars.ReadWrite.Shared`, `People.Read`
+- **Graph delegated permissions:** `Calendars.ReadWrite`, `Calendars.Read.Shared`, `People.Read`
 - **Admin consent:** Granted
 
 Optional:
@@ -138,7 +137,7 @@ After setup, the app should be able to:
 - read the signed-in user's calendar
 - read shared IS calendar availability if sharing is configured
 - create/update calendar events for the signed-in user
-- perform delegate/shared calendar operations only where mailbox sharing/delegate access exists
+- reconcile handed-off IS state through delegated shared-calendar reads where mailbox sharing/delegate access exists
 
 ## Code References
 
