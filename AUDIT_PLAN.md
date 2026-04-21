@@ -39,8 +39,8 @@ Interaction: the `projects.js` removals sit next to live deep-link/sentinel code
 ## Resolved decisions
 
 - Runtime config supply model.
-Decision made: use a local/deploy-supplied `js/config.js` runtime bootstrap that sets `window.__TRAINING_PLANNER_CONFIG__`, with a tracked `js/config.example.js` template and tracked runtime readers in `js/runtime-config.js`.
-Implemented in: `index.html`, `js/runtime-config.js`, `js/config.example.js`, local `js/config.js`, `README.md`, `ENTRA_SETUP.md`.
+Decision made: use a tracked `js/config.js` runtime bootstrap that sets `window.__TRAINING_PLANNER_CONFIG__`, with `js/config.example.js` retained as a clean placeholder/reference copy and `js/runtime-config.js` as the tracked reader module.
+Implemented in: `index.html`, `js/runtime-config.js`, `js/config.js`, `js/config.example.js`, `README.md`, `ENTRA_SETUP.md`.
 
 - Sentinel and event write durability.
 Decision made: use optimistic concurrency with `If-Match` and retry once for sentinel writes; keep Graph side effects when calendar writes succeed but sentinel persistence fails, and surface partial-commit errors explicitly.
@@ -55,8 +55,8 @@ Decision made: keep manufacturing and warehousing as separate fully-authored tem
 Implemented in: `tests/template-schema.test.js`.
 
 - Scope and config governance.
-Decision made: remove unused people lookup and `People.Read`; keep tracked-config hygiene in place while the broader runtime config supply model remains open.
-Implemented in: `js/config.example.js`, local `js/config.js`, `js/m365.js`, `js/state.js`, `js/app.js`, `ENTRA_SETUP.md`.
+Decision made: remove unused people lookup and `People.Read`; keep config explicit in a tracked runtime bootstrap rather than a local-only file.
+Implemented in: `js/config.js`, `js/config.example.js`, `js/m365.js`, `js/state.js`, `js/app.js`, `ENTRA_SETUP.md`.
 
 - MSAL supply-chain policy.
 Decision made: vendor MSAL locally instead of trusting CDN loading at runtime.

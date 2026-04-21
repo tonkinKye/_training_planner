@@ -14,15 +14,16 @@ Browser-based project planning and calendar orchestration for Fishbowl training 
 
 ## Local Setup
 
-1. Copy `js/config.example.js` to `js/config.js`.
+1. Edit the tracked [js/config.js](js/config.js) runtime bootstrap.
 2. Set `GRAPH_CLIENT_ID` and `GRAPH_TENANT_ID` inside the `window.__TRAINING_PLANNER_CONFIG__` object in `js/config.js`.
 3. Register the app in Entra as a browser SPA and grant the delegated Graph permissions in `ENTRA_SETUP.md`.
 4. Serve the repo root with any static web server and open the hosted URL in a browser.
 
 Notes:
 
-- `js/config.js` is intentionally local-only and gitignored.
-- `index.html` loads `js/config.js` before the app bootstrap, so production should ship an environment-specific copy of that file.
+- `js/config.js` is the active tracked runtime config for this repo.
+- `index.html` loads `js/config.js` before the app bootstrap, so config changes are deliberate source-controlled changes.
+- [js/config.example.js](js/config.example.js) remains as a clean placeholder template/reference.
 - MSAL is vendored locally in `vendor/`; no CDN dependency is required at runtime.
 
 ## Tests

@@ -95,11 +95,11 @@ If that sharing is not configured:
 
 ## Values To Configure In This App
 
-After the Entra app registration is created, create a local config file from the tracked template:
+After the Entra app registration is created, update the tracked runtime config:
 
-- copy [js/config.example.js](js/config.example.js) to `js/config.js`
-- keep `js/config.js` local only; it is gitignored on purpose
-- `index.html` loads `js/config.js` before the app, so production should ship an environment-specific copy of the same file
+- edit [js/config.js](js/config.js)
+- `index.html` loads `js/config.js` before the app, so the committed file is the active runtime bootstrap
+- use [js/config.example.js](js/config.example.js) as the clean placeholder/reference copy if you need to rebuild the file
 
 Set:
 
@@ -161,5 +161,6 @@ After setup, the app should be able to:
 
 The current codebase requires these settings based on:
 
+- [js/config.js](js/config.js)
 - [js/config.example.js](js/config.example.js)
 - [js/m365.js](js/m365.js)
