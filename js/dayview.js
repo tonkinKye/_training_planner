@@ -38,6 +38,11 @@ const dayViewState = {
   },
 };
 
+function syncObservableReviewState() {
+  state.ui.dayView.currentSessionId = dayViewState.review.currentSessionId || "";
+  state.ui.dayView.pendingCommit = Boolean(dayViewState.review.pendingCommit);
+}
+
 function isReviewMode() {
   return Boolean(dayViewState.review.queue.length || dayViewState.review.currentSessionId);
 }
@@ -49,6 +54,7 @@ function clearReview() {
     currentIndex: -1,
     pendingCommit: false,
   };
+  syncObservableReviewState();
 }
 
 function minutesFromTime(timeValue) {
@@ -103,6 +109,7 @@ function syncReviewQueue() {
 function setCurrentReviewSession(sessionId) {
   dayViewState.review.currentSessionId = sessionId || "";
   dayViewState.review.currentIndex = dayViewState.review.queue.indexOf(sessionId);
+  syncObservableReviewState();
   const session = getActiveProject() ? findSession(getActiveProject(), sessionId)?.session : null;
   if (session?.date) {
     dayViewState.weekStart = mondayOf(parseDate(session.date));
@@ -464,6 +471,7 @@ export function startConflictReview({ pendingCommit = false, focusSessionId = ""
   dayViewState.open = true;
   dayViewState.review.queue = queue;
   dayViewState.review.pendingCommit = pendingCommit;
+  syncObservableReviewState();
   setCurrentReviewSession(queue.includes(focusSessionId) ? focusSessionId : queue[0]);
   return true;
 }

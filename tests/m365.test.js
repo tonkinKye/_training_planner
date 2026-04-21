@@ -10,6 +10,7 @@ import {
   buildEventPayload,
   buildCloseNotificationBody,
   buildHandoffBody,
+  closeProject,
   createHandoffEvent,
   fetchSentinel,
   normalizeCalendarEvents,
@@ -17,6 +18,7 @@ import {
   pushSessionToCalendar,
   reconcileIsProjects,
   reconcilePmProjects,
+  writeSentinel,
 } from "../js/m365.js";
 import { createSentinelPayload, parseSentinelProjects } from "../js/sentinel-model.js";
 import { decodeProjectParam, encodeProjectParam } from "../js/deeplink.js";
@@ -25,11 +27,23 @@ import { resetAppState, state } from "../js/state.js";
 
 let nextId = 1;
 
-function createGraphResponse(status, body = null, statusText = "OK") {
+function createHeaders(values = {}) {
+  const map = new Map(
+    Object.entries(values).map(([key, value]) => [String(key).toLowerCase(), value])
+  );
+  return {
+    get(name) {
+      return map.get(String(name).toLowerCase()) || null;
+    },
+  };
+}
+
+function createGraphResponse(status, body = null, statusText = "OK", headers = {}) {
   return {
     ok: status >= 200 && status < 300,
     status,
     statusText,
+    headers: createHeaders(headers),
     json: async () => body,
   };
 }
@@ -378,6 +392,84 @@ test("writeSentinelExtension falls back to POST when the open extension is missi
   assert.match(calls[1].path, /\/events\/series-master\/extensions$/);
 });
 
+test("writeSentinel retries once with If-Match and preserves remote-only projects on conflict", async (t) => {
+  installMsalForGraphTests(t, {
+    acquireTokenSilent: async () => ({ accessToken: "token-3" }),
+  });
+
+  const localProject = makeProject();
+  localProject.id = "local-project";
+  const remoteProject = makeProject();
+  remoteProject.id = "remote-project";
+  state.graphAccount = {
+    username: "pm@example.com",
+    name: "PM",
+  };
+
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (path, options = {}) => {
+    calls.push({ path, method: options.method, headers: options.headers, body: options.body });
+
+    if (calls.length === 1) {
+      return createGraphResponse(200, {
+        value: [
+          {
+            id: "series-master",
+            subject: "TP-ProjectIndex",
+            type: "seriesMaster",
+          },
+        ],
+      });
+    }
+
+    if (calls.length === 2) {
+      return createGraphResponse(
+        200,
+        {
+          id: "com.fishbowl.trainingplanner.v1",
+          payload: JSON.stringify(createSentinelPayload([])),
+        },
+        "OK",
+        { etag: "etag-1" }
+      );
+    }
+
+    if (calls.length === 3) {
+      assert.equal(options.headers["If-Match"], "etag-1");
+      return createGraphResponse(412, {
+        error: {
+          message: "Precondition failed",
+        },
+      }, "Precondition Failed");
+    }
+
+    if (calls.length === 4) {
+      return createGraphResponse(
+        200,
+        {
+          id: "com.fishbowl.trainingplanner.v1",
+          payload: JSON.stringify(createSentinelPayload([remoteProject])),
+        },
+        "OK",
+        { etag: "etag-2" }
+      );
+    }
+
+    const payload = JSON.parse(options.body);
+    const parsed = JSON.parse(payload.payload);
+    assert.equal(options.headers["If-Match"], "etag-2");
+    assert.deepEqual(
+      parsed.projects.map((project) => project.id),
+      ["local-project", "remote-project"]
+    );
+    return createGraphResponse(200, { id: "extension-merged" });
+  });
+
+  const master = await writeSentinel([localProject]);
+
+  assert.equal(master.id, "series-master");
+});
+
 test("applyDeepLinkProject seeds a new IS project from the link payload", async () => {
   resetAppState();
   const project = makeProject({
@@ -451,7 +543,7 @@ test("applyDeepLinkProject does not overwrite an existing IS project", async () 
   assert.equal(getPhaseStages(state.projects[0], "implementation")[0].sessions[0].time, "13:00");
 });
 
-test("pushSessionToCalendar rolls back session state when persistence fails", async (t) => {
+test("pushSessionToCalendar keeps Graph state and reports partial success when persistence fails", async (t) => {
   const session = makeSession({
     phase: "setup",
     owner: "pm",
@@ -462,19 +554,131 @@ test("pushSessionToCalendar rolls back session state when persistence fails", as
   });
   const project = makeProject({ setupSessions: [session] });
   t.mock.method(console, "error", () => {});
+  const toasts = [];
 
   const result = await pushSessionToCalendar(session.id, {
     project,
-    notify: false,
+    notify: true,
     pushGraphEventImpl: async () => ({ id: "new-event-id" }),
     persistActiveProjectsImpl: async () => {
       throw new Error("persist failed");
     },
+    toastImpl: (message) => {
+      toasts.push(message);
+    },
   });
 
-  assert.equal(result, false);
-  assert.equal(session.graphEventId, "existing-event");
+  assert.equal(result, true);
+  assert.equal(session.graphEventId, "new-event-id");
+  assert.equal(session.graphActioned, true);
+  assert.match(toasts[0], /Calendar updated, but project index could not be saved/);
+  assert.equal(state.sentinel.status, "error");
+});
+
+test("createHandoffEvent keeps local handoff metadata when persistence fails after event creation", async () => {
+  resetAppState();
+  const project = makeProject();
+
+  await assert.rejects(
+    () =>
+      createHandoffEvent(project, {
+        buildDeepLinkUrlImpl: () => ({
+          url: "https://example.test/handoff",
+          encoded: "payload",
+          length: 24,
+          warn: false,
+        }),
+        graphRequestImpl: async () => ({ id: "handoff-event-2" }),
+        persistActiveProjectsImpl: async () => {
+          throw new Error("persist failed");
+        },
+      }),
+    (error) => {
+      assert.equal(error.name, "GraphPartialCommitError");
+      assert.match(error.message, /Handoff event created, but project index could not be saved/);
+      return true;
+    }
+  );
+
+  assert.equal(project.handoff.eventId, "handoff-event-2");
+  assert.equal(project.handoff.deepLinkUrl, "https://example.test/handoff");
+  assert.equal(state.ui.lastHandoff.eventId, "handoff-event-2");
+  assert.equal(state.sentinel.status, "error");
+});
+
+test("closeProject keeps deletions and surfaces a partial commit if sentinel persistence fails", async (t) => {
+  installMsalForGraphTests(t, {
+    acquireTokenSilent: async () => ({ accessToken: "token-4" }),
+  });
+
+  state.graphAccount = {
+    username: "pm@example.com",
+    name: "PM",
+  };
+
+  const session = makeSession({
+    phase: "setup",
+    date: "2099-04-05",
+    time: "09:00",
+    graphEventId: "close-event-1",
+    graphActioned: true,
+  });
+  const project = makeProject({ setupSessions: [session] });
+  const calls = [];
+
+  t.mock.method(globalThis, "fetch", async (path, options = {}) => {
+    calls.push({ path, method: options.method, body: options.body });
+
+    if (calls.length === 1) {
+      assert.equal(options.method, "DELETE");
+      return createGraphResponse(204, null, "No Content");
+    }
+
+    if (calls.length === 2) {
+      return createGraphResponse(200, {
+        value: [
+          {
+            id: "series-master",
+            subject: "TP-ProjectIndex",
+            type: "seriesMaster",
+          },
+        ],
+      });
+    }
+
+    if (calls.length === 3) {
+      return createGraphResponse(
+        200,
+        {
+          id: "com.fishbowl.trainingplanner.v1",
+          payload: JSON.stringify(createSentinelPayload([])),
+        },
+        "OK",
+        { etag: "etag-close-1" }
+      );
+    }
+
+    return createGraphResponse(500, {
+      error: {
+        message: "persist failed",
+      },
+    }, "Server Error");
+  });
+
+  await assert.rejects(
+    () => closeProject(project),
+    (error) => {
+      assert.equal(error.name, "GraphPartialCommitError");
+      assert.match(error.message, /Project closed and future calendar events removed, but project index could not be saved/);
+      return true;
+    }
+  );
+
+  assert.equal(session.graphEventId, "");
   assert.equal(session.graphActioned, false);
+  assert.ok(project.closedAt);
+  assert.equal(project.closedBy, "PM");
+  assert.equal(state.sentinel.status, "error");
 });
 
 test("pushOwnedSessions persists once for a PM batch and suppresses per-session persistence", async () => {

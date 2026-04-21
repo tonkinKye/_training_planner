@@ -63,6 +63,7 @@ function selectTemplateIndex(index) {
   state.ui.templateEditor.activeTemplateIndex = index;
   state.ui.templateEditor.draft = normalizeEditableTemplate(template);
   state.ui.templateEditor.originKey = template.key || "";
+  state.ui.templateEditor.draftDirty = false;
   state.ui.templateEditor.exportSource = "";
   updateSelection("template");
   syncTemplateEditorValidation();
@@ -85,15 +86,14 @@ function makeUniqueTemplateKey(base = "template") {
   return `${slug}_${index}`;
 }
 
-function updateDraft(mutator, { commit = true } = {}) {
+function updateDraft(mutator) {
   const draft = state.ui.templateEditor.draft;
   if (!draft) return null;
   mutator(draft);
   state.ui.templateEditor.dirty = true;
+  state.ui.templateEditor.draftDirty = true;
+  state.ui.templateEditor.exportSource = "";
   syncTemplateEditorValidation();
-  if (commit) {
-    commitDraftToLibrary();
-  }
   return draft;
 }
 
@@ -145,6 +145,10 @@ export function templateEditorHasUnsavedChanges() {
   return Boolean(state.ui.templateEditor.dirty);
 }
 
+export function templateEditorHasDraftChanges() {
+  return Boolean(state.ui.templateEditor.draftDirty);
+}
+
 export function getTemplateLibraryOptions() {
   return state.templateLibrary.map((template, index) => ({
     key: template.key,
@@ -172,6 +176,7 @@ export function openTemplateLibraryEditor(index = 0) {
     draft: null,
     originKey: "",
     dirty: false,
+    draftDirty: false,
     exportSource: "",
     validation: { errors: [], warnings: [] },
     selection: createSelection(),
@@ -194,6 +199,7 @@ export function openTemplateOneOffEditor({ template = null, originKey = "", retu
     draft: sourceTemplate,
     originKey: originKey || sourceTemplate.key || "custom",
     dirty: false,
+    draftDirty: false,
     exportSource: "",
     validation: { errors: [], warnings: [] },
     selection: createSelection(),
@@ -211,6 +217,7 @@ export function closeTemplateEditor() {
     draft: null,
     originKey: "",
     dirty: false,
+    draftDirty: false,
     exportSource: "",
     validation: { errors: [], warnings: [] },
     selection: createSelection(),
@@ -539,8 +546,12 @@ export function getTemplateEditorPreview() {
 }
 
 export function buildTemplateLibraryExport() {
-  if (state.ui.templateEditor.mode === "library") {
-    commitDraftToLibrary();
+  if (state.ui.templateEditor.mode === "library" && state.ui.templateEditor.draftDirty) {
+    return {
+      ok: false,
+      source: "",
+      errors: ["Save template changes before exporting the library."],
+    };
   }
   const errors = [];
   state.templateLibrary.forEach((template) => {
@@ -560,9 +571,37 @@ export function buildTemplateLibraryExport() {
   const source = serializeTemplateLibrarySource(state.templateLibrary);
   state.ui.templateEditor.exportSource = source;
   state.ui.templateEditor.dirty = false;
+  state.ui.templateEditor.draftDirty = false;
   return {
     ok: true,
     source,
+    errors: [],
+  };
+}
+
+export function saveTemplateEditorTemplate() {
+  const draft = state.ui.templateEditor.draft;
+  if (!draft || state.ui.templateEditor.mode !== "library") {
+    return { ok: false, errors: ["No library template is active."] };
+  }
+
+  const validation = validateTemplate(draft);
+  if (validation.errors.length) {
+    return {
+      ok: false,
+      errors: validation.errors.map((issue) => issue.message),
+    };
+  }
+
+  commitDraftToLibrary();
+  state.ui.templateEditor.draft = normalizeEditableTemplate(state.templateLibrary[state.ui.templateEditor.activeTemplateIndex]);
+  state.ui.templateEditor.draftDirty = false;
+  state.ui.templateEditor.dirty = true;
+  state.ui.templateEditor.exportSource = "";
+  syncTemplateEditorValidation();
+  return {
+    ok: true,
+    template: state.ui.templateEditor.draft,
     errors: [],
   };
 }
@@ -592,5 +631,6 @@ export function applyOneOffTemplateToOnboarding() {
   state.ui.onboarding.draft = nextDraft;
   state.ui.onboarding.templateReviewJSON = JSON.stringify(draft, null, 2);
   state.ui.templateEditor.dirty = false;
+  state.ui.templateEditor.draftDirty = false;
   return { ok: true, draft: nextDraft };
 }

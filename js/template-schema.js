@@ -464,6 +464,40 @@ function normalizePhase(rawPhase, phaseOrder, grandOrderStart) {
   return phase;
 }
 
+function getRawEditablePhase(rawTemplate, phaseKey, phaseOrder) {
+  const phases = Array.isArray(rawTemplate?.phases) ? rawTemplate.phases : [];
+  return phases.find((candidate) => candidate?.key === phaseKey) || phases[phaseOrder] || null;
+}
+
+function getRawEditableStage(rawPhase, stageKey, stageOrder) {
+  const stages = Array.isArray(rawPhase?.stages) ? rawPhase.stages : [];
+  return stages.find((candidate) => candidate?.key === stageKey) || stages[stageOrder] || null;
+}
+
+function getRawEditableSession(rawStage, sessionKey, sessionOrder) {
+  const sessions = Array.isArray(rawStage?.sessions) ? rawStage.sessions : [];
+  return sessions.find((candidate) => candidate?.key === sessionKey) || sessions[sessionOrder] || null;
+}
+
+function normalizeEditableSession(rawSession, normalizedSession) {
+  const hasExplicitBodyKey = Object.prototype.hasOwnProperty.call(rawSession || {}, "bodyKey");
+  const explicitBodyKey = hasExplicitBodyKey
+    ? rawSession?.bodyKey === null
+      ? null
+      : asTrimmedString(rawSession?.bodyKey) || null
+    : null;
+  return {
+    key: normalizedSession.key,
+    name: normalizedSession.name,
+    durationMinutes: Number(rawSession?.durationMinutes ?? rawSession?.duration) || normalizedSession.durationMinutes,
+    owner: normalizedSession.owner,
+    type: normalizedSession.type,
+    bodyKey: explicitBodyKey,
+    locked: Boolean(normalizedSession.locked),
+    gating: normalizedSession.gating ? cloneValue(normalizedSession.gating) : null,
+  };
+}
+
 export function normalizeTemplate(rawTemplate) {
   const template = cloneValue(rawTemplate || {});
   const metadata = normalizeMetadata(template.metadata || {});
@@ -503,28 +537,29 @@ export function normalizeEditableTemplate(rawTemplate) {
     key: normalized.key,
     label: normalized.label,
     metadata: cloneValue(normalized.metadata),
-    phases: normalized.phases.map((phase) => ({
-      key: phase.key,
-      label: phase.label,
-      owner: phase.owner,
-      calendarSource: phase.calendarSource,
-      durationWeeks: { ...phase.durationWeeks },
-      stages: phase.stages.map((stage) => ({
-        key: stage.key,
-        label: stage.label,
-        durationDays: normalizeDurationDays(stage.durationDays, 1),
-        sessions: stage.sessions.map((session) => ({
-          key: session.key,
-          name: session.name,
-          durationMinutes: session.durationMinutes,
-          owner: session.owner,
-          type: session.type,
-          bodyKey: session.bodyKey ?? null,
-          locked: Boolean(session.locked),
-          gating: session.gating ? cloneValue(session.gating) : null,
-        })),
-      })),
-    })),
+    phases: normalized.phases.map((phase, phaseOrder) => {
+      const rawPhase = getRawEditablePhase(rawTemplate, phase.key, phaseOrder);
+      return {
+        key: phase.key,
+        label: phase.label,
+        owner: phase.owner,
+        calendarSource: phase.calendarSource,
+        durationWeeks: { ...phase.durationWeeks },
+        stages: phase.stages.map((stage, stageOrder) => {
+          const rawStage = getRawEditableStage(rawPhase, stage.key, stageOrder);
+          return {
+            key: stage.key,
+            label: stage.label,
+            durationDays: normalizeDurationDays(stage.durationDays, 1),
+            sessions: stage.sessions.map((session, sessionOrder) =>
+              normalizeEditableSession(
+                getRawEditableSession(rawStage, session.key, sessionOrder),
+                session
+              )),
+          };
+        }),
+      };
+    }),
   };
 }
 

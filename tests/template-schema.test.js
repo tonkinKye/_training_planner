@@ -50,6 +50,30 @@ function projectTemplateRuntimeShape(template) {
   };
 }
 
+function getPhaseShape(template, phaseKey) {
+  return template.phases.find((phase) => phase.key === phaseKey);
+}
+
+function getStageShape(phase, stageKey) {
+  return phase.stages.find((stage) => stage.key === stageKey);
+}
+
+function sessionShapeMap(stage) {
+  return new Map((stage.sessions || []).map((session) => [
+    session.key,
+    {
+      key: session.key,
+      name: session.name,
+      durationMinutes: session.durationMinutes,
+      owner: session.owner,
+      type: session.type,
+      locked: Boolean(session.locked),
+      gating: session.gating ? { ...session.gating } : null,
+      bodyKey: session.bodyKey ?? null,
+    },
+  ]));
+}
+
 test("normalized built-in templates preserve declarative gating, locking, and routing", () => {
   const manufacturing = getTemplateDefinition("manufacturing");
   const setupSessions = manufacturing.phaseMap.setup.stages[0].sessions;
@@ -144,6 +168,87 @@ test("warehousing template normalization matches the locked runtime parity snaps
     projectTemplateRuntimeShape(normalized),
     EXPECTED_TEMPLATE_RUNTIME_PARITY.warehousing
   );
+});
+
+test("manufacturing and warehousing built-ins differ only in the documented implementation and hypercare deltas", () => {
+  const manufacturing = projectTemplateRuntimeShape(normalizeTemplate(BUILT_IN_TEMPLATES.find((template) => template.key === "manufacturing")));
+  const warehousing = projectTemplateRuntimeShape(normalizeTemplate(BUILT_IN_TEMPLATES.find((template) => template.key === "warehousing")));
+
+  assert.deepEqual(getPhaseShape(manufacturing, "setup"), getPhaseShape(warehousing, "setup"));
+
+  const manufacturingImplementation = getPhaseShape(manufacturing, "implementation");
+  const warehousingImplementation = getPhaseShape(warehousing, "implementation");
+  assert.deepEqual(
+    manufacturingImplementation.stages.map((stage) => stage.key),
+    warehousingImplementation.stages.map((stage) => stage.key)
+  );
+  assert.deepEqual(
+    getStageShape(manufacturingImplementation, "go_live_prep"),
+    getStageShape(warehousingImplementation, "go_live_prep")
+  );
+  assert.deepEqual(
+    getStageShape(manufacturingImplementation, "go_live"),
+    getStageShape(warehousingImplementation, "go_live")
+  );
+
+  const manufacturingTrainingSessions = sessionShapeMap(getStageShape(manufacturingImplementation, "training"));
+  const warehousingTrainingSessions = sessionShapeMap(getStageShape(warehousingImplementation, "training"));
+  const manufacturingTrainingKeys = [...manufacturingTrainingSessions.keys()];
+  const warehousingTrainingKeys = [...warehousingTrainingSessions.keys()];
+
+  assert.deepEqual(
+    manufacturingTrainingKeys.filter((key) => !warehousingTrainingSessions.has(key)),
+    ["manufacturing"]
+  );
+  assert.deepEqual(
+    warehousingTrainingKeys.filter((key) => !manufacturingTrainingSessions.has(key)),
+    []
+  );
+
+  for (const key of warehousingTrainingKeys) {
+    const manufacturingSession = manufacturingTrainingSessions.get(key);
+    const warehousingSession = warehousingTrainingSessions.get(key);
+    assert.ok(manufacturingSession, `Expected manufacturing training stage to include ${key}`);
+    if (key === "templates") {
+      assert.equal(manufacturingSession.durationMinutes, 240);
+      assert.equal(warehousingSession.durationMinutes, 180);
+      assert.deepEqual(
+        { ...manufacturingSession, durationMinutes: warehousingSession.durationMinutes },
+        warehousingSession
+      );
+      continue;
+    }
+    if (key === "bill_of_materials") {
+      assert.equal(manufacturingSession.durationMinutes, 60);
+      assert.equal(warehousingSession.durationMinutes, 30);
+      assert.deepEqual(
+        { ...manufacturingSession, durationMinutes: warehousingSession.durationMinutes },
+        warehousingSession
+      );
+      continue;
+    }
+    assert.deepEqual(manufacturingSession, warehousingSession);
+  }
+
+  const manufacturingHypercare = getPhaseShape(manufacturing, "hypercare");
+  const warehousingHypercare = getPhaseShape(warehousing, "hypercare");
+  const manufacturingPostGoLive = sessionShapeMap(getStageShape(manufacturingHypercare, "post_go_live"));
+  const warehousingPostGoLive = sessionShapeMap(getStageShape(warehousingHypercare, "post_go_live"));
+  const manufacturingHypercareKeys = [...manufacturingPostGoLive.keys()];
+  const warehousingHypercareKeys = [...warehousingPostGoLive.keys()];
+
+  assert.deepEqual(
+    manufacturingHypercareKeys.filter((key) => !warehousingPostGoLive.has(key)),
+    ["training_support_4"]
+  );
+  assert.deepEqual(
+    warehousingHypercareKeys.filter((key) => !manufacturingPostGoLive.has(key)),
+    []
+  );
+
+  for (const key of warehousingHypercareKeys) {
+    assert.deepEqual(manufacturingPostGoLive.get(key), warehousingPostGoLive.get(key));
+  }
 });
 
 test("serializeTemplateLibrarySource produces a module that round-trips the template library", async () => {

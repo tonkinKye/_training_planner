@@ -57,7 +57,6 @@ Add these **Microsoft Graph delegated permissions**:
 
 - `Calendars.ReadWrite`
 - `Calendars.Read.Shared`
-- `People.Read`
 
 Then:
 
@@ -81,12 +80,6 @@ Used for:
 - PM access to IS calendar availability
 - PM reconciliation reads against IS mailboxes when Exchange delegate/shared calendar read access exists
 
-### `People.Read`
-
-Used for:
-
-- Microsoft 365 people search in onboarding/settings
-
 ## Important: Exchange / Outlook Access Is Also Required
 
 Entra approval alone is not enough for all app features.
@@ -106,11 +99,14 @@ After the Entra app registration is created, create a local config file from the
 
 - copy [js/config.example.js](js/config.example.js) to `js/config.js`
 - keep `js/config.js` local only; it is gitignored on purpose
+- `index.html` loads `js/config.js` before the app, so production should ship an environment-specific copy of the same file
 
 Set:
 
 - `GRAPH_CLIENT_ID` = **Application (client) ID**
 - `GRAPH_TENANT_ID` = **Tenant ID GUID**
+
+These values live inside the `window.__TRAINING_PLANNER_CONFIG__` object in `js/config.js`.
 
 For production:
 
@@ -118,12 +114,32 @@ For production:
 - do **not** use `common`
 - use the tenant-choice comments in `js/config.js` as the source of truth for `organizations` vs `common`
 
+## Vendored MSAL Library
+
+This app vendors the browser auth library locally instead of loading it from a CDN.
+
+Current vendored version:
+
+- `@azure/msal-browser` `2.39.0`
+- file: [vendor/msal-browser-2.39.0.min.js](vendor/msal-browser-2.39.0.min.js)
+
+Upgrade procedure:
+
+1. Check the latest `2.x` version on the official npm package page for `@azure/msal-browser`.
+2. Resolve the official tarball URL:
+   `npm view @azure/msal-browser@<version> dist.tarball`
+3. Download the tarball and extract `package/lib/msal-browser.min.js`.
+4. Replace the vendored file in [vendor/](vendor/).
+5. Update the filename reference in [index.html](index.html) if the version changed.
+6. Run `npm test`.
+7. Commit the vendored file and code change together.
+
 ## Recommended Production Setup
 
 - **Supported account type:** Single-tenant
 - **Tenant ID:** Your tenant GUID
 - **Redirect URI:** Exact production app URL/path
-- **Graph delegated permissions:** `Calendars.ReadWrite`, `Calendars.Read.Shared`, `People.Read`
+- **Graph delegated permissions:** `Calendars.ReadWrite`, `Calendars.Read.Shared`
 - **Admin consent:** Granted
 
 Optional:
@@ -135,7 +151,6 @@ Optional:
 After setup, the app should be able to:
 
 - sign in with popup
-- search people
 - read the signed-in user's calendar
 - read shared IS calendar availability if sharing is configured
 - create/update calendar events for the signed-in user

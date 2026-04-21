@@ -1,4 +1,4 @@
-import { PRODUCT_NAME } from "./config.js";
+import { PRODUCT_NAME } from "./runtime-config.js";
 import { getActiveProject } from "./state.js";
 import { findSession, getCalendarOwnerName, PHASE_META } from "./projects.js";
 import { getSessionBody } from "./session-templates.js";

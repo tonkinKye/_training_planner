@@ -29,6 +29,7 @@ function createTemplateEditorState() {
     draft: null,
     originKey: "",
     dirty: false,
+    draftDirty: false,
     exportSource: "",
     validation: {
       errors: [],
@@ -75,6 +76,13 @@ function createWindowChangeDialogState() {
     nextProject: null,
     affectedSessionIds: [],
     affectedCount: 0,
+  };
+}
+
+function createDayViewState() {
+  return {
+    currentSessionId: "",
+    pendingCommit: false,
   };
 }
 
@@ -128,14 +136,11 @@ export const state = {
     onboarding: createOnboardingState(),
     settings: createSettingsState(),
     templateEditor: createTemplateEditorState(),
+    dayView: createDayViewState(),
     windowChangeDialog: createWindowChangeDialogState(),
     shiftDialog: createShiftDialogState(),
     deleteDialog: createDeleteDialogState(),
     closeDialog: createCloseDialogState(),
-    peopleQuery: "",
-    peopleMatches: [],
-    peopleStatus: "idle",
-    peopleError: "",
     sharedCalendarOptions: [],
     sharedCalendarStatus: "idle",
     sharedCalendarError: "",
@@ -298,14 +303,11 @@ export function resetUIState() {
   state.ui.onboarding = createOnboardingState();
   state.ui.settings = createSettingsState();
   state.ui.templateEditor = createTemplateEditorState();
+  state.ui.dayView = createDayViewState();
   state.ui.windowChangeDialog = createWindowChangeDialogState();
   state.ui.shiftDialog = createShiftDialogState();
   state.ui.deleteDialog = createDeleteDialogState();
   state.ui.closeDialog = createCloseDialogState();
-  state.ui.peopleQuery = "";
-  state.ui.peopleMatches = [];
-  state.ui.peopleStatus = "idle";
-  state.ui.peopleError = "";
   state.ui.sharedCalendarOptions = [];
   state.ui.sharedCalendarStatus = "idle";
   state.ui.sharedCalendarError = "";

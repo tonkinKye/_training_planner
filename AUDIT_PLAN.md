@@ -36,54 +36,39 @@ Expected diff shape: delete-only cleanup; update imports/tests only if the expor
 Covers: dead code and duplicated-but-unused helper paths.
 Interaction: the `projects.js` removals sit next to live deep-link/sentinel code touched by `edfcaf2`; keep `applyDeepLinkProject()` and `serializeProjectsForSentinel()` untouched.
 
-## Act after decision
+## Resolved decisions
+
+- Runtime config supply model.
+Decision made: use a local/deploy-supplied `js/config.js` runtime bootstrap that sets `window.__TRAINING_PLANNER_CONFIG__`, with a tracked `js/config.example.js` template and tracked runtime readers in `js/runtime-config.js`.
+Implemented in: `index.html`, `js/runtime-config.js`, `js/config.example.js`, local `js/config.js`, `README.md`, `ENTRA_SETUP.md`.
 
 - Sentinel and event write durability.
-Decision needed: what consistency guarantee the app should make for concurrent sentinel writes and partially failed calendar pushes.
-Options: add optimistic concurrency with `If-Match` and retry once; or accept last-write-wins and surface that behavior explicitly.
-Covers: sentinel writes with no CAS and rollback-delete failure leaving live orphan events.
-Touch points: `js/m365.js`, sentinel state UI, reconciliation tests.
-Interaction: directly inside the `edfcaf2` refactor surface.
+Decision made: use optimistic concurrency with `If-Match` and retry once for sentinel writes; keep Graph side effects when calendar writes succeed but sentinel persistence fails, and surface partial-commit errors explicitly.
+Implemented in: `js/m365.js`, `tests/m365.test.js`.
 
 - Template authoring contract.
-Decision needed: whether template editing remains permissive/auto-healing or becomes explicit/authored.
-Options: keep aliases/fallbacks and add warnings only; make `durationMinutes` the single authored field and require explicit `bodyKey` or `null`; split draft state from committed library state so library changes apply only on save/export.
-Covers: duplicated `duration` / `durationMinutes`, implicit `bodyKey <- key`, eager draft commits to the library, and the general mismatch between author intent and runtime normalization.
-Touch points: `js/template-schema.js`, `js/template-editor.js`, `js/projects.js`, `js/deeplink.js`, template tests.
-Interaction: owned by the recent template-editor/template-schema work in `277df5b`, `9770528`, and `efef568`.
+Decision made: strict writes, tolerant reads. Authored templates use `durationMinutes` as the canonical field, keep explicit `bodyKey` or `null`, and library drafts do not commit until saved.
+Implemented in: `js/template-schema.js`, `js/template-editor.js`, `js/app.js`, `js/render.js`, `tests/template-editor.test.js`.
 
 - Built-in template duplication strategy.
-Decision needed: are manufacturing and warehousing separate fully-authored templates, or variants of one base?
-Options: keep two explicit definitions and document intentional diffs in tests; derive both from a shared base plus overrides; encode allowed divergence in metadata/fixtures.
-Covers: near-copy built-in templates with unclear intentional drift.
-Touch points: `js/session-templates.js`, parity fixtures/tests.
-Interaction: same template-editing cluster as above.
+Decision made: keep manufacturing and warehousing as separate fully-authored templates, and lock the intentional differences in tests instead of deriving both from a shared base.
+Implemented in: `tests/template-schema.test.js`.
 
 - Scope and config governance.
-Decision needed: how runtime config is supplied, and whether people lookup is still a supported feature.
-Options: keep tracked `js/config.js` but make it production-safe; track only `js/config.example.js` and ignore local `js/config.js`; move config injection to deploy/runtime.
-If `People.Read` is dropped: remove `searchPeople()`, `people*` state, and the scope entry together. If it stays: wire an actual caller and test it.
-Covers: tracked `js/config.js` with `GRAPH_TENANT_ID = "common"`, `config.example.js` not modeling tenant choice, empty `.gitignore`, and likely-unused `People.Read`.
-Touch points: `js/config.js`, `js/config.example.js`, `.gitignore`, `ENTRA_SETUP.md`, `js/m365.js`, `js/state.js`, `js/app.js`.
+Decision made: remove unused people lookup and `People.Read`; keep tracked-config hygiene in place while the broader runtime config supply model remains open.
+Implemented in: `js/config.example.js`, local `js/config.js`, `js/m365.js`, `js/state.js`, `js/app.js`, `ENTRA_SETUP.md`.
 
 - MSAL supply-chain policy.
-Decision needed: what external-script trust model is acceptable for this no-bundler SPA.
-Options: vendor MSAL locally; keep CDN loading but restrict to Microsoft-hosted origins with integrity pinning; keep the current multi-CDN fallback.
-Covers: missing SRI and fallback to non-Microsoft CDNs.
-Touch points: `js/m365.js`, possibly `index.html`.
+Decision made: vendor MSAL locally instead of trusting CDN loading at runtime.
+Implemented in: `vendor/msal-browser-2.39.0.min.js`, `vendor/README.md`, `index.html`, `js/m365.js`, `ENTRA_SETUP.md`.
 
 - Legacy sentinel migration removal.
-Decision needed: whether any tenant still needs `[TP] Project Index` compatibility.
-Options: remove now and document manual migration; keep until a fixed sunset date; keep permanently.
-Covers: `LEGACY_SENTINEL_SUBJECT` still running on live sentinel fetch/write paths.
-Touch points: `js/m365.js`.
-Interaction: sentinel/reconciliation code owned by `edfcaf2`.
+Decision made: remove `[TP] Project Index` compatibility entirely because the app is not live and no migration population exists.
+Implemented in: `js/m365.js`.
 
 - Day-view state ownership.
-Decision needed: whether day-view review state is intentionally modal-local or should be globally observable.
-Options: keep local state and add targeted reset/close guards; mirror `pendingCommit/currentSessionId` into `state.ui`; move the full model into `state.ui.dayView`.
-Covers: module-scoped `dayViewState` bypassing central UI state.
-Touch points: `js/dayview.js`, `js/state.js`, `js/render.js`, `js/app.js`.
+Decision made: mirror `pendingCommit` and `currentSessionId` into `state.ui.dayView`, while leaving the rest of the modal state module-local.
+Implemented in: `js/dayview.js`, `js/state.js`.
 
 ## Monitor / sunset
 
@@ -92,12 +77,6 @@ Leave the current `input` / `textarea` / `select` restore contract in place. Rev
 
 - Legacy export compatibility style in `js/clientplan.js`.
 Keep the pre-ES6 generator until the supported Outlook/WebView matrix is explicitly documented. Review by `2026-09-01`.
-
-- Legacy sentinel migration if the removal decision is deferred.
-If no decision is made now, record a hard re-review date of `2026-07-01` so the compatibility branch does not become permanent by inertia.
-
-- Repo-root `README.md`.
-Defer until the current audit-plan changes land. Review after this plan lands rather than treating it as rejected work.
 
 ## Reject
 
@@ -112,12 +91,12 @@ Intentional export/app isolation; "cleaning it up" risks collisions for little g
 
 ## Public interfaces / behavior notes
 - None of the `Act now` items should change sentinel payload shape, deep-link wire shape, or project runtime semantics.
-- Any decision on scopes, config provisioning, template authoring strictness, or legacy sentinel removal is an external-behavior change and should land in a separate implementation pass.
+- Deferred scope, template, sentinel, day-view, MSAL, and config-supply decisions have now been implemented.
 
 ## Verification
 - Keep `npm test` green.
-- Add targeted coverage in `tests/m365.test.js` and `tests/scheduler.test.js`.
-- After the config/scope decision lands, add one explicit setup-path smoke check or checklist update for the chosen tenant workflow.
+- Keep the targeted coverage added in `tests/m365.test.js`, `tests/scheduler.test.js`, and template/day-view regression tests green.
+- Keep the setup docs aligned with the runtime `js/config.js` bootstrap workflow and tenant-choice guidance.
 
 ## Assumptions
 - Findings were consolidated when they describe the same underlying issue with multiple surface symptoms.

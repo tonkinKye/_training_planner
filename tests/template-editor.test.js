@@ -14,12 +14,42 @@ import {
   moveTemplateEditorStageToIndex,
   openTemplateLibraryEditor,
   openTemplateOneOffEditor,
+  saveTemplateEditorTemplate,
   selectTemplateEditorEntity,
+  templateEditorHasDraftChanges,
   templateEditorHasUnsavedChanges,
   updateTemplateEditorField,
 } from "../js/template-editor.js";
 
-test("template editor can build a new template and export the library source", () => {
+test("library draft changes stay local until save, then export emits canonical template source", () => {
+  resetAppState();
+  openTemplateLibraryEditor();
+  const originalLabel = state.templateLibrary[0].label;
+
+  updateTemplateEditorField("label", "Manufacturing Edited");
+
+  assert.equal(templateEditorHasUnsavedChanges(), true);
+  assert.equal(templateEditorHasDraftChanges(), true);
+  assert.equal(state.ui.templateEditor.draft.label, "Manufacturing Edited");
+  assert.equal(state.templateLibrary[0].label, originalLabel);
+
+  const blockedExport = buildTemplateLibraryExport();
+  assert.equal(blockedExport.ok, false);
+  assert.match(blockedExport.errors[0], /Save template changes before exporting the library/);
+
+  const saveResult = saveTemplateEditorTemplate();
+  assert.equal(saveResult.ok, true);
+  assert.equal(templateEditorHasDraftChanges(), false);
+  assert.equal(templateEditorHasUnsavedChanges(), true);
+  assert.equal(state.templateLibrary[0].label, "Manufacturing Edited");
+
+  const exportResult = buildTemplateLibraryExport();
+  assert.equal(exportResult.ok, true);
+  assert.match(exportResult.source, /Manufacturing Edited/);
+  assert.equal(templateEditorHasUnsavedChanges(), false);
+});
+
+test("saved templates export bodyKey explicitly and omit the legacy duration alias", () => {
   resetAppState();
   openTemplateLibraryEditor();
   createTemplateEditorTemplate();
@@ -35,14 +65,16 @@ test("template editor can build a new template and export the library source", (
   updateTemplateEditorField("session.0.0.0.name", "QA Kick-Off");
   updateTemplateEditorField("session.0.0.0.gating.type", "phase_gate");
 
-  assert.equal(templateEditorHasUnsavedChanges(), true);
+  const saveResult = saveTemplateEditorTemplate();
+  assert.equal(saveResult.ok, true);
 
   const exportResult = buildTemplateLibraryExport();
   assert.equal(exportResult.ok, true);
   assert.match(exportResult.source, /QA Template/);
   assert.match(exportResult.source, /qa_kickoff/);
-  assert.match(exportResult.source, /durationDays: 3/);
-  assert.equal(templateEditorHasUnsavedChanges(), false);
+  assert.match(exportResult.source, /durationMinutes: 90/);
+  assert.match(exportResult.source, /bodyKey: null/);
+  assert.doesNotMatch(exportResult.source, /\bduration:\s/);
 });
 
 test("one-off template application stores a customized snapshot on the onboarding draft", () => {
@@ -78,6 +110,7 @@ test("templates screen renders the graph builder and inspector", () => {
   assert.ok(snapshot.main.includes('data-template-graph-scroll'));
   assert.ok(snapshot.main.includes("Inspector"));
   assert.ok(snapshot.main.includes('data-bind="templateEditor.key"'));
+  assert.ok(snapshot.main.includes('data-action="saveTemplateEditorTemplate"'));
   assert.ok(snapshot.main.indexOf('data-template-phase="setup"') < snapshot.main.indexOf('data-template-phase="implementation"'));
   assert.ok(snapshot.main.indexOf('data-template-phase="implementation"') < snapshot.main.indexOf('data-template-phase="hypercare"'));
 });

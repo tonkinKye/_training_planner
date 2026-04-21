@@ -1,5 +1,5 @@
 import { DEEP_LINK_LIMIT, SENTINEL_SCHEMA_ID, SENTINEL_SUBJECT, getActiveProject, replaceProject, resetCalendarAvailability, setActiveProject, setActorMode, setAuthStatus, setCalendarEvents, setGraphAccount, setProjects, setProjectError, setScreen, setSentinelState, state, upsertProject } from "./state.js";
-import { GRAPH_CLIENT_ID, GRAPH_SCOPES, GRAPH_TENANT_ID, PRODUCT_NAME } from "./config.js";
+import { GRAPH_CLIENT_ID, GRAPH_SCOPES, GRAPH_TENANT_ID, PRODUCT_NAME, isPlaceholderGraphValue } from "./runtime-config.js";
 import { classifyCalendarSourceError, getCalendarFetchPlan } from "./calendar-sources.js";
 import { buildDeepLinkUrl } from "./deeplink.js";
 import { buildBodyHTML, buildSubject, parseInvitees } from "./invites.js";
@@ -18,56 +18,23 @@ import {
 import { buildSentinelProjectRecord, createSentinelPayload, parseSentinelProjects } from "./sentinel-model.js";
 import { esc, getLocalTimeZone, pad, toast, toDateStr } from "./utils.js";
 
-const MSAL_CDN_URLS = [
-  "https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js",
-  "https://unpkg.com/@azure/msal-browser@2.39.0/lib/msal-browser.min.js",
-  "https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.39.0/lib/msal-browser.min.js",
-];
-
 const GRAPH_TIMEOUT_MS = 30000;
 const SENTINEL_LOOKBACK_COUNT = 25;
 const GRAPH_BATCH_LIMIT = 20;
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
-const LEGACY_SENTINEL_SUBJECT = "[TP] Project Index";
 const PROJECT_ID_EXTENDED_PROPERTY_ID = "String {f4a0b90d-bf6d-4a31-a38d-7f2cdb9b6d22} Name trainingPlannerProjectId";
 
 let msalInstance = null;
 let msalInitPromise = null;
 let lastPopupDismissedAt = 0;
 let lastMsalError = null;
-const scriptLoads = new Map();
 
 function hasGraphConfig() {
-  return Boolean(
-    GRAPH_CLIENT_ID &&
-      GRAPH_CLIENT_ID !== "YOUR_CLIENT_ID_HERE" &&
-      GRAPH_TENANT_ID &&
-      GRAPH_TENANT_ID !== "YOUR_TENANT_ID_HERE"
-  );
+  return !isPlaceholderGraphValue(GRAPH_CLIENT_ID) && !isPlaceholderGraphValue(GRAPH_TENANT_ID);
 }
 
 function isMsalAvailable() {
   return Boolean(window.msal?.PublicClientApplication);
-}
-
-function loadScript(src) {
-  if (scriptLoads.has(src)) return scriptLoads.get(src);
-
-  const promise = new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = src;
-    script.async = true;
-    script.onload = () => (isMsalAvailable() ? resolve() : reject(new Error(`MSAL loaded from ${src} but is unavailable.`)));
-    script.onerror = () => reject(new Error(`Failed to load MSAL from ${src}`));
-    document.head.appendChild(script);
-  });
-
-  const tracked = promise.catch((error) => {
-    scriptLoads.delete(src);
-    throw error;
-  });
-  scriptLoads.set(src, tracked);
-  return tracked;
 }
 
 function getErrorMessage(error, fallback = "Unknown error") {
@@ -76,11 +43,32 @@ function getErrorMessage(error, fallback = "Unknown error") {
   return fallback;
 }
 
+function readHeader(headers, name) {
+  if (!headers || typeof headers.get !== "function") return "";
+  return headers.get(name) || headers.get(name.toLowerCase()) || headers.get(name.toUpperCase()) || "";
+}
+
 function createGraphAuthError(error, stage = "token acquisition") {
   const wrapped = new Error(`Microsoft Graph auth failed during ${stage}: ${getErrorMessage(error)}`);
   wrapped.name = "GraphAuthError";
   wrapped.code = error?.errorCode || error?.code || "";
   wrapped.stage = stage;
+  wrapped.cause = error;
+  return wrapped;
+}
+
+function createSentinelConflictError(error) {
+  const wrapped = new Error(`Project index save conflicted with another change. Refresh and retry. ${getErrorMessage(error, "")}`.trim());
+  wrapped.name = "SentinelConflictError";
+  wrapped.status = error?.status || 412;
+  wrapped.cause = error;
+  return wrapped;
+}
+
+function createGraphPartialCommitError(summary, error) {
+  const wrapped = new Error(`${summary}: ${getErrorMessage(error)}`);
+  wrapped.name = "GraphPartialCommitError";
+  wrapped.partialCommit = true;
   wrapped.cause = error;
   return wrapped;
 }
@@ -101,20 +89,9 @@ function isPopupDismissError(error) {
 
 async function ensureMsalLoaded() {
   if (isMsalAvailable()) return;
-
-  let lastError = null;
-  for (const src of MSAL_CDN_URLS) {
-    try {
-      await loadScript(src);
-      return;
-    } catch (error) {
-      lastError = error;
-      console.warn("MSAL load attempt failed:", error);
-    }
-  }
-
-  console.error("MSAL load failed:", lastError);
-  throw lastError || new Error("MSAL could not be loaded.");
+  const error = new Error("MSAL is unavailable. Ensure vendor/msal-browser-2.39.0.min.js is present and loaded by index.html.");
+  console.error("MSAL load failed:", error);
+  throw error;
 }
 
 function createMsalInstance() {
@@ -131,13 +108,12 @@ function createMsalInstance() {
 }
 
 async function initMsal() {
+  if (msalInstance) return msalInstance;
+  if (msalInitPromise) return msalInitPromise;
   if (!hasGraphConfig()) {
     setAuthStatus("error", "Missing Graph configuration");
     return null;
   }
-
-  if (msalInstance) return msalInstance;
-  if (msalInitPromise) return msalInitPromise;
 
   msalInitPromise = (async () => {
     setAuthStatus("loading");
@@ -238,6 +214,17 @@ export function normalizeCalendarEvents(rawEvents = [], source = {}) {
 }
 
 async function graphRequest(path, { method = "GET", body, headers = {}, extraHeaders = {}, scopes = GRAPH_SCOPES } = {}) {
+  const response = await graphRequestDetailed(path, {
+    method,
+    body,
+    headers,
+    extraHeaders,
+    scopes,
+  });
+  return response.data;
+}
+
+async function graphRequestDetailed(path, { method = "GET", body, headers = {}, extraHeaders = {}, scopes = GRAPH_SCOPES } = {}) {
   const token = await getAccessToken(scopes);
   if (!token) {
     throw new Error("Could not get a Microsoft Graph access token.");
@@ -263,11 +250,16 @@ async function graphRequest(path, { method = "GET", body, headers = {}, extraHea
       const errorPayload = await response.json().catch(() => ({ error: { message: response.statusText } }));
       const error = new Error(errorPayload.error?.message || response.statusText);
       error.status = response.status;
+      error.headers = response.headers;
       throw error;
     }
 
-    if (response.status === 204) return null;
-    return response.json().catch(() => null);
+    const data = response.status === 204 ? null : await response.json().catch(() => null);
+    return {
+      data,
+      status: response.status,
+      headers: response.headers,
+    };
   } finally {
     window.clearTimeout(timeoutId);
   }
@@ -309,6 +301,43 @@ function parseSentinelExtension(extension) {
   return parseSentinelProjects(extension);
 }
 
+function getSentinelEtag(extension, headers) {
+  return extension?.["@odata.etag"] || readHeader(headers, "etag") || "";
+}
+
+function isSentinelConflictStatus(status) {
+  return status === 409 || status === 412;
+}
+
+function mergeSentinelProjects(localProjects = [], remoteProjects = []) {
+  const merged = [];
+  const localIds = new Set();
+
+  for (const project of localProjects || []) {
+    const normalized = normalizeProject(project);
+    if (normalized.id) {
+      localIds.add(normalized.id);
+    }
+    merged.push(normalized);
+  }
+
+  for (const project of remoteProjects || []) {
+    const normalized = normalizeProject(project);
+    if (normalized.id && localIds.has(normalized.id)) continue;
+    merged.push(normalized);
+  }
+
+  return merged;
+}
+
+function markSentinelPersistenceError(error) {
+  setSentinelState({
+    status: "error",
+    error: getErrorMessage(error),
+    malformed: false,
+  });
+}
+
 async function findSentinelSeriesBySubject(subject, userId = "me", { exact = false } = {}) {
   const filter = exact ? `subject eq '${subject}'` : `startswith(subject,'${subject}')`;
   const path =
@@ -322,9 +351,7 @@ async function findSentinelSeriesBySubject(subject, userId = "me", { exact = fal
 }
 
 async function findSentinelSeries(userId = "me") {
-  const current = await findSentinelSeriesBySubject(SENTINEL_SUBJECT, userId);
-  if (current) return current;
-  return findSentinelSeriesBySubject(LEGACY_SENTINEL_SUBJECT, userId, { exact: true });
+  return findSentinelSeriesBySubject(SENTINEL_SUBJECT, userId);
 }
 
 async function createSentinelSeries(userId = "me") {
@@ -364,18 +391,17 @@ async function createSentinelSeries(userId = "me") {
   });
 }
 
-async function renameSentinelSeries(masterId, userId = "me") {
-  await graphRequest(`${getGraphBase(userId)}/events/${encodeURIComponent(masterId)}`, {
-    method: "PATCH",
-    body: {
-      subject: SENTINEL_SUBJECT,
-    },
-  });
-}
-
 async function readSentinelExtension(masterId, userId = "me") {
   try {
-    return await graphRequest(`${getGraphBase(userId)}/events/${encodeURIComponent(masterId)}/extensions/${encodeURIComponent(SENTINEL_SCHEMA_ID)}`);
+    const response = await graphRequestDetailed(
+      `${getGraphBase(userId)}/events/${encodeURIComponent(masterId)}/extensions/${encodeURIComponent(SENTINEL_SCHEMA_ID)}`
+    );
+    return response.data
+      ? {
+          ...response.data,
+          etag: getSentinelEtag(response.data, response.headers),
+        }
+      : null;
   } catch (error) {
     if (error.status === 404) return null;
     throw error;
@@ -383,13 +409,15 @@ async function readSentinelExtension(masterId, userId = "me") {
 }
 
 async function writeSentinelExtension(masterId, projects, userId = "me", options = {}) {
-  const payload = buildSentinelPayload(projects, options);
+  const { ifMatch = "", ...payloadOptions } = options;
+  const payload = buildSentinelPayload(projects, payloadOptions);
   try {
     return await graphRequest(
       `${getGraphBase(userId)}/events/${encodeURIComponent(masterId)}/extensions/${encodeURIComponent(SENTINEL_SCHEMA_ID)}`,
       {
         method: "PATCH",
         body: payload,
+        headers: ifMatch ? { "If-Match": ifMatch } : {},
       }
     );
   } catch (error) {
@@ -398,6 +426,38 @@ async function writeSentinelExtension(masterId, projects, userId = "me", options
       method: "POST",
       body: payload,
     });
+  }
+}
+
+async function writeSentinelWithRetry(masterId, projects, userId = "me", options = {}) {
+  const current = await readSentinelExtension(masterId, userId);
+  if (!current) {
+    return writeSentinelExtension(masterId, projects, userId, options);
+  }
+
+  try {
+    return await writeSentinelExtension(masterId, projects, userId, {
+      ...options,
+      ifMatch: current.etag,
+    });
+  } catch (error) {
+    if (!isSentinelConflictStatus(error.status)) throw error;
+
+    const latest = await readSentinelExtension(masterId, userId);
+    const latestProjects = latest ? parseSentinelExtension(latest) : [];
+    const mergedProjects = mergeSentinelProjects(projects, latestProjects);
+
+    try {
+      return await writeSentinelExtension(masterId, mergedProjects, userId, {
+        ...options,
+        ifMatch: latest?.etag || "",
+      });
+    } catch (retryError) {
+      if (isSentinelConflictStatus(retryError.status)) {
+        throw createSentinelConflictError(retryError);
+      }
+      throw retryError;
+    }
   }
 }
 
@@ -480,12 +540,8 @@ function getSentinelMailbox(userId = "me", mailbox = "") {
 
 export async function writeSentinel(projects, { userId = "me", mailbox = "", perspective = "" } = {}) {
   const master = await ensureSentinelSeries(userId);
-  if (master.subject === LEGACY_SENTINEL_SUBJECT) {
-    await renameSentinelSeries(master.id, userId);
-    master.subject = SENTINEL_SUBJECT;
-  }
   const sentinelMailbox = getSentinelMailbox(userId, mailbox);
-  await writeSentinelExtension(master.id, projects, userId, {
+  await writeSentinelWithRetry(master.id, projects, userId, {
     mailbox: sentinelMailbox,
     perspective,
   });
@@ -543,47 +599,11 @@ export async function loadProjectsFromSentinel() {
 }
 
 export async function persistActiveProjects() {
-  await writeSentinel(state.projects);
-}
-
-export async function searchPeople(query) {
-  if (!query?.trim()) {
-    state.ui.peopleMatches = [];
-    state.ui.peopleStatus = "idle";
-    return [];
-  }
-
-  state.ui.peopleStatus = "loading";
-  state.ui.peopleError = "";
   try {
-    const response = await graphRequest(
-      `${getGraphBase()}/people?$search=${encodeURIComponent(`"${query.trim()}"`)}&$top=8`,
-      {
-        scopes: GRAPH_SCOPES,
-        extraHeaders: {
-          ConsistencyLevel: "eventual",
-        },
-      }
-    );
-    const matches = (response?.value || [])
-      .map((person) => ({
-        name: person.displayName || person.userPrincipalName || "",
-        email:
-          person.scoredEmailAddresses?.find((item) => item.address)?.address ||
-          person.userPrincipalName ||
-          "",
-      }))
-      .filter((person) => person.email);
-
-    state.ui.peopleMatches = matches;
-    state.ui.peopleStatus = "ready";
-    return matches;
+    await writeSentinel(state.projects);
   } catch (error) {
-    console.error("People lookup failed:", error);
-    state.ui.peopleStatus = "error";
-    state.ui.peopleError = error.message || String(error);
-    state.ui.peopleMatches = [];
-    return [];
+    markSentinelPersistenceError(error);
+    throw error;
   }
 }
 
@@ -1111,23 +1131,11 @@ export async function loadSharedCalendars() {
   }
 }
 
-function snapshotSessionPushState(session) {
-  return {
-    graphEventId: session.graphEventId,
-    graphActioned: session.graphActioned,
-  };
-}
-
 function applySessionPushResult(session, payload) {
   if (payload?.id) {
     session.graphEventId = payload.id;
   }
   session.graphActioned = true;
-}
-
-function restoreSessionPushState(session, snapshot) {
-  session.graphEventId = snapshot.graphEventId;
-  session.graphActioned = snapshot.graphActioned;
 }
 
 export async function pushSessionToCalendar(
@@ -1151,7 +1159,6 @@ export async function pushSessionToCalendar(
   }
 
   try {
-    const previousState = snapshotSessionPushState(found.session);
     const payload = await pushGraphEventImpl(found.session, project);
     applySessionPushResult(found.session, payload);
     project.status = deriveProjectStatus(project);
@@ -1160,9 +1167,16 @@ export async function pushSessionToCalendar(
       try {
         await persistActiveProjectsImpl();
       } catch (persistError) {
-        restoreSessionPushState(found.session, previousState);
-        project.status = deriveProjectStatus(project);
-        throw persistError;
+        const partialError = createGraphPartialCommitError(
+          "Calendar updated, but project index could not be saved",
+          persistError
+        );
+        markSentinelPersistenceError(partialError);
+        console.error("pushSessionToCalendar persist failed after Graph success:", persistError);
+        if (notify) {
+          toastImpl(partialError.message, 6000);
+        }
+        return true;
       }
     }
 
@@ -1443,13 +1457,22 @@ export async function createHandoffEvent(
     eventId: createdEvent?.id || "",
   };
   syncProjectRuntimeState(project);
-  await persistActiveProjectsImpl();
   state.ui.lastHandoff = {
     url,
     length,
     delegateUsed: false,
     eventId: createdEvent?.id || "",
   };
+  try {
+    await persistActiveProjectsImpl();
+  } catch (persistError) {
+    const partialError = createGraphPartialCommitError(
+      "Handoff event created, but project index could not be saved",
+      persistError
+    );
+    markSentinelPersistenceError(partialError);
+    throw partialError;
+  }
   return state.ui.lastHandoff;
 }
 
@@ -1587,7 +1610,16 @@ export async function closeProject(project) {
   project.closedAt = new Date().toISOString();
   project.closedBy = state.graphAccount?.name || "Project Manager";
   syncProjectRuntimeState(project);
-  await persistActiveProjects();
+  try {
+    await persistActiveProjects();
+  } catch (persistError) {
+    const partialError = createGraphPartialCommitError(
+      "Project closed and future calendar events removed, but project index could not be saved",
+      persistError
+    );
+    markSentinelPersistenceError(partialError);
+    throw partialError;
+  }
 
   await Promise.allSettled([
     project.isEmail ? createCloseNotificationEvent(project) : Promise.resolve(null),

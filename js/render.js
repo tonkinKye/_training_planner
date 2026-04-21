@@ -1177,7 +1177,9 @@ function renderTemplateInspector(draft) {
       </div>
       ${body}
       <div class="tp-template-inspector-actions">
-        ${state.ui.templateEditor.mode === "library" ? `<button class="btn-amber" data-action="exportTemplateLibrary">Export session-templates.js</button>` : `<button class="btn-amber" data-action="applyOneOffTemplate">Apply To Project</button>`}
+        ${state.ui.templateEditor.mode === "library"
+    ? `<button class="btn-default" data-action="saveTemplateEditorTemplate">Save Template</button><button class="btn-amber" data-action="exportTemplateLibrary">Export session-templates.js</button>`
+    : `<button class="btn-amber" data-action="applyOneOffTemplate">Apply To Project</button>`}
       </div>
     </div>
   </aside>`;
@@ -1187,6 +1189,15 @@ function templateEditorScreen() {
   const draft = state.ui.templateEditor.draft;
   const preview = getTemplateEditorPreview();
   const templateOptions = getTemplateOptionList();
+  const statusNote = state.ui.templateEditor.mode === "library"
+    ? state.ui.templateEditor.draftDirty
+      ? "Draft changes need Save before they update the library."
+      : state.ui.templateEditor.dirty
+        ? "Library changes are saved in-app. Export session-templates.js to persist them."
+        : "Library is in sync with the last export."
+    : state.ui.templateEditor.draftDirty
+      ? "One-off changes are ready to apply to the onboarding draft."
+      : "No pending one-off changes.";
   if (!draft) {
     return `<main class="tp-screen"><section class="tp-empty-card"><h2>No template selected</h2><p>Choose a template to edit.</p></section></main>`;
   }
@@ -1208,6 +1219,7 @@ function templateEditorScreen() {
         <div class="tp-template-toolbar-copy">
           <strong>Graph Builder</strong>
           <span>Time flows left to right. Drag stages and sessions within their phase timeline, then refine details in the inspector.</span>
+          <small class="tp-muted">${esc(statusNote)}</small>
         </div>
       </div>
       <div class="tp-template-graph-scroll" data-template-graph-scroll>

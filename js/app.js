@@ -88,8 +88,10 @@ import {
   openTemplateOneOffEditor,
   removeTemplateEditorSession,
   removeTemplateEditorStage,
+  saveTemplateEditorTemplate,
   selectTemplateEditorEntity,
   selectTemplateEditorTemplate,
+  templateEditorHasDraftChanges,
   templateEditorHasUnsavedChanges,
   updateTemplateEditorField,
 } from "./template-editor.js";
@@ -261,10 +263,6 @@ function applyBinding(binding, value) {
     rerender();
     return;
   }
-  if (scope === "peopleQuery") {
-    state.ui.peopleQuery = value;
-    return;
-  }
   if (scope === "sharedCalendarSelection") {
     state.ui.selectedSharedCalendarId = value;
     return;
@@ -325,6 +323,7 @@ async function actionHandlers(action, element) {
     "closeTemplateEditor",
     "createTemplateEditorTemplate",
     "duplicateTemplateEditorTemplate",
+    "saveTemplateEditorTemplate",
     "selectTemplateEditorTemplate",
     "addTemplateStage",
     "moveTemplateStage",
@@ -376,6 +375,10 @@ async function actionHandlers(action, element) {
       rerender();
       return;
     case "closeTemplateEditor":
+      if (templateEditorHasDraftChanges() && !window.confirm("You have unsaved template draft changes. Leave and discard them?")) {
+        rerender();
+        return;
+      }
       if (state.ui.templateEditor.mode === "oneoff") {
         closeTemplateEditor();
         state.ui.onboarding.open = true;
@@ -386,6 +389,10 @@ async function actionHandlers(action, element) {
       rerender();
       return;
     case "createTemplateEditorTemplate":
+      if (templateEditorHasDraftChanges() && !window.confirm("You have unsaved template draft changes. Create a new template and discard them?")) {
+        rerender();
+        return;
+      }
       createTemplateEditorTemplate();
       rerender();
       return;
@@ -394,6 +401,10 @@ async function actionHandlers(action, element) {
       rerender();
       return;
     case "selectTemplateEditorTemplate":
+      if (templateEditorHasDraftChanges() && !window.confirm("You have unsaved template draft changes. Switch templates and discard them?")) {
+        rerender();
+        return;
+      }
       selectTemplateEditorTemplate(Number(element.value));
       rerender();
       return;
@@ -439,6 +450,17 @@ async function actionHandlers(action, element) {
       }
       downloadBlob(exportResult.source, "session-templates.js", "text/javascript");
       toast("session-templates.js exported", 3000);
+      rerender();
+      return;
+    }
+    case "saveTemplateEditorTemplate": {
+      const saveResult = saveTemplateEditorTemplate();
+      if (!saveResult.ok) {
+        toast(saveResult.errors[0] || "Template has validation errors.", 5000);
+        rerender();
+        return;
+      }
+      toast("Template saved to the in-app library. Export session-templates.js to persist it.", 4500);
       rerender();
       return;
     }
