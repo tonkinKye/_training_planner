@@ -95,11 +95,14 @@ async function ensureMsalLoaded() {
 }
 
 function createMsalInstance() {
+  const popupRedirectUri = new URL("auth-callback.html", window.location.href).toString();
   return new window.msal.PublicClientApplication({
     auth: {
       clientId: GRAPH_CLIENT_ID,
       authority: `https://login.microsoftonline.com/${GRAPH_TENANT_ID}`,
-      redirectUri: `${window.location.origin}${window.location.pathname}`,
+      redirectUri: popupRedirectUri,
+      postLogoutRedirectUri: popupRedirectUri,
+      navigateToLoginRequestUrl: false,
     },
     cache: {
       cacheLocation: "sessionStorage",

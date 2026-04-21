@@ -28,19 +28,19 @@ Create a new app registration with:
 
 ### 2. Redirect URIs
 
-Add the exact URL(s) where the app is hosted.
+Add the exact popup callback URL where the app completes Microsoft sign-in.
 
 This application uses:
 
-- `window.location.origin + window.location.pathname`
+- `new URL("auth-callback.html", window.location.href)`
 
-That means the redirect URI must match the full runtime path, not just the domain.
+That means the redirect URI must point to `auth-callback.html` in the same hosted directory as the app.
 
 Examples:
 
-- `https://planner.company.com/`
-- `https://planner.company.com/index.html`
-- `http://localhost:5173/` for local development
+- `https://planner.company.com/auth-callback.html`
+- `https://planner.company.com/training_planner/auth-callback.html`
+- `http://localhost:5173/auth-callback.html` for local development
 
 ### 3. SPA Platform Settings
 
@@ -139,6 +139,7 @@ Upgrade procedure:
 - **Supported account type:** Single-tenant
 - **Tenant ID:** Your tenant GUID
 - **Redirect URI:** Exact production app URL/path
+- **Popup redirect URI:** Exact hosted `auth-callback.html` path
 - **Graph delegated permissions:** `Calendars.ReadWrite`, `Calendars.Read.Shared`
 - **Admin consent:** Granted
 

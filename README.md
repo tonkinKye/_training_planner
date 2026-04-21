@@ -5,6 +5,7 @@ Browser-based project planning and calendar orchestration for Fishbowl training 
 ## Repo Layout
 
 - `index.html`: SPA entrypoint
+- `auth-callback.html`: dedicated Microsoft auth popup return page
 - `js/`: application logic
 - `css/`: stylesheets
 - `tests/`: Node test suite
@@ -24,6 +25,7 @@ Notes:
 - `js/config.js` is the active tracked runtime config for this repo.
 - `index.html` loads `js/config.js` before the app bootstrap, so config changes are deliberate source-controlled changes.
 - [js/config.example.js](js/config.example.js) remains as a clean placeholder template/reference.
+- The Microsoft popup flow returns to `auth-callback.html`, so that path must exist wherever the app is hosted.
 - MSAL is vendored locally in `vendor/`; no CDN dependency is required at runtime.
 
 ## Tests
