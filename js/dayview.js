@@ -317,7 +317,7 @@ function renderDayColumn(project, dateString, index, timedBlocks, untimedBlocks,
   return `<div class="tp-dv-day-col${isActiveDay ? " is-active" : ""}${isActiveDay && activeConflictSummary.hasCalendar ? " is-active-calendar-conflict" : ""}${isActiveDay && activeConflictSummary.hasWindow ? " is-active-window-conflict" : ""}${isActiveDay && activeConflictSummary.hasAvailability ? " is-active-availability-conflict" : ""}" data-drop-dv data-date="${dateString}">
     <div class="tp-dv-day-hdr${dateString === today ? " cal-day-today" : ""}">
       <span>${DAY_NAMES[index]}</span>
-      <strong>${date.getDate()}</strong>
+      <strong>${date.getDate()}<span class="tp-cal-date-month">/${date.getMonth() + 1}</span></strong>
     </div>
     <div class="tp-dv-untimed">${untimedHTML || '<span class="tp-dv-empty">No date-only items</span>'}</div>
     ${slots}
