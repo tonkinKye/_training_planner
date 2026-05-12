@@ -150,6 +150,8 @@ export const state = {
     projectSearch: "",
     expandedPhaseSections: new Set(),
     expandedStageSections: new Set(),
+    zoomAuthStatus: { state: "unknown", message: "" },
+    transcriptViewer: { open: false, sessionId: "", title: "", text: "" },
   },
   calendarAvailability: createCalendarAvailabilityState(),
   calStart: null,

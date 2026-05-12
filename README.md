@@ -37,8 +37,15 @@ Run the full suite with:
 npm test
 ```
 
+## Zoom auto-generated meetings (optional)
+
+The new-project wizard's Location step offers an option to **Generate Zoom meetings automatically** for every session. Each session gets its own Zoom meeting, created on behalf of the appropriate calendar owner (PM for setup/hypercare, IS for implementation) using Zoom's Schedule Privilege. After the meeting, the session card surfaces the recording duration, transcript download, and Zoom AI summary inside the planner. Transcripts can be copied or downloaded for analysis (the app does not embed any LLM key — paste into claude.ai yourself).
+
+The feature is **dormant** when `ZOOM_CLIENT_ID` is unset; the option is shown disabled in the UI and no Zoom code runs. See [ZOOM_SETUP.md](ZOOM_SETUP.md) for the Zoom Marketplace, Schedule Privilege, and custom-role setup required to flip it on.
+
 ## Supporting Docs
 
 - [ENTRA_SETUP.md](ENTRA_SETUP.md): tenant/app-registration setup
+- [ZOOM_SETUP.md](ZOOM_SETUP.md): Zoom Marketplace and admin setup for auto-generated meetings
 - [vendor/README.md](vendor/README.md): vendored dependency upgrade procedure
 - [AUDIT_PLAN.md](AUDIT_PLAN.md): current audit status and deferred decisions

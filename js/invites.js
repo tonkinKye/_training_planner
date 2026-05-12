@@ -4,6 +4,19 @@ import { findSession, getCalendarOwnerName, PHASE_META } from "./projects.js";
 import { getSessionBody } from "./session-templates.js";
 import { addMins, esc, fmt12, fmtDateLong, fmtDur, getSessionDurationMinutes, toast } from "./utils.js";
 
+const URL_PATTERN = /^https?:\/\//i;
+
+export function resolveSessionLocation(project, session) {
+  if (project?.locationMode === "zoom-auto" && session?.meetingUrl) {
+    return String(session.meetingUrl);
+  }
+  return String(project?.location || "");
+}
+
+function isUrl(value) {
+  return Boolean(value) && URL_PATTERN.test(value);
+}
+
 function getCurrentProjectSession(sessionId) {
   const project = getActiveProject();
   if (!project) return { project: null, session: null };
@@ -48,6 +61,26 @@ function buildSessionBodyText(project, session) {
   );
 }
 
+function renderMetaRowValue(rowItem) {
+  if (rowItem.isUrl) {
+    return `<a href="${esc(rowItem.value)}" style="color:#1f4d75;text-decoration:underline;">${esc(rowItem.value)}</a>`;
+  }
+  return esc(rowItem.value);
+}
+
+function renderZoomJoinBlock(session) {
+  if (!session?.meetingUrl || session.meetingProvider !== "zoom") return "";
+  const passcodeRow = session.meetingPasscode
+    ? `<div style="margin-top:6px;font-size:12px;color:#324152;">Passcode: <strong>${esc(session.meetingPasscode)}</strong></div>`
+    : "";
+  return `<div style="background:#eef4fb;border:1px solid #c9d9ea;border-radius:10px;padding:14px 18px;margin-bottom:18px;">
+    <div style="font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#1f4d75;margin-bottom:8px;">Zoom Meeting</div>
+    <a href="${esc(session.meetingUrl)}" style="display:inline-block;background:#1f4d75;color:#ffffff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;">Join Zoom meeting</a>
+    <div style="margin-top:10px;font-size:12px;color:#324152;word-break:break-all;">${esc(session.meetingUrl)}</div>
+    ${passcodeRow}
+  </div>`;
+}
+
 export function buildBodyHTML(project, session) {
   const dateText = session.date ? fmtDateLong(session.date) : "To be confirmed";
   const timeText = session.time ? fmt12(session.time) : "To be confirmed";
@@ -55,16 +88,20 @@ export function buildBodyHTML(project, session) {
   const sessionText = buildSessionBodyText(project, session);
   const signatureLines = buildSignatureLines(project, session);
   const phaseLabel = PHASE_META[session.phase]?.label || "Session";
+  const resolvedLocation = resolveSessionLocation(project, session);
+  const locationDisplay = resolvedLocation || "To be advised";
   const metaRows = [
     { label: "Phase", value: phaseLabel },
     { label: "Date", value: dateText },
     { label: "Time", value: `${timeText} (${fmtDur(getSessionDurationMinutes(session))})` },
-    { label: "Location", value: project.location || "To be advised" },
+    { label: "Location", value: locationDisplay, isUrl: isUrl(locationDisplay) },
   ];
 
   if (attendees.length) {
     metaRows.push({ label: "Attendees", value: attendees.join(", ") });
   }
+
+  const zoomJoinBlock = renderZoomJoinBlock(session);
 
   return `<!DOCTYPE html>
 <html>
@@ -85,13 +122,14 @@ export function buildBodyHTML(project, session) {
         <td style="width:96px;padding:5px 0;color:#637083;font-weight:700;text-transform:uppercase;">${esc(
           rowItem.label
         )}</td>
-        <td style="padding:5px 0;color:#152536;">${esc(rowItem.value)}</td>
+        <td style="padding:5px 0;color:#152536;">${renderMetaRowValue(rowItem)}</td>
       </tr>`
         )
         .join("")}
     </table>
   </td></tr>
   <tr><td style="padding:22px 28px;">
+    ${zoomJoinBlock}
     <div style="font-size:14px;line-height:1.7;color:#324152;white-space:pre-line;">${esc(sessionText)}</div>
     ${
       signatureLines.length
@@ -113,7 +151,8 @@ export function buildBodyPlain(project, session) {
   const timeText = session.time ? fmt12(session.time) : "TBC";
   const attendees = parseInvitees(project.invitees);
   const sessionText = buildSessionBodyText(project, session);
-  const isUrl = Boolean(project.location && /^https?:\/\//i.test(project.location));
+  const resolvedLocation = resolveSessionLocation(project, session);
+  const locationIsUrl = isUrl(resolvedLocation);
   const signatureLines = buildSignatureLines(project, session);
   const subject = buildSubject(project, session);
   const headerLines = [
@@ -122,14 +161,20 @@ export function buildBodyPlain(project, session) {
     `Phase:    ${PHASE_META[session.phase]?.label || "Session"}`,
     `Date:     ${dateText}`,
     `Time:     ${timeText} (${fmtDur(getSessionDurationMinutes(session))})`,
-    project.location && !isUrl ? `Location: ${project.location}` : null,
+    resolvedLocation && !locationIsUrl ? `Location: ${resolvedLocation}` : null,
     attendees.length ? `To:       ${attendees.join(", ")}` : null,
     "-".repeat(48),
   ]
     .filter(Boolean)
     .join("\n");
 
-  const joinBlock = isUrl ? `\n\n---\nJoin meeting\n${project.location}` : "";
+  let joinBlock = "";
+  if (session?.meetingProvider === "zoom" && session?.meetingUrl) {
+    const passcodeLine = session.meetingPasscode ? `\nPasscode: ${session.meetingPasscode}` : "";
+    joinBlock = `\n\n---\nJoin Zoom meeting\n${session.meetingUrl}${passcodeLine}`;
+  } else if (locationIsUrl) {
+    joinBlock = `\n\n---\nJoin meeting\n${resolvedLocation}`;
+  }
   const signature = signatureLines.length ? `\n\nThanks,\n${signatureLines.join("\n")}` : "";
 
   return `${headerLines}\n\n${sessionText}${joinBlock}${signature}`;
@@ -145,7 +190,8 @@ export function outlookURL(project, session) {
     "ismeeting=1",
   ];
 
-  if (project.location) params.push(`location=${encodeURIComponent(project.location)}`);
+  const resolvedLocation = resolveSessionLocation(project, session);
+  if (resolvedLocation) params.push(`location=${encodeURIComponent(resolvedLocation)}`);
   const attendees = parseInvitees(project.invitees);
   if (attendees.length) params.push(`to=${encodeURIComponent(attendees.join(";"))}`);
 

@@ -12,7 +12,19 @@
       "Bash(node --check js/clientplan.js)",
       "Bash(node --check js/state.js)",
       "Bash(find:*)",
-      "Bash(node --check js/session-templates.js)"
+      "Bash(node --check js/session-templates.js)",
+      "PowerShell(node --version)",
+      "PowerShell(npm --version)",
+      "PowerShell(npx --version)",
+      "PowerShell(python --version)",
+      "PowerShell(py --version)",
+      "PowerShell(winget list --name \"Node.js\")",
+      "Bash(npm --version)",
+      "PowerShell(& \"C:\\\\Program Files\\\\nodejs\\\\node.exe\" --version)",
+      "PowerShell(& \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" --version)",
+      "PowerShell(& \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" test 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\Program Files\\\\nodejs;$env:PATH\"; npm test 2>&1)",
+      "PowerShell(& \"C:\\\\Program Files\\\\nodejs\\\\node.exe\" --test 2>&1)"
     ]
   }
 }

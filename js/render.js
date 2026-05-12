@@ -29,6 +29,8 @@ import {
 import { getSmartAvailabilityState, readyForHandoff } from "./scheduler.js";
 import { getTemplateEditorEntity, getTemplateEditorPreview, getTemplateEditorSelection } from "./template-editor.js";
 import { esc, fmt12, fmtDur, getSessionDurationMinutes, getTimeOptionsHTML, mondayOf, parseDate, timeAgo, toDateStr } from "./utils.js";
+import { hasZoomConfig } from "./zoom-auth.js";
+import { getZoomHostLabel } from "./zoom-host.js";
 
 const DURATION_OPTIONS = [30, 45, 60, 90, 120, 150, 180, 240, 480];
 const STATUS_PRIORITY = { draft: 0, pm_scheduled: 1, handed_off_pending_is: 2, is_active: 3, closed: 4 };
@@ -319,9 +321,22 @@ function topbar() {
       ${workspaceActions}
       ${templateActions}
       ${renderThemeToggle()}
+      ${renderZoomConnectButton()}
       <button class="btn-ghost" data-action="toggleAuth">${esc(name)} | Sign Out</button>
     </div>
   </header>`;
+}
+
+function renderZoomConnectButton() {
+  if (!hasZoomConfig()) return "";
+  const status = state.ui.zoomAuthStatus?.state || "unknown";
+  if (status === "connected") {
+    return '<button class="btn-ghost" data-action="disconnectZoom" title="Disconnect Zoom">Zoom: Connected</button>';
+  }
+  if (status === "connecting") {
+    return '<button class="btn-ghost" disabled>Connecting Zoom...</button>';
+  }
+  return '<button class="btn-ghost" data-action="connectZoom">Connect Zoom</button>';
 }
 
 function authScreen() {
@@ -713,6 +728,45 @@ function editableConflictScope(project, session, context) {
   return "editable";
 }
 
+function renderPostMeetingBlock(project, session) {
+  if (session.meetingProvider !== "zoom") return "";
+  const hostLabel = getZoomHostLabel(project, session);
+  const hasRecording = Boolean(session.recordingUrl || session.transcriptUrl);
+  const hasTranscript = Boolean(session.transcriptUrl);
+  const duration = Number(session.recordingDurationMinutes) > 0
+    ? `<span class="tp-muted">Recorded ${esc(fmtDur(Number(session.recordingDurationMinutes)))}${session.recordingStart ? ` on ${esc(new Date(session.recordingStart).toLocaleString())}` : ""}</span>`
+    : "";
+  const summaryNote = session.hasZoomSummary
+    ? `<button class="btn-default btn-sm" data-action="viewZoomSummary" data-id="${session.id}">View Zoom AI summary</button>`
+    : "";
+  const recordingButtons = hasRecording
+    ? `<a class="btn-default btn-sm" href="${esc(session.recordingUrl)}" target="_blank" rel="noopener">Open recording</a>`
+    : "";
+  const transcriptButtons = hasTranscript
+    ? `<button class="btn-default btn-sm" data-action="viewTranscript" data-id="${session.id}">View transcript</button>
+       <button class="btn-default btn-sm" data-action="copyTranscript" data-id="${session.id}">Copy transcript</button>
+       <button class="btn-default btn-sm" data-action="downloadTranscript" data-id="${session.id}" data-format="txt">Download TXT</button>
+       <button class="btn-default btn-sm" data-action="downloadTranscript" data-id="${session.id}" data-format="vtt">Download VTT</button>`
+    : "";
+  const notReady = !hasRecording && !hasTranscript
+    ? "<p class=\"tp-muted\">Recording not yet available. Zoom usually finishes processing within an hour of the meeting end.</p>"
+    : "";
+  return `<details class="sc-postmeeting">
+    <summary>Post-meeting (Zoom)</summary>
+    <div class="sc-postmeeting-body">
+      <p class="tp-muted">Host: ${esc(hostLabel)} · Meeting ID: ${esc(String(session.meetingId || ""))} ${duration}</p>
+      <div class="sc-postmeeting-actions">
+        <button class="btn-default btn-sm" data-action="refreshZoomMeeting" data-id="${session.id}">Refresh from Zoom</button>
+        ${recordingButtons}
+        ${transcriptButtons}
+        ${summaryNote}
+      </div>
+      ${notReady}
+      <p class="tp-muted">Paste the transcript or summary into claude.ai for further analysis.</p>
+    </div>
+  </details>`;
+}
+
 function sessionRow(project, session, context = false, isNextUp = false) {
   const today = toDateStr(new Date());
   const past = session.date && session.date < today ? " sc-past" : "";
@@ -720,6 +774,7 @@ function sessionRow(project, session, context = false, isNextUp = false) {
   const durationDisabled = editable && state.actor === "pm" ? "" : "disabled";
   const dateDisabled = editable && !session.lockedDate ? "" : "disabled";
   const timeDisabled = editable && !session.lockedTime ? "" : "disabled";
+  const showPostMeeting = Boolean(past) && session.meetingProvider === "zoom";
   return `<article class="sc${session.phase === "implementation" ? " sc-impl" : ""}${context ? " sc-context" : ""}${past}${isNextUp ? " sc-active" : ""}">
     <div class="sc-header">
       <div class="sc-title"><div class="sc-name">${esc(session.name)}</div><div class="sc-badges">${sessionBadges(project, session, context)}${isNextUp ? '<span class="badge badge-next">Next</span>' : ""}</div></div>
@@ -736,6 +791,7 @@ function sessionRow(project, session, context = false, isNextUp = false) {
       <label class="tp-field tp-field-compact"><span>Time</span><select class="tp-mono" ${timeDisabled} data-action="setSessionTime" data-id="${session.id}">${getTimeOptionsHTML(session.time || "")}</select></label>
       <label class="tp-field tp-field-compact"><span>Duration</span><select class="tp-mono" ${durationDisabled} data-action="setSessionDuration" data-id="${session.id}">${DURATION_OPTIONS.map((m) => `<option value="${m}"${m === getSessionDurationMinutes(session) ? " selected" : ""}>${fmtDur(m)}</option>`).join("")}</select></label>
     </div>
+    ${showPostMeeting ? renderPostMeetingBlock(project, session) : ""}
   </article>`;
 }
 
@@ -879,6 +935,38 @@ function workspace(project) {
   </main>`;
 }
 
+function transcriptViewerModal() {
+  const viewer = state.ui.transcriptViewer;
+  if (!viewer?.open) return "";
+  return `<div class="tp-modal-overlay is-open"><div class="tp-modal tp-modal-wide">
+    <div class="tp-modal-head"><div><h3>${esc(viewer.title || "Transcript")}</h3><p>Paste into claude.ai for further analysis.</p></div>
+      <button class="btn-default btn-sm" data-action="closeTranscriptViewer">Close</button></div>
+    <div class="tp-modal-body"><pre class="tp-mono" style="white-space:pre-wrap;max-height:60vh;overflow:auto;">${esc(viewer.text || "")}</pre></div>
+    <div class="tp-modal-actions">
+      <button class="btn-default" data-action="closeTranscriptViewer">Close</button>
+    </div>
+  </div></div>`;
+}
+
+function renderLocationStepHTML(draft, scope) {
+  const zoomEnabled = hasZoomConfig();
+  const mode = draft.locationMode === "zoom-auto" ? "zoom-auto" : "manual";
+  const effectiveMode = !zoomEnabled && mode === "zoom-auto" ? "manual" : mode;
+  const select = `<label class="tp-field"><span>Meeting Location</span>
+    <select data-bind="${scope}.locationMode">
+      <option value="manual"${effectiveMode === "manual" ? " selected" : ""}>Room name or Teams URL</option>
+      <option value="zoom-auto"${effectiveMode === "zoom-auto" ? " selected" : ""}${zoomEnabled ? "" : " disabled"}>Generate Zoom meetings automatically${zoomEnabled ? "" : " (not configured)"}</option>
+    </select>
+    <small class="tp-muted">${zoomEnabled
+      ? "Choose how each session's location is set. Zoom generates a meeting per session on commit."
+      : "Add ZOOM_CLIENT_ID to enable auto-generated Zoom meetings (see ZOOM_SETUP.md)."}</small>
+  </label>`;
+  if (effectiveMode === "manual") {
+    return `${select}<label class="tp-field"><span>Location</span><input type="text" value="${esc(draft.location)}" data-bind="${scope}.location"><small class="tp-muted">Enter a room name or Teams URL.</small></label>`;
+  }
+  return `${select}<div class="tp-summary-card"><p class="tp-muted">Each session's Zoom meeting will be created on behalf of the calendar owner (PM for setup/hypercare sessions, IS for implementation sessions) when the session is committed to Outlook. The join URL is written into the event location and body automatically.</p></div>`;
+}
+
 function onboardingStep() {
   const d = state.ui.onboarding.draft;
   if (!d) return "";
@@ -926,7 +1014,7 @@ function onboardingStep() {
     </div>`;
   }
   if (step === 3) return `<label class="tp-field tp-field-full"><span>Invitees</span><textarea rows="5" data-bind="onboarding.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea><small class="tp-muted">Use commas or new lines to separate attendee email addresses.</small></label>`;
-  if (step === 4) return `<label class="tp-field"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="onboarding.location"><small class="tp-muted">Enter a room name or Teams URL.</small></label>`;
+  if (step === 4) return renderLocationStepHTML(d, "onboarding");
   if (step === 5) return `<div class="tp-settings-list">${PHASE_ORDER.map((phaseKey) => renderSessionRowsForStages(d, phaseKey, "moveOnboardingSession", "removeOnboardingSession")).join("")}</div><div class="tp-builder-grid"><label class="tp-field tp-field-compact"><span>Name</span><input type="text" value="${esc(d.customSession.name)}" data-bind="onboarding.customSession.name"></label><label class="tp-field tp-field-compact"><span>Duration</span><input class="tp-mono" type="number" min="15" step="15" value="${d.customSession.duration}" data-bind="onboarding.customSession.duration"></label><label class="tp-field tp-field-compact"><span>Phase</span><select data-bind="onboarding.customSession.phase">${PHASE_ORDER.map((p) => `<option value="${p}"${d.customSession.phase === p ? " selected" : ""}>${esc(PHASE_META[p].label)}</option>`).join("")}</select></label><label class="tp-field tp-field-compact"><span>Stage</span><select data-bind="onboarding.customSession.stageKey">${renderStageOptions(d, d.customSession.phase, d.customSession.stageKey)}</select></label>${d.customSession.stageKey === "__new__" || !getPhaseStages(d, d.customSession.phase).length ? `<label class="tp-field tp-field-compact"><span>New Stage Label</span><input type="text" value="${esc(d.customSession.newStageLabel)}" data-bind="onboarding.customSession.newStageLabel"></label>` : ""}<label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="onboarding.customSession.owner"><option value="pm"${d.customSession.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.customSession.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="tp-field tp-field-compact"><span>Type</span><select data-bind="onboarding.customSession.type"><option value="external"${d.customSession.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.customSession.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-amber" data-action="addOnboardingSession">Add Session</button></div>`;
   return `<div class="tp-summary-card"><h4>${esc(d.clientName || "New Project")}</h4><p>${esc(d.templateLabel || getTemplateLabelForKey(d.templateOriginKey || d.projectType))} | ${esc(d.pmName || d.pmEmail)} -> ${esc(d.isName || d.isEmail)}</p><p>Implementation window: ${esc(fmtRange(d.implementationStart, d.goLiveDate))}</p><p>Smart Fill default: ${esc(smartPreferenceLabel(d.smartFillPreference))}</p><p>${getAllSessions(d).length} sessions will be written to the sentinel.</p></div><details class="tp-template-review"><summary>Template JSON</summary><pre>${esc(state.ui.onboarding.templateReviewJSON)}</pre></details>`;
 }
@@ -944,7 +1032,7 @@ function settingsModal() {
   const implementationEditable = !activeProject || state.actor !== "pm" || pmCanEditImplementation(activeProject);
   const settingsBuilderPhases = implementationEditable ? PHASE_ORDER : PHASE_ORDER.filter((phaseKey) => phaseKey !== "implementation");
   const selectedSettingsPhase = settingsBuilderPhases.includes(d.newSession?.phase) ? d.newSession.phase : settingsBuilderPhases[0] || "setup";
-  return `<div class="tp-modal-overlay is-open"><div class="tp-modal tp-modal-wide"><div class="tp-modal-head"><div><h3>Project Settings</h3><p>Edit metadata and sessions.</p></div><button class="btn-default btn-sm" data-action="closeSettings">Close</button></div><div class="tp-settings-grid"><label class="tp-field"><span>Client</span><input type="text" value="${esc(d.clientName)}" data-bind="settings.clientName"></label><label class="tp-field"><span>Type</span><select data-bind="settings.projectType">${renderTemplateOptions(d.templateOriginKey || d.projectType)}</select></label><label class="tp-field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="settings.pmName"></label><label class="tp-field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="settings.pmEmail"></label><label class="tp-field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="settings.isName"></label><label class="tp-field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="settings.isEmail"></label><label class="tp-field"><span>Kick-Off Date</span><input class="tp-mono" type="date" value="${d.projectStart}" data-bind="settings.projectStart"></label><label class="tp-field"><span>Implementation Start</span><input class="tp-mono" type="date" value="${d.implementationStart}" data-bind="settings.implementationStart"></label><label class="tp-field"><span>Go-Live</span><input class="tp-mono" type="date" value="${d.goLiveDate}" data-bind="settings.goLiveDate"></label><label class="tp-field"><span>Hypercare</span><select data-bind="settings.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="tp-field"><span>Smart Fill Default</span><select data-bind="settings.smartFillPreference"><option value="am"${d.smartFillPreference === "am" ? " selected" : ""}>AM</option><option value="none"${d.smartFillPreference === "none" ? " selected" : ""}>No Preference</option><option value="pm"${d.smartFillPreference === "pm" ? " selected" : ""}>PM</option></select></label><div class="tp-field tp-field-full"><span>Working Days</span>${renderWorkingDaysChips(d.workingDays, "Settings")}</div><div class="tp-summary-card tp-field-full"><p><strong>Suggested Go-Live:</strong> ${esc(fmtDate(d.goLiveSuggestedDate || d.goLiveDate || ""))}</p><p><strong>Recommended Duration:</strong> ${esc(fmtPhaseSpan(d.goLiveRecommendedWeeks))}</p>${d.goLiveWarning ? `<p class="tp-warning-copy">${esc(d.goLiveWarning)}</p>` : '<p class="tp-muted">Suggestion updates when implementation start or working days change.</p>'}</div><label class="tp-field tp-field-full"><span>Invitees</span><textarea rows="3" data-bind="settings.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea></label><label class="tp-field tp-field-full"><span>Location</span><input type="text" value="${esc(d.location)}" data-bind="settings.location"></label></div>${!implementationEditable ? '<div class="alert alert-info"><strong>Implementation read-only</strong><div>Implementation sessions are managed by the IS after handoff. Use a new handoff to resend intent.</div></div>' : ""}<div class="tp-settings-list">${PHASE_ORDER.map((phaseKey) => renderSessionRowsForStages(d, phaseKey, "moveSettingsSession", "removeSettingsSession", { editable: phaseKey !== "implementation" || implementationEditable })).join("")}</div><div class="tp-builder-grid"><label class="tp-field tp-field-compact"><span>Name</span><input type="text" value="${esc(d.newSession?.name || "")}" data-bind="settings.newSession.name"></label><label class="tp-field tp-field-compact"><span>Duration</span><input class="tp-mono" type="number" min="15" step="15" value="${d.newSession?.duration || 90}" data-bind="settings.newSession.duration"></label><label class="tp-field tp-field-compact"><span>Phase</span><select data-bind="settings.newSession.phase">${settingsBuilderPhases.map((phaseKey) => `<option value="${phaseKey}"${selectedSettingsPhase === phaseKey ? " selected" : ""}>${esc(PHASE_META[phaseKey].label)}</option>`).join("")}</select></label><label class="tp-field tp-field-compact"><span>Stage</span><select data-bind="settings.newSession.stageKey">${renderStageOptions(d, selectedSettingsPhase, d.newSession?.stageKey || "")}</select></label>${d.newSession?.stageKey === "__new__" || !getPhaseStages(d, selectedSettingsPhase).length ? `<label class="tp-field tp-field-compact"><span>New Stage Label</span><input type="text" value="${esc(d.newSession?.newStageLabel || "")}" data-bind="settings.newSession.newStageLabel"></label>` : ""}<label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="settings.newSession.owner"><option value="pm"${d.newSession?.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.newSession?.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="tp-field tp-field-compact"><span>Type</span><select data-bind="settings.newSession.type"><option value="external"${d.newSession?.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.newSession?.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-amber" data-action="addSettingsSession">Add Session</button></div><div class="tp-modal-actions"><button class="btn-default" data-action="closeSettings">Cancel</button><button class="btn-amber" data-action="saveSettings">Save Project</button></div></div></div>`;
+  return `<div class="tp-modal-overlay is-open"><div class="tp-modal tp-modal-wide"><div class="tp-modal-head"><div><h3>Project Settings</h3><p>Edit metadata and sessions.</p></div><button class="btn-default btn-sm" data-action="closeSettings">Close</button></div><div class="tp-settings-grid"><label class="tp-field"><span>Client</span><input type="text" value="${esc(d.clientName)}" data-bind="settings.clientName"></label><label class="tp-field"><span>Type</span><select data-bind="settings.projectType">${renderTemplateOptions(d.templateOriginKey || d.projectType)}</select></label><label class="tp-field"><span>PM Name</span><input type="text" value="${esc(d.pmName)}" data-bind="settings.pmName"></label><label class="tp-field"><span>PM Email</span><input type="email" value="${esc(d.pmEmail)}" data-bind="settings.pmEmail"></label><label class="tp-field"><span>IS Name</span><input type="text" value="${esc(d.isName)}" data-bind="settings.isName"></label><label class="tp-field"><span>IS Email</span><input type="email" value="${esc(d.isEmail)}" data-bind="settings.isEmail"></label><label class="tp-field"><span>Kick-Off Date</span><input class="tp-mono" type="date" value="${d.projectStart}" data-bind="settings.projectStart"></label><label class="tp-field"><span>Implementation Start</span><input class="tp-mono" type="date" value="${d.implementationStart}" data-bind="settings.implementationStart"></label><label class="tp-field"><span>Go-Live</span><input class="tp-mono" type="date" value="${d.goLiveDate}" data-bind="settings.goLiveDate"></label><label class="tp-field"><span>Hypercare</span><select data-bind="settings.hypercareDuration"><option value="1 week"${d.hypercareDuration === "1 week" ? " selected" : ""}>1 week</option><option value="2 weeks"${d.hypercareDuration === "2 weeks" ? " selected" : ""}>2 weeks</option></select></label><label class="tp-field"><span>Smart Fill Default</span><select data-bind="settings.smartFillPreference"><option value="am"${d.smartFillPreference === "am" ? " selected" : ""}>AM</option><option value="none"${d.smartFillPreference === "none" ? " selected" : ""}>No Preference</option><option value="pm"${d.smartFillPreference === "pm" ? " selected" : ""}>PM</option></select></label><div class="tp-field tp-field-full"><span>Working Days</span>${renderWorkingDaysChips(d.workingDays, "Settings")}</div><div class="tp-summary-card tp-field-full"><p><strong>Suggested Go-Live:</strong> ${esc(fmtDate(d.goLiveSuggestedDate || d.goLiveDate || ""))}</p><p><strong>Recommended Duration:</strong> ${esc(fmtPhaseSpan(d.goLiveRecommendedWeeks))}</p>${d.goLiveWarning ? `<p class="tp-warning-copy">${esc(d.goLiveWarning)}</p>` : '<p class="tp-muted">Suggestion updates when implementation start or working days change.</p>'}</div><label class="tp-field tp-field-full"><span>Invitees</span><textarea rows="3" data-bind="settings.invitees">${esc(Array.isArray(d.invitees) ? d.invitees.join(", ") : d.invitees)}</textarea></label><div class="tp-field tp-field-full">${renderLocationStepHTML(d, "settings")}</div></div>${!implementationEditable ? '<div class="alert alert-info"><strong>Implementation read-only</strong><div>Implementation sessions are managed by the IS after handoff. Use a new handoff to resend intent.</div></div>' : ""}<div class="tp-settings-list">${PHASE_ORDER.map((phaseKey) => renderSessionRowsForStages(d, phaseKey, "moveSettingsSession", "removeSettingsSession", { editable: phaseKey !== "implementation" || implementationEditable })).join("")}</div><div class="tp-builder-grid"><label class="tp-field tp-field-compact"><span>Name</span><input type="text" value="${esc(d.newSession?.name || "")}" data-bind="settings.newSession.name"></label><label class="tp-field tp-field-compact"><span>Duration</span><input class="tp-mono" type="number" min="15" step="15" value="${d.newSession?.duration || 90}" data-bind="settings.newSession.duration"></label><label class="tp-field tp-field-compact"><span>Phase</span><select data-bind="settings.newSession.phase">${settingsBuilderPhases.map((phaseKey) => `<option value="${phaseKey}"${selectedSettingsPhase === phaseKey ? " selected" : ""}>${esc(PHASE_META[phaseKey].label)}</option>`).join("")}</select></label><label class="tp-field tp-field-compact"><span>Stage</span><select data-bind="settings.newSession.stageKey">${renderStageOptions(d, selectedSettingsPhase, d.newSession?.stageKey || "")}</select></label>${d.newSession?.stageKey === "__new__" || !getPhaseStages(d, selectedSettingsPhase).length ? `<label class="tp-field tp-field-compact"><span>New Stage Label</span><input type="text" value="${esc(d.newSession?.newStageLabel || "")}" data-bind="settings.newSession.newStageLabel"></label>` : ""}<label class="tp-field tp-field-compact"><span>Owner</span><select data-bind="settings.newSession.owner"><option value="pm"${d.newSession?.owner === "pm" ? " selected" : ""}>PM</option><option value="is"${d.newSession?.owner === "is" ? " selected" : ""}>IS</option></select></label><label class="tp-field tp-field-compact"><span>Type</span><select data-bind="settings.newSession.type"><option value="external"${d.newSession?.type === "external" ? " selected" : ""}>External</option><option value="internal"${d.newSession?.type === "internal" ? " selected" : ""}>Internal</option></select></label><button class="btn-amber" data-action="addSettingsSession">Add Session</button></div><div class="tp-modal-actions"><button class="btn-default" data-action="closeSettings">Cancel</button><button class="btn-amber" data-action="saveSettings">Save Project</button></div></div></div>`;
 }
 
 function renderTemplateIssueList(title, issues, className = "") {
@@ -1389,7 +1477,7 @@ export function buildRenderSnapshot() {
           : state.ui.screen === "workspace" && project
             ? workspace(project)
             : projectsScreen(),
-    overlays: `${onboardingModal()}${settingsModal()}${windowChangeDialog()}${shiftDialog()}${deleteProjectDialog()}${closeProjectDialog()}${projectErrorModal()}${renderDayViewModal()}`,
+    overlays: `${onboardingModal()}${settingsModal()}${windowChangeDialog()}${shiftDialog()}${deleteProjectDialog()}${closeProjectDialog()}${projectErrorModal()}${renderDayViewModal()}${transcriptViewerModal()}`,
   };
 }
 

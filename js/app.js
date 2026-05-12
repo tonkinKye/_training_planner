@@ -71,7 +71,7 @@ import {
   updateOnboardingField,
   updateSettingsField,
 } from "./scheduler.js";
-import { getAllSessions } from "./projects.js";
+import { findSession, getAllSessions } from "./projects.js";
 import {
   addTemplateEditorSession,
   addTemplateEditorStage,
@@ -97,6 +97,15 @@ import {
 } from "./template-editor.js";
 import { clearProjectError, getActiveProject, removeProject, setActorMode, setDeepLink, setProjectError, setScreen, state } from "./state.js";
 import { downloadBlob, pad, toast, toDateStr } from "./utils.js";
+import { acquireZoomToken, hasZoomConfig, onZoomAuthStatusChange, signOutZoom } from "./zoom-auth.js";
+import { downloadRecordingFile, getMeetingRecordings, getMeetingSummary } from "./zoom.js";
+import { vttToPlainText } from "./vtt-parse.js";
+import {
+  getCachedSummary,
+  getCachedTranscript,
+  setCachedSummary,
+  setCachedTranscript,
+} from "./transcript-store.js";
 
 function afterRender() {
   if (document.getElementById("dayViewModal")) {
@@ -220,6 +229,162 @@ async function refreshProjectContext() {
   const project = getActiveProject();
   if (!project) return;
   await refreshCalendarForProject(project);
+}
+
+function getSessionForZoomAction(sessionId) {
+  const project = getActiveProject();
+  if (!project) {
+    toast("Open a project first.", 3000);
+    return null;
+  }
+  const found = findSession(project, sessionId);
+  if (!found?.session) {
+    toast("Session not found.", 3000);
+    return null;
+  }
+  if (found.session.meetingProvider !== "zoom" || !found.session.meetingId) {
+    toast("This session does not have a Zoom meeting yet.", 3500);
+    return null;
+  }
+  return { project, session: found.session };
+}
+
+async function refreshZoomMeetingForSession(sessionId) {
+  const ctx = getSessionForZoomAction(sessionId);
+  if (!ctx) return;
+  if (!hasZoomConfig()) {
+    toast("Zoom is not configured for this deployment.", 4000);
+    return;
+  }
+  try {
+    const token = await acquireZoomToken({ interactive: false });
+    if (!token) {
+      toast("Connect Zoom first, then try again.", 4000);
+      return;
+    }
+    toast("Fetching recording details from Zoom...", 2500);
+    const recordings = await getMeetingRecordings(ctx.session.meetingId);
+    if (recordings) {
+      ctx.session.recordingUrl = recordings.recordingPlayUrl || recordings.recordingDownloadUrl || ctx.session.recordingUrl;
+      ctx.session.recordingDurationMinutes = recordings.durationMinutes || ctx.session.recordingDurationMinutes;
+      ctx.session.recordingStart = recordings.startTime || ctx.session.recordingStart;
+      ctx.session.transcriptUrl = recordings.transcriptDownloadUrl || ctx.session.transcriptUrl;
+      if (recordings.transcriptDownloadUrl) {
+        try {
+          const vtt = await downloadRecordingFile(recordings.transcriptDownloadUrl, { token });
+          if (vtt) {
+            setCachedTranscript(ctx.session.id, { vtt, fetchedAt: new Date().toISOString() });
+          }
+        } catch (transcriptError) {
+          console.warn("Transcript download failed:", transcriptError);
+        }
+      }
+    }
+    try {
+      const summary = await getMeetingSummary(ctx.session.meetingId);
+      if (summary) {
+        setCachedSummary(ctx.session.id, { summary, fetchedAt: new Date().toISOString() });
+        ctx.session.hasZoomSummary = true;
+      }
+    } catch (summaryError) {
+      if (summaryError.status !== 404) {
+        console.warn("Summary fetch failed:", summaryError);
+      }
+    }
+    await persistAndRender(true);
+    toast("Refreshed Zoom meeting data.", 3000);
+  } catch (error) {
+    toast(`Zoom refresh failed: ${error.message || error}`, 5000);
+  }
+}
+
+function readCachedTranscriptText(session) {
+  const entry = getCachedTranscript(session.id);
+  if (!entry?.vtt) return { plain: "", vtt: "" };
+  return { plain: vttToPlainText(entry.vtt), vtt: entry.vtt };
+}
+
+function viewTranscriptForSession(sessionId) {
+  const ctx = getSessionForZoomAction(sessionId);
+  if (!ctx) return;
+  const { plain } = readCachedTranscriptText(ctx.session);
+  if (!plain) {
+    toast("Transcript not cached yet. Click Refresh from Zoom first.", 4000);
+    return;
+  }
+  state.ui.transcriptViewer = {
+    open: true,
+    sessionId: ctx.session.id,
+    title: ctx.session.name,
+    text: plain,
+  };
+  rerender();
+}
+
+async function copyTranscriptForSession(sessionId) {
+  const ctx = getSessionForZoomAction(sessionId);
+  if (!ctx) return;
+  const { plain } = readCachedTranscriptText(ctx.session);
+  if (!plain) {
+    toast("Transcript not cached yet. Click Refresh from Zoom first.", 4000);
+    return;
+  }
+  if (!navigator.clipboard?.writeText) {
+    toast("Clipboard not available in this browser. Use Download instead.", 4000);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(plain);
+    toast("Transcript copied to clipboard.", 3000);
+  } catch (error) {
+    toast(`Could not copy transcript: ${error.message || error}`, 4000);
+  }
+}
+
+async function downloadTranscriptForSession(sessionId, format) {
+  const ctx = getSessionForZoomAction(sessionId);
+  if (!ctx) return;
+  const { plain, vtt } = readCachedTranscriptText(ctx.session);
+  if (!plain && !vtt) {
+    toast("Transcript not cached yet. Click Refresh from Zoom first.", 4000);
+    return;
+  }
+  const safeName = (ctx.project.clientName || "session").replace(/[^a-zA-Z0-9 _-]/g, "").replace(/\s+/g, "_").toLowerCase();
+  const sessionSlug = (ctx.session.name || "session").replace(/[^a-zA-Z0-9 _-]/g, "").replace(/\s+/g, "_").toLowerCase();
+  if (format === "vtt") {
+    downloadBlob(vtt || "", `${safeName}_${sessionSlug}.vtt`, "text/vtt");
+  } else {
+    downloadBlob(plain || vtt || "", `${safeName}_${sessionSlug}.txt`, "text/plain");
+  }
+}
+
+function viewZoomSummaryForSession(sessionId) {
+  const ctx = getSessionForZoomAction(sessionId);
+  if (!ctx) return;
+  const entry = getCachedSummary(ctx.session.id);
+  if (!entry?.summary) {
+    toast("Zoom summary not cached yet. Click Refresh from Zoom first.", 4000);
+    return;
+  }
+  state.ui.transcriptViewer = {
+    open: true,
+    sessionId: ctx.session.id,
+    title: `${ctx.session.name} — Zoom AI summary`,
+    text: formatZoomSummary(entry.summary),
+  };
+  rerender();
+}
+
+function formatZoomSummary(summary) {
+  if (!summary || typeof summary !== "object") return "";
+  if (typeof summary.summary_overview === "string") return summary.summary_overview;
+  if (Array.isArray(summary.summary_details)) {
+    return summary.summary_details
+      .map((section) => `${section.label || ""}\n${section.summary || ""}`.trim())
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  return JSON.stringify(summary, null, 2);
 }
 
 async function reconcileProjectsOnAppLoad() {
@@ -349,6 +514,24 @@ async function actionHandlers(action, element) {
         await handleDeepLinkIfPresent();
         await reconcileProjectsOnAppLoad();
       }
+      rerender();
+      return;
+    case "connectZoom":
+      if (!hasZoomConfig()) {
+        toast("Zoom is not configured for this deployment. Add ZOOM_CLIENT_ID to config.js.", 5000);
+        return;
+      }
+      try {
+        const token = await acquireZoomToken({ interactive: true });
+        toast(token ? "Connected to Zoom." : "Zoom connection cancelled.", 3500);
+      } catch (error) {
+        toast(`Zoom sign-in failed: ${error.message || error}`, 5000);
+      }
+      rerender();
+      return;
+    case "disconnectZoom":
+      signOutZoom();
+      toast("Disconnected from Zoom.", 3000);
       rerender();
       return;
     case "openOnboarding":
@@ -909,6 +1092,27 @@ async function actionHandlers(action, element) {
       }
       return;
     }
+    case "refreshZoomMeeting":
+      await refreshZoomMeetingForSession(element.dataset.id);
+      return;
+    case "viewTranscript":
+      viewTranscriptForSession(element.dataset.id);
+      return;
+    case "copyTranscript":
+      await copyTranscriptForSession(element.dataset.id);
+      return;
+    case "downloadTranscript":
+      await downloadTranscriptForSession(element.dataset.id, element.dataset.format || "txt");
+      return;
+    case "viewZoomSummary":
+      viewZoomSummaryForSession(element.dataset.id);
+      return;
+    case "closeTranscriptViewer":
+      if (state.ui.transcriptViewer) {
+        state.ui.transcriptViewer.open = false;
+      }
+      rerender();
+      return;
     case "handoffToIs":
       try {
         await createHandoffEvent();
@@ -1183,6 +1387,10 @@ async function init() {
   }
 
   bindEvents();
+  onZoomAuthStatusChange((status) => {
+    state.ui.zoomAuthStatus = status;
+    rerender();
+  });
   window.addEventListener("beforeunload", (event) => {
     if (!templateEditorHasUnsavedChanges()) return;
     event.preventDefault();

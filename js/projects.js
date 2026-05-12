@@ -187,6 +187,17 @@ function makeSession(definition, index, phaseKey = definition?.phase || "impleme
     lockedDate: Boolean(definition?.lockedDate ?? definition?.locked),
     lockedTime: Boolean(definition?.lockedTime),
     availabilityConflict: Boolean(definition?.availabilityConflict),
+    meetingProvider: definition?.meetingProvider === "zoom" ? "zoom" : "",
+    meetingId: definition?.meetingId ? String(definition.meetingId) : "",
+    meetingUrl: definition?.meetingUrl ? String(definition.meetingUrl) : "",
+    meetingPasscode: definition?.meetingPasscode ? String(definition.meetingPasscode) : "",
+    recordingUrl: definition?.recordingUrl ? String(definition.recordingUrl) : "",
+    recordingDurationMinutes: Number.isFinite(definition?.recordingDurationMinutes)
+      ? Number(definition.recordingDurationMinutes)
+      : 0,
+    recordingStart: definition?.recordingStart ? String(definition.recordingStart) : "",
+    transcriptUrl: definition?.transcriptUrl ? String(definition.transcriptUrl) : "",
+    hasZoomSummary: Boolean(definition?.hasZoomSummary),
   };
 }
 
@@ -497,6 +508,7 @@ export function createOnboardingDraft(projectType = "manufacturing", options = {
     workingDays: [...DEFAULT_WORKING_DAYS],
     invitees: "",
     location: "",
+    locationMode: "manual",
     goLiveSuggestedDate: "",
     goLiveRecommendedWeeks: 0,
     goLiveWarning: "",
@@ -550,6 +562,7 @@ export function normalizeProject(project) {
     smartFillPreference: ensureSmartFillPreference(project?.smartFillPreference),
     workingDays: normalizeWorkingDays(project?.workingDays),
     location: String(project?.location || "").trim(),
+    locationMode: project?.locationMode === "zoom-auto" ? "zoom-auto" : "manual",
     invitees: normalizeInvitees(project?.invitees),
     phases: {
       setup: normalizePhaseContainer(templateSource, "setup", project?.phases?.setup || null),
@@ -610,6 +623,7 @@ export function createProjectFromDraft(draft) {
     smartFillPreference: draft.smartFillPreference,
     workingDays: draft.workingDays,
     location: draft.location,
+    locationMode: draft.locationMode,
     invitees: draft.invitees,
     phases: cloneValue(draft.phases),
   });

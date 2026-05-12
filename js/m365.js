@@ -2,7 +2,15 @@ import { DEEP_LINK_LIMIT, SENTINEL_SCHEMA_ID, SENTINEL_SUBJECT, getActiveProject
 import { GRAPH_CLIENT_ID, GRAPH_SCOPES, GRAPH_TENANT_ID, PRODUCT_NAME, isPlaceholderGraphValue } from "./runtime-config.js";
 import { classifyCalendarSourceError, getCalendarFetchPlan } from "./calendar-sources.js";
 import { buildDeepLinkUrl } from "./deeplink.js";
-import { buildBodyHTML, buildSubject, parseInvitees } from "./invites.js";
+import { buildBodyHTML, buildSubject, parseInvitees, resolveSessionLocation } from "./invites.js";
+import {
+  createZoomMeeting,
+  deleteZoomMeeting,
+  hasZoomConfig,
+  updateZoomMeeting,
+  ZoomAuthError,
+} from "./zoom.js";
+import { getZoomHostEmail } from "./zoom-host.js";
 import {
   deriveProjectStatus,
   findSession,
@@ -618,7 +626,10 @@ export function buildEventPayload(project, session) {
       dateTime: toIsoLocal(end),
       timeZone: getLocalTimeZone(),
     },
-    location: project.location ? { displayName: project.location } : undefined,
+    location: (() => {
+      const resolved = resolveSessionLocation(project, session);
+      return resolved ? { displayName: resolved } : undefined;
+    })(),
     isOnlineMeeting: false,
   };
 
@@ -644,7 +655,51 @@ export function buildEventPayload(project, session) {
   return event;
 }
 
+async function ensureZoomMeetingForSession(session, project) {
+  if (project?.locationMode !== "zoom-auto") return;
+  if (!hasZoomConfig()) return;
+  const hostEmail = getZoomHostEmail(project, session);
+  if (!hostEmail) {
+    toast(`Zoom host email missing for ${session.name}. Calendar event will show "TBA".`, 5000);
+    session.meetingProvider = "";
+    session.meetingId = "";
+    session.meetingUrl = "";
+    session.meetingPasscode = "";
+    return;
+  }
+  const meetingMeta = {
+    topic: buildSubject(project, session),
+    name: session.name,
+    date: session.date,
+    time: session.time,
+    durationMinutes: getSessionDurationMinutes(session),
+  };
+  try {
+    if (session.meetingId && session.meetingProvider === "zoom") {
+      await updateZoomMeeting(session.meetingId, meetingMeta);
+    } else {
+      const meeting = await createZoomMeeting(hostEmail, meetingMeta);
+      session.meetingProvider = "zoom";
+      session.meetingId = meeting.id;
+      session.meetingUrl = meeting.join_url;
+      session.meetingPasscode = meeting.password;
+    }
+  } catch (error) {
+    if (error instanceof ZoomAuthError) {
+      toast("Zoom is not connected — calendar event will use 'TBA' as location.", 5000);
+    } else {
+      toast(`Zoom meeting failed for ${session.name}: ${error.message || error}`, 5000);
+    }
+    if (!session.meetingId) {
+      session.meetingProvider = "";
+      session.meetingUrl = "";
+      session.meetingPasscode = "";
+    }
+  }
+}
+
 async function pushGraphEvent(session, project) {
+  await ensureZoomMeetingForSession(session, project);
   const url = session.graphEventId
     ? `${getGraphBase()}/events/${encodeURIComponent(session.graphEventId)}`
     : `${getGraphBase()}/events`;
@@ -671,6 +726,21 @@ async function pushGraphEvent(session, project) {
       });
     }
     throw error;
+  }
+}
+
+async function deleteZoomMeetingForSession(session) {
+  if (!session?.meetingId || session.meetingProvider !== "zoom") return;
+  if (!hasZoomConfig()) return;
+  try {
+    await deleteZoomMeeting(session.meetingId);
+  } catch (error) {
+    toast(`Zoom meeting could not be deleted for ${session.name || "session"}: ${error.message || error}`, 5000);
+  } finally {
+    session.meetingProvider = "";
+    session.meetingId = "";
+    session.meetingUrl = "";
+    session.meetingPasscode = "";
   }
 }
 
@@ -1562,6 +1632,7 @@ export async function deleteFutureProjectEvents(project) {
     if (await deleteGraphEvent(session.graphEventId)) {
       session.graphEventId = "";
       session.graphActioned = false;
+      await deleteZoomMeetingForSession(session);
       deleted += 1;
     } else {
       failed += 1;

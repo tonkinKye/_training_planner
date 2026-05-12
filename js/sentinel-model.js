@@ -31,6 +31,19 @@ function buildSessionRecord(session = {}, { identityOnly = false } = {}) {
     lockedDate: Boolean(session.lockedDate),
     lockedTime: Boolean(session.lockedTime),
     availabilityConflict: identityOnly ? false : Boolean(session.availabilityConflict),
+    meetingProvider: identityOnly ? "" : session.meetingProvider === "zoom" ? "zoom" : "",
+    meetingId: identityOnly ? "" : session.meetingId || "",
+    meetingUrl: identityOnly ? "" : session.meetingUrl || "",
+    meetingPasscode: identityOnly ? "" : session.meetingPasscode || "",
+    recordingUrl: identityOnly ? "" : session.recordingUrl || "",
+    recordingDurationMinutes: identityOnly
+      ? 0
+      : Number.isFinite(session.recordingDurationMinutes)
+        ? Number(session.recordingDurationMinutes)
+        : 0,
+    recordingStart: identityOnly ? "" : session.recordingStart || "",
+    transcriptUrl: identityOnly ? "" : session.transcriptUrl || "",
+    hasZoomSummary: identityOnly ? false : Boolean(session.hasZoomSummary),
   };
 }
 
@@ -93,6 +106,7 @@ export function buildSentinelProjectRecord(project = {}, { perspective = "pm" } 
     smartFillPreference: project.smartFillPreference || "none",
     workingDays: Array.isArray(project.workingDays) ? [...project.workingDays] : [],
     location: project.location || "",
+    locationMode: project.locationMode === "zoom-auto" ? "zoom-auto" : "manual",
     invitees: Array.isArray(project.invitees) ? [...project.invitees] : [],
     phases: {
       setup: buildPhaseRecord(project.phases?.setup || {}),
@@ -155,6 +169,7 @@ function projectFromV2Record(record = {}) {
     smartFillPreference: record.smartFillPreference,
     workingDays: record.workingDays,
     location: record.location,
+    locationMode: record.locationMode,
     invitees: record.invitees,
     phases: record.phases || {},
     handoff: record.handoff || {},
